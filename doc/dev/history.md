@@ -12,6 +12,31 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Halving the bot's decision window is a measured null — and the null control is the entire reason we know that (2026-08-19).** Three arms on staged curl, 120 attempts each (Casual+Gamer x hard), a 17-level campaign with `src/tool_main.c` pinned as level 1. Archives `balancing_capture_step_{ctlA,ctlB,fine25}`. All three passed `verify:event-log`, and each arm's roster cross-checked identical to the offline solver's on all 12 reached levels.
+
+  **The two identical-code controls are the headline.** At the levels that discriminate:
+
+  | Gamer/hard | L7 | L8 | L9 |
+  |---|---:|---:|---:|
+  | ctlA | 54% | 46% | 34% |
+  | ctlB *(identical code)* | 33% | 22% | 15% |
+  | **control spread** | **21pp** | **24pp** | **19pp** |
+  | fine25 (`VIRTUAL_STEP_MS` 25, budgets rescaled) | 73% | 70% | 37% |
+
+  fine25 is **+19pp** over the nearer control at L7 against a **21pp** control-vs-control spread. It is inside the noise at every discriminating level.
+
+  **And the sign flips between profiles, which settles it.** On Casual/hard fine25 is *below both* controls at L7 (55% vs 70%/57%), L8, L9 and L10. A finer decision window that genuinely helped would not help one profile and hurt the other by comparable margins. Levels-per-attempt agrees: controls 7.73/7.15 (Casual) and 7.25/6.62 (Gamer) — a 0.58-0.63 spread — with fine25 at 7.15 and 8.13.
+
+  **So: no readable effect, and the "should also help with aim oscillation" clause of the backlog item is dead as a *measured* claim.** Note what this does not say. It does not say a finer window cannot help; it says this design cannot see an effect smaller than the run-to-run variation, and here that variation is enormous.
+
+  **The reusable finding is the noise floor itself: ~20-24pp on per-level clear rate at n=60/combo on staged curl.** This capture's own plan assumed ~13pp MDE at that n, so it was underpowered by roughly 2x against its own substrate — anything under ~25pp was never detectable. **Do not run another balance A/B here at this n and expect to read it.**
+
+  **The fix is cheap and is a design change rather than more machine time: pair the seeds.** Captures run unpinned (`gameplaySeed: null`), so the two control arms played different loot and enemy-placement rolls — which is where a 21pp spread on a *fixed* campaign comes from. The throughput A/B earlier the same night pinned `CODEENSTEIN_TELEMETRY_SEED` and got byte-identical telemetry across arms, so the mechanism is already proven; running each arm over the same *set* of seeds makes this a paired comparison and should collapse most of that variance.
+
+  **Cost, and what it bought.** ctlA 207 min, fine25 371 min (2.18x per attempt, exactly what doubling the decision count predicts), ctlB 186 min. `dt60` (engine integrating at 60Hz instead of `MAX_DT`) was cut for time and remains unanswered. The most valuable arm was the one that produced no information about the treatment: without ctlB the honest-looking read was "fine25 +19pp at L7", and it would have been wrong.
+
+  **One self-inflicted cost worth recording.** ctlB did not run on the first attempt: a stray `ssh-hosts.env.bak` left in the capture worktree tripped the clean-tree guard, which refused the arm in 0 minutes — correctly, since remote lanes check out HEAD and a dirty tree would pool two different builds into one log. The watcher meant to drop the `dt60` arm keyed on the string "ARM ctlB done", which matched the *failure* line as readily as a success, so it tore the run down instead of reporting that the arm never started. Both are the same lesson from opposite ends: **a scratch file does not belong inside a repo a guard is watching, and a completion watcher must distinguish success from failure.**
+
 - [x] **Where the balancing harness's wall clock actually goes — measured, and it refutes the backlog item that asked for it (2026-08-18).** `notes` carried "decouple bot decisions from engine, **for more performance**" since before the bot rework. **The bot's decision costs 0.2-0.3% of the harness's wall clock.** There is no version of that item that pays, because the decisions are already free. Shipped as `CODEENSTEIN_BOT_TIMING=1`, off by default and reading no clock when off.
 
   **Nothing had ever measured this, and one line was in the way.** `perfDebug.ts` has no bot phase and could not acquire one: `installVirtualClock` replaces `performance.now`, so every in-page phase timing reads **0** under this harness. The installer now stashes `window.__realNow` before patching — the only real clock left inside the page, and inert to everything else.
