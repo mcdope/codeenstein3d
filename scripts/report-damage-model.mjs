@@ -44,6 +44,21 @@
  * the bot chose to take, so this measures the model where the bot uses it, not
  * across its whole domain.
  *
+ * **"Not trusted" is too soft, measured 2026-08-19: the ghidra rows carry no
+ * information at all.** Run over every capture on disk (1,530 event files,
+ * 2,187,968 ranged shots) they report **100% miss and 0.0 damage/shot** in
+ * every range bucket, because the
+ * timestamp join finds nothing to attribute — the flight time is seconds, not
+ * a rounding error. Rockets also emit no `hit` event whatsoever (0 of
+ * 3,248,140 in the archive), since `fire()` returns at `if (w.isRocket)`
+ * before `resolveShot` runs. Measuring ghidra needs a flight-tolerant join or
+ * an event emitted at detonation; until then, ignore its rows rather than
+ * discounting them. **The "ghidra 93 against 150" figure quoted above does not
+ * reproduce** from the 2026-08-06 captures or any other on disk — this script
+ * prints 0.0 for all of them. It is left in the sentence rather than deleted
+ * because whatever produced it is unaccounted for; the shotgun half of that
+ * same sentence does roughly reproduce.
+ *
  * Usage:
  *   node scripts/report-damage-model.mjs [captureDir ...]     # default: all
  */
