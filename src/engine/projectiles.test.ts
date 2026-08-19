@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { GameMap, Tile } from "../map/types";
+import { ENEMY_WEAPONS } from "./combatConstants";
 import { Player } from "./player";
 import {
   collectProjectileBillboards,
@@ -77,10 +78,38 @@ describe("spawnProjectile", () => {
     expect(list[0].targetId).toBe("p1");
   });
 
-  it("scales damage by the given multiplier", () => {
+  it("scales the weapon's damage by the multiplayer Elite scale", () => {
+    // Used to be a bare archetype multiplier. The archetype ladder now lives
+    // in the weapon's own `damage`, so the only scale left at this seam is
+    // multiplayer's player-count Elite scaling.
     const list: Projectile[] = [];
-    spawnProjectile(list, 0, 0, 1, 0, "p1", 2);
+    spawnProjectile(list, 0, 0, 1, 0, "p1", ENEMY_WEAPONS.normal, 2);
     expect(list[0].damage).toBe(16);
+  });
+
+  it("takes speed, damage and collision size from the archetype's weapon", () => {
+    const list: Projectile[] = [];
+    spawnProjectile(list, 0, 0, 1, 0, "p1", ENEMY_WEAPONS.elite);
+    expect(list[0].damage).toBe(ENEMY_WEAPONS.elite.damage);
+    expect(Math.hypot(list[0].vx, list[0].vy)).toBeCloseTo(ENEMY_WEAPONS.elite.speed);
+    expect(list[0].radius).toBe(ENEMY_WEAPONS.elite.radius);
+    expect(list[0].archetype).toBe("elite");
+  });
+
+  it("adds the weapon's own scatter to the difficulty's, and draws only when the sum is non-zero", () => {
+    // Edge Case bolts scatter even on Hard, where `enemyAimSpreadDeg` is 0 —
+    // which means they consume an RNG draw where a regular bolt does not.
+    // Asserted because that consumption is part of replay determinism.
+    let draws = 0;
+    const rng = () => {
+      draws += 1;
+      return 0.5;
+    };
+    const list: Projectile[] = [];
+    spawnProjectile(list, 0, 0, 1, 0, "p1", ENEMY_WEAPONS.normal, 1, 0, rng);
+    expect(draws).toBe(0);
+    spawnProjectile(list, 0, 0, 1, 0, "p1", ENEMY_WEAPONS.edgeCase, 1, 0, rng);
+    expect(draws).toBe(1);
   });
 
   it("falls back to a zero-length direction without dividing by zero", () => {
@@ -229,6 +258,54 @@ describe("collectProjectileBillboards", () => {
     jobs[0].draw();
     expect(c.fillStyle).toBe("#ffd0ec"); // last layer drawn: the bright center
     expect(c.fillRect).toHaveBeenCalledTimes(3); // halo + core + center
+  });
+
+  it("colours each bolt by the archetype that fired it, in one pass", () => {
+    // The regression this guards is subtle: `collectOrbBillboards` used to take
+    // one palette for the whole list, so a mixed frame would have painted every
+    // bolt the same colour. Three bolts of three archetypes, one call, three
+    // different centre colours.
+    const player = facingPlayer();
+    const bolts: Projectile[] = (["normal", "elite", "edgeCase"] as const).map((archetype, i) => ({
+      x: player.posX + 3 + i * 0.01,
+      y: player.posY,
+      vx: 0,
+      vy: 0,
+      damage: 8,
+      targetId: "p1",
+      archetype,
+    }));
+    const jobs = collectProjectileBillboards(asCtx(ctx()), player, bolts, clearZBuffer(Infinity));
+    expect(jobs).toHaveLength(3);
+
+    const centers = jobs.map((job, i) => {
+      const c = ctx();
+      // Re-collect per bolt so each draw writes into its own mock context;
+      // `draw()` closes over the ctx the job was built with.
+      const single = collectProjectileBillboards(asCtx(c), player, [bolts[i]], clearZBuffer(Infinity));
+      single[0].draw();
+      return c.fillStyle;
+    });
+    expect(centers).toEqual([
+      ENEMY_WEAPONS.normal.palette.center,
+      ENEMY_WEAPONS.elite.palette.center,
+      ENEMY_WEAPONS.edgeCase.palette.center,
+    ]);
+    expect(new Set(centers).size).toBe(3);
+  });
+
+  it("falls back to the normal palette for a bolt with no archetype", () => {
+    // Every Projectile literal written before the weapon table omits it.
+    const player = facingPlayer();
+    const c = ctx();
+    const jobs = collectProjectileBillboards(
+      asCtx(c),
+      player,
+      [{ x: player.posX + 3, y: player.posY, vx: 0, vy: 0, damage: 8, targetId: "p1" }],
+      clearZBuffer(Infinity),
+    );
+    jobs[0].draw();
+    expect(c.fillStyle).toBe(ENEMY_WEAPONS.normal.palette.center);
   });
 
   it("draws nothing for a bolt occluded by a nearer wall", () => {

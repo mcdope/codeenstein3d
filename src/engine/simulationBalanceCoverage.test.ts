@@ -41,25 +41,36 @@ beforeAll(async () => {
   ({ SIMULATION_BALANCE } = await import("./engine"));
 });
 
-/** Numeric exports of a module, which is what "a balance constant" looks like
- * here — functions, types and interfaces are not simulation scalars. */
-function numericExports(mod: Record<string, unknown>): string[] {
+/**
+ * Value-carrying exports of a module: the scalars *and* the tables.
+ *
+ * Deliberately not "numeric only". `ENEMY_WEAPONS` is an object, and an
+ * earlier version of this helper would have let it be added to
+ * `combatConstants.ts` without ever entering the hash — the exact silent gap
+ * these tests exist to close. Types and interfaces vanish at runtime, so they
+ * cannot appear here; functions are excluded because a function is behaviour,
+ * which no constant hash can fingerprint anyway.
+ *
+ * `balanceTable` names the module's own aggregate so it does not demand to
+ * contain itself.
+ */
+function balanceExports(mod: Record<string, unknown>, balanceTable: string): string[] {
   return Object.entries(mod)
-    .filter(([, v]) => typeof v === "number")
+    .filter(([k, v]) => k !== balanceTable && v !== null && typeof v !== "function" && typeof v !== "undefined")
     .map(([k]) => k)
     .sort();
 }
 
 describe("COMBAT_BALANCE covers combatConstants.ts", () => {
-  it("names every numeric export of the module", () => {
-    const missing = numericExports(combatConstants).filter((k) => !(k in COMBAT_BALANCE));
+  it("names every value-carrying export of the module, tables included", () => {
+    const missing = balanceExports(combatConstants, "COMBAT_BALANCE").filter((k) => !(k in COMBAT_BALANCE));
     // Named individually in the message so a failure says *which* constant to
     // add rather than only that the counts differ.
     expect(missing, `add these to COMBAT_BALANCE: ${missing.join(", ")}`).toEqual([]);
   });
 
   it("names nothing the module does not actually export, so the table cannot rot", () => {
-    const exported = new Set(numericExports(combatConstants));
+    const exported = new Set(balanceExports(combatConstants, "COMBAT_BALANCE"));
     const stale = Object.keys(COMBAT_BALANCE).filter((k) => !exported.has(k));
     expect(stale, `these are in COMBAT_BALANCE but not exported: ${stale.join(", ")}`).toEqual([]);
   });
@@ -77,13 +88,13 @@ describe("TRAP_BALANCE covers traps.ts", () => {
   // MINE_BLAST_RADIUS is exported at all. What is checkable is that the one
   // exported scalar is in the table and that nothing in it has drifted.
   it("includes the one balance scalar the module exports", () => {
-    for (const key of numericExports(traps)) {
+    for (const key of balanceExports(traps, "TRAP_BALANCE")) {
       expect(TRAP_BALANCE, `traps.ts exports ${key}; add it to TRAP_BALANCE`).toHaveProperty(key);
     }
   });
 
   it("agrees with the module for every exported value", () => {
-    for (const key of numericExports(traps)) {
+    for (const key of balanceExports(traps, "TRAP_BALANCE")) {
       expect((TRAP_BALANCE as Record<string, unknown>)[key], key).toBe((traps as Record<string, unknown>)[key]);
     }
   });

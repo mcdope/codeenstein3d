@@ -10,7 +10,7 @@
 import { isWall, type Player } from "./player";
 import { collectOrbBillboards, type BillboardJob } from "./sprites";
 import type { GameMap } from "../map/types";
-import { PROJECTILE_DAMAGE, PROJECTILE_RADIUS, PROJECTILE_SPEED } from "./combatConstants";
+import { ENEMY_WEAPONS, PROJECTILE_RADIUS, type EnemyArchetype, type EnemyWeapon } from "./combatConstants";
 
 
 /** One in-flight enemy bolt, in world (tile) space. `targetId` locks the bolt
@@ -24,6 +24,20 @@ export interface Projectile {
   vy: number;
   damage: number;
   targetId: string;
+  /**
+   * Collision half-size, carried per bolt rather than read from a module
+   * constant, because it is a per-archetype weapon field now
+   * (`ENEMY_WEAPONS`). Optional, defaulting to the shared
+   * `PROJECTILE_RADIUS`, so the many test literals that predate the weapon
+   * table keep compiling and keep their old behaviour.
+   */
+  radius?: number;
+  /**
+   * Which archetype's weapon fired this — rendering only (it picks the
+   * palette), never read by the simulation. Optional for the same reason as
+   * `radius`; an absent one renders as `normal`.
+   */
+  archetype?: EnemyArchetype;
   /**
    * Index into the engine's `enemies` array of whoever fired this bolt, so a
    * landing hit can say which enemy dealt the damage. Purely for telemetry
@@ -43,14 +57,30 @@ export interface Projectile {
 
 /** Spawn a bolt at (x,y) heading toward (tx,ty) — the position of the player
  * identified by `targetId` at the moment of firing — optionally rotated off
- * dead-center by a random angle up to `aimSpreadDeg` in either direction —
- * `DifficultyMultipliers.enemyAimSpreadDeg`'s actual effect (0 = perfectly
- * aimed, same as before that difficulty axis existed). `damageMultiplier`
- * scales the base damage (Elite enemies hit harder — see `enemyAi.ts`).
+ * dead-center by a random angle up to `aimSpreadDeg` in either direction.
+ *
+ * `weapon` is the firing archetype's entry in `ENEMY_WEAPONS` and supplies
+ * speed, damage, collision size and its own inherent scatter. It replaces the
+ * old `damageMultiplier` parameter: the archetype ladder is baked into
+ * `weapon.damage` now, so the only thing left to scale is `damageScale` —
+ * multiplayer's player-count Elite scaling, which is Elite-only and cannot be
+ * a property of the weapon because it depends on how many players are in the
+ * game.
+ *
+ * `aimSpreadDeg` is the *difficulty's* `enemyAimSpreadDeg`; the weapon's own
+ * `spreadDeg` is added to it here rather than by the caller, so no call site
+ * can forget one half of the sum.
+ *
  * `rng` defaults to `Math.random` but `RaycasterEngine` always passes its own
  * seeded stream instead, same reason `enemyAi.ts`'s doc comment gives for
  * roam-target picking and fire-cooldown jitter — this changes enemy
- * behavior, which the replay system's determinism depends on. */
+ * behavior, which the replay system's determinism depends on.
+ *
+ * **Note the RNG consumption is now weapon-dependent.** A draw happens only
+ * when the total spread is above zero, so an Edge Case consumes one where it
+ * previously consumed none on Hard (`enemyAimSpreadDeg` 0). That is a
+ * deliberate, deterministic change — it shifts the seeded stream, which is
+ * part of why this lands with a `defaultHighscore.ts` regeneration. */
 export function spawnProjectile(
   list: Projectile[],
   x: number,
@@ -58,7 +88,8 @@ export function spawnProjectile(
   tx: number,
   ty: number,
   targetId: string,
-  damageMultiplier = 1,
+  weapon: EnemyWeapon = ENEMY_WEAPONS.normal,
+  damageScale = 1,
   aimSpreadDeg = 0,
   rng: () => number = Math.random,
   /** See `Projectile.srcEid` — telemetry attribution only. Deliberately last,
@@ -71,8 +102,9 @@ export function spawnProjectile(
   const d = Math.hypot(dx, dy) || 1;
   let dirX = dx / d;
   let dirY = dy / d;
-  if (aimSpreadDeg > 0) {
-    const angle = (rng() * 2 - 1) * (aimSpreadDeg * (Math.PI / 180));
+  const spreadDeg = aimSpreadDeg + weapon.spreadDeg;
+  if (spreadDeg > 0) {
+    const angle = (rng() * 2 - 1) * (spreadDeg * (Math.PI / 180));
     const cos = Math.cos(angle);
     const sin = Math.sin(angle);
     const rotX = dirX * cos - dirY * sin;
@@ -83,10 +115,12 @@ export function spawnProjectile(
   list.push({
     x,
     y,
-    vx: dirX * PROJECTILE_SPEED,
-    vy: dirY * PROJECTILE_SPEED,
-    damage: PROJECTILE_DAMAGE * damageMultiplier,
+    vx: dirX * weapon.speed,
+    vy: dirY * weapon.speed,
+    damage: weapon.damage * damageScale,
     targetId,
+    radius: weapon.radius,
+    archetype: weapon.archetype,
     srcEid,
   });
 }
@@ -134,7 +168,7 @@ export function updateProjectiles(
     // Player AABB hit takes precedence (you can get shot with your back to a wall).
     const target = targetsById.get(p.targetId);
     if (target) {
-      const reach = target.player.radius + PROJECTILE_RADIUS;
+      const reach = target.player.radius + (p.radius ?? PROJECTILE_RADIUS);
       if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
         damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
         onHit?.(p.srcEid, target.id, p.damage);
@@ -150,17 +184,20 @@ export function updateProjectiles(
   return damage;
 }
 
-/** Collect bolts as small glowing magenta orb draw jobs at eye level,
- * wall-occluded. See `collectOrbBillboards` in `sprites.ts`. */
+/** Collect bolts as small glowing orb draw jobs at eye level, wall-occluded,
+ * coloured by the archetype that fired them — magenta for a regular enemy,
+ * hot orange for an Elite's heavy shell, pale cyan for an Edge Case's spray.
+ * See `collectOrbBillboards` in `sprites.ts`.
+ *
+ * The palette is resolved per bolt rather than per call because one frame can
+ * hold bolts from all three archetypes at once. Passing a resolver keeps that
+ * allocation-free — grouping the list by archetype first would mean up to
+ * three temporary arrays every frame, on the render path. */
 export function collectProjectileBillboards(
   ctx: CanvasRenderingContext2D,
   player: Player,
   list: Projectile[],
   zBuffer: Float64Array,
 ): BillboardJob[] {
-  return collectOrbBillboards(ctx, player, list, zBuffer, {
-    halo: "rgba(255,80,200,0.35)",
-    core: "#ff3ea5",
-    center: "#ffd0ec",
-  });
+  return collectOrbBillboards(ctx, player, list, zBuffer, (p) => ENEMY_WEAPONS[p.archetype ?? "normal"].palette);
 }
