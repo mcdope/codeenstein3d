@@ -16,8 +16,11 @@
  * The second case is why the cap counts spawns rather than files, and is the
  * regression this file exists to pin.
  */
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { concurrencyByRemaining, runLaneOrchestrator } from "./laneOrchestrator.mjs";
+import { concurrencyByRemaining, LocalRunner, runLaneOrchestrator } from "./laneOrchestrator.mjs";
 
 /** A `Runner` stand-in: records every invocation and reports whatever the
  * caller wants, without spawning anything. */
@@ -833,5 +836,46 @@ describe("runLaneOrchestrator sole-worker accounting", () => {
     expect(u.soleWorker.episodes).toBeGreaterThan(0);
     expect(u.soleWorker.longestMs).toBeGreaterThan(0);
     expect(u.soleWorker.totalMs).toBeGreaterThanOrEqual(u.soleWorker.longestMs);
+  });
+});
+
+describe("LocalRunner env overrides", () => {
+  /**
+   * Several local lanes only mean anything if they can differ from each other:
+   * each needs its own share of the machine's concurrency, and all of them need
+   * to be pointed at one shared dev server (a telemetry child that starts its
+   * own stops it on exit, which would kill the server under the other lanes).
+   *
+   * Spawns a real child, because the whole risk is that the override never
+   * reaches the process — a fake runner would assert nothing about that.
+   */
+  it("merges its own env over the invocation's, and leaves the rest intact", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lane-runner-"));
+    const scriptPath = path.join(dir, "echo-env.mjs");
+    fs.writeFileSync(
+      scriptPath,
+      "console.log(JSON.stringify({ own: process.env.LANE_OWN, shared: process.env.LANE_SHARED }));",
+    );
+    const logPath = path.join(dir, "out.log");
+
+    const runner = new LocalRunner({ label: "local-1", cwd: dir, env: { LANE_OWN: "per-lane" } });
+    await runner.runInvocation({
+      scriptPath,
+      env: { ...process.env, LANE_OWN: "from-invocation", LANE_SHARED: "shared" },
+      logPath,
+      prefix: "",
+      watchdogMs: 30000,
+      sigtermGraceMs: 1000,
+    });
+
+    const printed = JSON.parse(fs.readFileSync(logPath, "utf8").trim());
+    expect(printed.own).toBe("per-lane"); // the runner's own value wins
+    expect(printed.shared).toBe("shared"); // everything else survives the merge
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("defaults to no overrides, so a single-lane capture is unchanged", () => {
+    expect(new LocalRunner({ cwd: "/tmp" }).env).toEqual({});
+    expect(new LocalRunner({ cwd: "/tmp" }).label).toBe("local");
   });
 });
