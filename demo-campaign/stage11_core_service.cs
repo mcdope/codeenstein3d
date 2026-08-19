@@ -23,6 +23,7 @@ class CoreService {
         return Validate(processed) && processed > 0;
     }
 
+    // TODO: this handler swallows the parse error and returns an empty result
     bool Validate(int count) {
         if (count == 0 || count > 10000) {
             return false;

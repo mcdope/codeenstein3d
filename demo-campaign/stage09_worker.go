@@ -21,6 +21,7 @@ func ProcessBatch(items []int, limit int) int {
 // TODO: jobQueueDepth is read by the old monitoring dashboard that was decommissioned last year, but nothing has stopped updating it since — decide whether anything still needs this before the next release.
 var jobQueueDepth = 0
 
+// TODO: the retry counter is never reset, so a flaky peer wedges it
 func retryWithBackoff(attempts int, ok bool) bool {
 	if ok {
 		return true
