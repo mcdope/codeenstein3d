@@ -12,6 +12,28 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The harness's throughput ceiling was one Node event loop, and sharding it is worth 1.60x (2026-08-19).** This closes the "decouple bot decisions from engine, for more performance" backlog item, and it closes it on an answer none of the item's three clauses named.
+
+  **What the item predicted, and what was actually true.** Stage 0a had measured transport at 54% of per-decision cost at concurrency 12, rising 2.5x from c=8 to c=20 while throughput stayed flat — a queueing signature. The conclusion drawn from it was "the fix is fewer round trips", i.e. move the bot's decision loop into the page. That conclusion outran the evidence: every one of those measurements was taken through a *single* `chromium.launch()` with N contexts, so nothing in the data distinguished "a CDP round trip is expensive" from "twelve attempts are queueing on one pipe".
+
+  **Three arms, 24 seed-pinned attempts each, ablation on, all doing byte-identically the same work (205,128 decisions on every arm):**
+
+  | arm | wall | transport/decision | CPU idle |
+  |---|---|---|---|
+  | 1 process x concurrency 12 | 340.5s | 11.90ms | 53.5% |
+  | 1 process x concurrency 12, **4 browsers** | 363.0s | 12.76ms | 43.4% |
+  | **4 processes x concurrency 3** | **213.0s** | 7.14ms | **6.9%** |
+
+  The middle arm is the one that names the cause, and it is the arm that would not have been run if the question had been "does sharding help?" instead of "what exactly is saturated?". Giving one process four browsers changes nothing — it is *slightly worse* — so the queue is neither the CDP socket nor the browser process. It is the single Node event loop, dispatching ~1,200 round trips a second and resuming twelve interleaved attempts off one poll phase. Its CPU was never the limit either: user-mode time was ~0.5 of 16 cores throughout.
+
+  An **A/B/A drift control** bracketed the treatment and the two A arms agreed to within one second (341s / 340s), transport to 0.05ms, CPU idle to 0.2pp — so the 1.60x is not thermal drift or background load.
+
+  **Shipped as local lane sharding**, not as a new mechanism: the capture already ran each lane as its own Node process, so `LOCAL_LANES` local runners now share the machine's existing concurrency budget instead of one taking all of it. Defaulted from core count and capped at 4, because a 2-core lane host would thrash. Two things had to become per-runner for it to be safe — each lane's share of the concurrency, and a *shared* dev server, since a telemetry child that starts its own also stops it on exit and would have killed the server under the lanes still running. The URL goes to local lanes only: `SshRunner` forwards every `CODEENSTEIN_*` key, so setting it globally would point the remote lanes at the orchestrator's own machine.
+
+  **Stage 2b (the in-page decision loop) is therefore not being built, and this is the entry that should stop it being re-attempted for throughput.** After sharding, the machine sits at 6.9% idle — it is CPU-bound, not transport-bound, so deleting the remaining round trips would buy little on this hardware while costing a rearchitecture of the bot/page boundary. The design was worked out far enough to be recoverable if it is ever wanted for a *different* reason (a deathmatch opponent needs the decision loop in the page regardless): the single-player `Bot` touches the page in exactly five places, all through `__codeensteinTestHooks`, and every module below it is pure JS with no Node builtins.
+
+  **Also fixed, found by walking into it:** `CODEENSTEIN_CAPTURE_OUT` was `path.join(REPO_ROOT, out)`, so an absolute path built a mirror of itself inside the working tree. The result is an untracked directory in the repo, and the *next* capture refuses to start on a dirty tree — the same guard that has already cost one four-hour arm.
+
 - [x] **The capture protocol, fixed where the step-granularity run broke it (2026-08-19).** Three changes, each paying off a cost that capture had already incurred.
 
   **Seeds are paired across arms, on by default.** Two arms are only comparable if they played the same maps and loot rolls; unpinned, they did not, and that is where the 21-24pp identical-code control spread came from. `qualifyLoop` now hands each attempt its ordinal, the telemetry script derives `seed = base + start + ordinal`, and the capture gives each invocation a `start` so an arm covers a contiguous range per combo even when its chunk boundaries differ from the other arm's. Both arms therefore draw the same *set* of seeds — exact per-attempt pairing is neither needed nor achievable when lanes differ in speed. Verified rather than assumed: two separate processes at the same base and start produce **byte-identical telemetry**. `CODEENSTEIN_CAPTURE_SEED_BASE=random` restores unpinned behaviour, which is the right mode when the spread *itself* is the measurement.

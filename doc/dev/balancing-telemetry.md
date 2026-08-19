@@ -224,6 +224,18 @@ Three numbers, all real time, all per decision:
 
 **End to end it is worth 11.5%, not the 4.2x the engine numbers suggest.** Three interleaved reps, seed pinned, identical decision counts (92,724) in every run: control **196.7s** (199/192/199), ablated **174.0s** (176/178/168). Interleaved on purpose — the governor here is `schedutil` and this repo has a recorded case of DVFS flipping the sign of a light-duty comparison. Transport *grew* as the engine got cheaper (11.06 -> 13.17ms/decision): the bottleneck moved onto the shared CDP connection rather than disappearing.
 
+**SUPERSEDED 2026-08-19 — the saturated thing was the Node event loop, and it is fixable without touching the bot.** Everything above was measured through a *single* `chromium.launch()` with N contexts, driven by a *single* Node process, so it could not distinguish "a CDP round trip is expensive" from "twelve attempts are queueing on one pipe". Three arms of 24 seed-pinned attempts, byte-identically the same work on each (205,128 decisions):
+
+| arm | wall | transport/decision | CPU idle |
+|---|---|---|---|
+| 1 process x concurrency 12 | 340.5s | 11.90ms | 53.5% |
+| 1 process x concurrency 12, **4 browsers** | 363.0s | 12.76ms | 43.4% |
+| **4 processes x concurrency 3** | **213.0s** | 7.14ms | **6.9%** |
+
+Four browsers in one process change nothing, so it is neither the CDP socket nor the browser process — it is the one event loop dispatching ~1,200 round trips a second. An A/B/A drift control agreed to within one second. **This is why `run-balancing-capture.mjs` now runs several local lanes** (`CODEENSTEIN_CAPTURE_LOCAL_LANES`, defaulted from core count): each lane is its own Node process, and they share the machine's existing concurrency budget rather than one taking all of it.
+
+Note the scope: **only the capture shards.** A bare `balancing:telemetry`/`balancing:scan` is still one process and still has this ceiling — which is fine for a smoke test and is why the numbers above still describe it accurately.
+
 **And concurrency cannot buy past it — the transport is saturated.** Swept ablated at 24 attempts per point (n=1 each, so read the spread, not the ranking):
 
 | concurrency | wall | attempts/min | engine ms/dec | transport ms/dec |
@@ -302,6 +314,7 @@ Concretely: a fine-alignment epsilon like `MINE_REALIGN_EPS` (0.01 rad) converge
   - Corollary, and the load-bearing one: **`attemptsUsed` counts attempts *started*, not samples obtained.** It read 60 on a cell that produced 38. Any denominator that matters should be counted as distinct `rid`s in the event log instead — `rid` is `${pid}-${random}-${counter}` (`run-balancing-telemetry.mjs`'s `EVENT_SESSION_ID`), so it is unique per invocation and several invocations can append to one cell's NDJSON without colliding or double-counting.
 - **The script finishes without exiting, so a non-zero exit code is not automatically a failure.** `main()` writes the output JSON, prints `Telemetry saved`, and resolves — but nothing calls `process.exit(0)` and a dangling Playwright handle can keep the event loop alive indefinitely. A watchdog then kills it and reports failure for a run whose work completed and whose JSON is already on disk. A driver that deletes output on non-zero rc will destroy good results; check the log for `Telemetry saved` first. Observed 2026-08-04: a complete cell was deleted exactly this way.
 - Tune `CODEENSTEIN_CAMPAIGN_LANES`/`_CONCURRENCY` to the machine — each lane's invocation gets its own `CODEENSTEIN_TELEMETRY_CONCURRENCY`-way internal browser-context concurrency (default 8, lower than `balancing:telemetry`'s own default of 12, since `LANES` of these run at once), so total concurrent browser contexts is roughly `LANES × CONCURRENCY_PER_LANE`.
+  - **A capture splits its *local* share further, across processes rather than contexts** (`CODEENSTEIN_CAPTURE_LOCAL_LANES`, defaulted from core count, capped at 4). The total local context count is unchanged — `CODEENSTEIN_CAPTURE_CONCURRENCY` is divided among the local lanes — because the point is to divide the queue, not to ask more of the machine. Worth 1.60x; see the phase-timing section above.
 - **The queue/resumability/watchdog engine itself lives in `scripts/lib/laneOrchestrator.mjs`**, shared with `run-balancing-campaign-multiplayer.mjs` (see [SSH-host parallelism](#ssh-host-parallelism) below) — `run-balancing-campaign.mjs` itself only supplies the combo list, env vars, and how to read an existing output file's qualifying count; a `Runner` (local `child_process`, or a remote SSH host) is what actually executes an invocation.
 
 ## SSH-host parallelism
