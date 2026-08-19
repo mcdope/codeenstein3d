@@ -13,7 +13,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | Function, method, class or global | A room of that level |
 | Function | An enemy in its room — HP scales with its cyclomatic complexity |
 | Function with more than 5 params or more than 3 nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
-| Function at extreme complexity (≥40) | An **Elite pack** — 2× the room's usual HP budget, led by a gold-tinted Elite dealing 2× damage with a 60% chance of an extra weapon drop |
+| Function at extreme complexity (≥40) | An **Elite pack** — 2× the room's usual HP budget, led by a gold-tinted Elite dealing 2× melee damage (and one heavy, slow, dodgeable ranged shell — see [Enemies](#enemies)) with a 60% chance of an extra weapon drop |
 | Global variable | An acid pool (hazard terrain) |
 | Private/protected method | A locked room, gated behind a key placed somewhere already reachable |
 | `goto`/label pair | A linked teleporter pad pair |
@@ -77,6 +77,16 @@ Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — 
 ## Enemies
 
 Enemies roam randomly within their home room until they notice you — which requires being within roughly 7.5 tiles **and** having line-of-sight, or taking a hit from you at any range (getting shot always counts as being spotted). Once aggro'd, they chase you around corners, and attack with melee at close range or ranged plasma bolts if they have line-of-sight at a distance.
+
+**Not every enemy fires the same bolt**, and the colour tells you which is coming at you before it arrives:
+
+| Bolt | Fired by | What it's like |
+|---|---|---|
+| Magenta | A regular enemy | The baseline — moderate speed, moderate damage, dead-on aim |
+| Orange | An **Elite** | One heavy shell, fired rarely and travelling slowly. It hurts far more than anything else in the game if it lands, and it is slow enough to step out of the way of — dodging an Elite's shot is a real option, not a coin flip |
+| Cyan | An **Edge Case** | Fast, weak and sprayed slightly off-target. Individually trivial, but they fire roughly twice as often as anything else, so a group of them chips at you steadily while you deal with something else |
+
+Over time each type deals about the same damage per second as it always did — what changed is how that damage arrives, so an Elite is a threat you react to and an Edge Case is one you tolerate.
 
 **Edge Cases** are a separate, small breed found only inside the widenings and alcoves dressed into a corridor (never in a normal room): a jarring cyan tint and a noticeably smaller silhouette make them easy to tell apart from a real enemy at a glance. They have very little HP, dart around erratically rather than roaming smoothly, move faster than any other enemy in the game (though not faster than your own sprint), and hit for much less than a normal enemy's melee — a nuisance to swat on your way through, not a real threat.
 
