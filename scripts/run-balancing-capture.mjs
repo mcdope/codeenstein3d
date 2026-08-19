@@ -69,7 +69,21 @@ import os from "node:os";
 
 const execFileAsync = promisify(execFile);
 
-const OUT_DIR = path.join(REPO_ROOT, process.env.CODEENSTEIN_CAPTURE_OUT ?? "balancing_capture");
+/**
+ * Where the capture banks its results. Relative names resolve against the repo
+ * (`balancing_capture`, `balancing_capture_armB`), which is what every caller
+ * passes.
+ *
+ * An *absolute* path is honoured as given rather than joined onto the repo
+ * root, which used to silently build a mirror of the whole path inside the
+ * working tree — `/home/u/tmp/x` became `<repo>/home/u/tmp/x`. That is not a
+ * cosmetic mistake: the result is an untracked directory in the repo, and the
+ * very next capture refuses to start on it, since remote lanes check out HEAD
+ * and a dirty tree means the lanes would run different code from local.
+ */
+const OUT_DIR = process.env.CODEENSTEIN_CAPTURE_OUT
+  ? path.resolve(REPO_ROOT, process.env.CODEENSTEIN_CAPTURE_OUT)
+  : path.join(REPO_ROOT, "balancing_capture");
 /**
  * Paired gameplay seeds across arms — **on by default**, and the default value
  * is deliberately constant rather than random.
