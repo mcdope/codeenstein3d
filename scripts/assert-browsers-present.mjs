@@ -8,10 +8,12 @@
  *
  * CI runs the browser jobs inside `mcr.microsoft.com/playwright:<version>`
  * rather than installing browsers and their OS libraries per run. That removed
- * `playwright install-deps`, an apt-get against Azure's mirrors which cost
- * 210-442s per run across seven invocations and whose *variance* was the real
- * problem: the same firefox leg measured 18s and 283s on two consecutive green
- * runs, and it intermittently hung outright.
+ * `playwright install-deps`, an apt-get against Azure's mirrors run seven times
+ * per workflow. Its *mean* was never the problem and the swap does not improve
+ * it — 206-210s of apt became 196-240s of image pull. Its **tail** was: three
+ * pre-container master runs cost 210s, **5903s** and 206s, the middle one
+ * spending 2358s/2119s/865s/493s in four separate apt steps. A deliberate
+ * trade of ~30s of mean for the removal of that. See `doc/dev/history.md`.
  *
  * The cost of that is a coupling: the image tag and the npm package must move
  * together, because the image bakes in specific browser builds. Left
