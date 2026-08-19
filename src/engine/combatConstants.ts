@@ -21,15 +21,21 @@
  * module is dependency-free by construction so that no consumer ever has that
  * excuse: it imports nothing, and nothing here may ever import anything.
  *
- * The same property makes it the natural home for closing
- * `SIMULATION_BALANCE`'s documented gap — its comment in `engine.ts` names
- * `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`, `SPIKE_DPS`,
- * `MINE_DAMAGE_FALLOFF_FLOOR` and `PROJECTILE_SPEED` as uncovered, and says
- * covering them "means exporting each and extending this object". Two of those
- * five now live here. Folding them into the hash is deliberately *not* done
- * yet: it moves `balanceHash` and invalidates every shipped replay, so it
- * belongs after every other simulation change, followed by a single
- * `defaultHighscore.ts` regeneration. See `doc/dev/balancing-telemetry.md`.
+ * The same property made it the natural home for closing
+ * `SIMULATION_BALANCE`'s documented gap, and that gap is now **closed**: see
+ * `COMBAT_BALANCE` at the bottom, which folds every scalar in this module into
+ * the hash wholesale (`traps.ts` does the same with `TRAP_BALANCE`). The
+ * comment in `engine.ts` used to name `ELITE_DAMAGE_MULTIPLIER`,
+ * `EDGE_CASE_SPEED_MULTIPLIER`, `SPIKE_DPS`, `MINE_DAMAGE_FALLOFF_FLOOR` and
+ * `PROJECTILE_SPEED` as uncovered and deferred the work to "if one of them is
+ * ever tuned" — the per-archetype enemy weapon table tunes exactly those, so
+ * that condition fired.
+ *
+ * It was deferred this long because folding them in moves `balanceHash` and
+ * invalidates every shipped replay. That cost is real but it is paid **once**
+ * for any number of simulation changes, so the sequencing is unchanged: batch
+ * the balance work, close the hash last, regenerate `defaultHighscore.ts`
+ * once, afterwards. See `doc/dev/balancing-telemetry.md`.
  */
 
 /** Starting / maximum System Stability (health), as a percentage. */
@@ -97,3 +103,46 @@ export const ROCKET_DAMAGE_FALLOFF_FLOOR = 0.3;
 /** How close a rocket has to get to a living enemy to detonate — bigger than
  * a precise hitbox check so a near-miss still reads as a hit. */
 export const ROCKET_ENEMY_TRIGGER_RADIUS = 0.4;
+
+/**
+ * Every simulation scalar above, as one object, so `SIMULATION_BALANCE` can
+ * fold the lot in wholesale instead of naming the two or three someone
+ * happened to tune.
+ *
+ * **This is the same "hash the output, not a maintained list of inputs"
+ * reasoning the enemy roster and the `WEAPONS` table already get** — see
+ * `balanceHash.ts`. The difference is that a list of scalars *is* a
+ * maintained list, so the property is enforced rather than assumed:
+ * `simulationBalanceCoverage.test.ts` enumerates this module's exports and
+ * fails if a numeric one is missing here. Add a constant above, forget this
+ * object, and the test says so before the hash silently stops covering it.
+ *
+ * Ordering is irrelevant — `stableStringify` sorts keys, so a cosmetic
+ * reshuffle here does not invalidate a single replay.
+ */
+export const COMBAT_BALANCE = {
+  MAX_HEALTH,
+  AGGRO_RADIUS,
+  MOVEMENT_SPEED,
+  RANGED_RANGE,
+  FIRE_COOLDOWN_MIN,
+  FIRE_COOLDOWN_MAX,
+  ROAM_SPEED,
+  ROAM_ARRIVE,
+  ATTACK_RADIUS,
+  ATTACK_COOLDOWN,
+  ATTACK_DAMAGE,
+  ENEMY_RADIUS,
+  ELITE_DAMAGE_MULTIPLIER,
+  EDGE_CASE_SPEED_MULTIPLIER,
+  EDGE_CASE_DAMAGE_MULTIPLIER,
+  EDGE_CASE_RETARGET_RATE,
+  EDGE_CASE_ROAM_JITTER_RAD,
+  PROJECTILE_SPEED,
+  PROJECTILE_DAMAGE,
+  PROJECTILE_RADIUS,
+  ROCKET_SPEED,
+  ROCKET_BLAST_RADIUS,
+  ROCKET_DAMAGE_FALLOFF_FLOOR,
+  ROCKET_ENEMY_TRIGGER_RADIUS,
+} as const;
