@@ -2551,6 +2551,43 @@ describe("RaycasterEngine — firing", () => {
     }
   });
 
+  it("counts time spent reloading in telemetry", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    try {
+      const map = fakeMap({}, 12);
+      // The mirror of the test above: a full reserve, so emptying the magazine
+      // starts a real reload instead of the refusal that one measures.
+      const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets: 40, shells: 0, rockets: 0, smg: 0, gas: 0 },
+      });
+      engine.advance(0.016);
+      const snapshot = () =>
+        (window as unknown as { __codeensteinTestHooks?: { getTelemetrySnapshot: () => Record<string, number> } })
+          .__codeensteinTestHooks!.getTelemetrySnapshot();
+      for (let i = 0; i < 40 && lastStats(handlers).magazine > 0; i++) {
+        input.fireQueued = true;
+        engine.advance(0.16);
+      }
+      expect(lastStats(handlers).magazine).toBe(0);
+      // A reload only *begins* on the frame the magazine runs dry — `updateReload`
+      // runs before the firing code that starts it — so the clock starts ticking
+      // on the frames after it, and each one adds its own dt.
+      const before = snapshot().timeReloadingSec;
+      engine.advance(0.05);
+      const after = snapshot().timeReloadingSec;
+      expect(after - before).toBeCloseTo(0.05, 5);
+      // ...and it stops once the magazine is actually back, rather than running on.
+      for (let i = 0; i < 40 && lastStats(handlers).magazine === 0; i++) engine.advance(0.05);
+      expect(lastStats(handlers).magazine).toBeGreaterThan(0);
+      const done = snapshot().timeReloadingSec;
+      engine.advance(0.05);
+      expect(snapshot().timeReloadingSec).toBe(done);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
   it("keeps the old out-of-ammo path for a weapon with no magazine", () => {
     // Friday Hotfix is the one ranged weapon that streams straight from its
     // reserve, so it never reloads and keeps the original "check the pool,
