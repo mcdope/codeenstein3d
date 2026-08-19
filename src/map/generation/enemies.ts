@@ -5,18 +5,65 @@
  * enemies that populate corridor-breakup rooms. */
 import type { CodeEntity } from "../../parser/types";
 import type { Enemy, Point, Rect, Room, Tile } from "../types";
+import { isLockableRoom } from "./geometry";
+import { MAZE_THRESHOLD } from "./labyrinth";
 import { neighbors } from "./util";
 
 /** Hit points granted per point of cyclomatic complexity. */
 const HP_PER_COMPLEXITY = 25;
 
-/** Extra enemies spawned per this many complexity points, beyond the first. */
-const COMPLEXITY_PER_EXTRA_ENEMY = 10;
+/**
+ * Extra enemies spawned per this many complexity points, beyond the first.
+ *
+ * **Lowered 10 -> 5 on 2026-08-20, and the reason is that at 10 this constant
+ * was very nearly inert.** Real code is overwhelmingly trivial: measured with
+ * the real parser over 8,143 callable entities across laravel, curl, ripgrep,
+ * serilog and django, `complexityScore` runs p25=1, **p50=1**, p75=3, p90=6,
+ * p99=19. At one extra enemy per 10 points, **95.5% of entity rooms spawned
+ * exactly one enemy** (p99=2, max=4) — so the "packs scale with complexity"
+ * design existed mostly on paper.
+ *
+ * The sweep, as entity-room enemy count against today's baseline, and the
+ * share of rooms that get more than one body:
+ *
+ * | divisor | enemies | rooms with >1 |
+ * |---|---|---|
+ * | 10 | baseline | 4.5% |
+ * | 8 | +3.2% | 6.8% |
+ * | 6 | +9.0% | 10.1% |
+ * | **5** | **+15.7%** | **14.3%** |
+ * | 4 | +26.6% | 20.3% |
+ * | 3 | +43.7% | 27.9% |
+ *
+ * 5 lands the second body at complexity 5 — above p75 of real functions, so a
+ * getter stays a single enemy and only code with actual branching gets a pack.
+ * Entity-room enemies are ~40% of a level's population (the rest is corridor
+ * Edge Cases), so this is roughly **+6% enemies per level**.
+ *
+ * **This is deliberately the only difficulty lever in its change.** The
+ * per-archetype weapon table that shipped the day before held mean ranged DPS
+ * fixed precisely so that this constant could move on its own and be
+ * attributable — see `ENEMY_WEAPONS` in `engine/combatConstants.ts` and the
+ * skirmisher swap below, which is DPS-neutral for the same reason.
+ *
+ * **Not a free change**: `count` decides how many rng draws `spawnEnemies`
+ * makes, and `mapGenerator.ts`'s `generate()` is one ordered draw sequence, so
+ * moving this re-rolls every level's layout and invalidates every recorded
+ * replay. It is paid for with a single `defaultHighscore.ts` regeneration.
+ */
+const COMPLEXITY_PER_EXTRA_ENEMY = 5;
 /**
  * Complexity at/above which a function spawns an Elite pack instead of a plain
- * one — this is exactly the complexity a plain pack would hit 5 members at
- * (`1 + floor(40/10)`), so "extreme complexity" means "would otherwise be the
- * biggest kind of pack, so make it a boss-tier encounter instead."
+ * one. It used to justify itself as "exactly the complexity a plain pack would
+ * hit 5 members at (`1 + floor(40/10)`)" — that arithmetic died with the
+ * `COMPLEXITY_PER_EXTRA_ENEMY` 10 -> 5 change above, which makes 40 a 9-member
+ * pack. **The threshold was deliberately left at 40 anyway**, because it is
+ * calibrated against measured Elite frequency (below), not against the pack
+ * curve; moving it to preserve the old coincidence would change how often
+ * Elites appear, which is a separate question with its own evidence.
+ *
+ * What it means now is simply "extreme complexity, well past anything real
+ * code produces at p99 (19), gets a boss-tier encounter instead of a pack."
  *
  * The threshold itself is *not* the lever to reach for. Measured across 19
  * repositories, Elites are far from rare — 10.9 per 1,000 enemies in vim, 3.1 in
@@ -113,6 +160,104 @@ const EDGE_CASE_HP_MIN = 10;
 const EDGE_CASE_HP_MAX = 15;
 
 /**
+ * How much of a pack's HP budget the anchor of a *lockable* room takes, as a
+ * multiple of a regular member's share — see `isLockableRoom` (`geometry.ts`),
+ * i.e. a private or protected callable, the same code that becomes a
+ * key-locked room.
+ *
+ * **The room's total is unchanged, which is the whole point.** A private
+ * helper reads as guarded, so its pack gets a heavier gatekeeper and thinner
+ * escorts instead of N identical bodies — but every enemy still fires the same
+ * weapon, so the room's *instantaneous* DPS moves by exactly zero. Integrated
+ * damage-taken moves about ±12%, and the sign is the player's choice rather
+ * than the generator's: focus the anchor first and you take more, clear the
+ * escorts first and you take less.
+ *
+ * That is why the guard lives on the HP axis and not the archetype axis. With
+ * only `normal` and `edgeCase` available inside an entity room (flagging a
+ * member `elite` would breach "one Elite per Elite room", which
+ * `stage-campaign.mjs` and every archetype report rely on), *every* archetype
+ * move is a DPS cut — there is no "tougher" archetype to reach for. HP shape is
+ * the one axis orthogonal to `ENEMY_WEAPONS`.
+ *
+ * No-op for a single-member pack, and deliberately not applied to Elite rooms:
+ * their `count` is *derived from* `ELITE_MEMBER_HP_CAP`, so weighting the
+ * anchor would breach that cap by construction. An Elite anchor is already the
+ * gatekeeper.
+ */
+const GUARD_ANCHOR_WEIGHT = 2;
+
+/**
+ * A `switch`/`match`-heavy function's pack trades its tail member for a fast,
+ * fragile skirmisher — the same archetype the corridor breakup rooms use, so
+ * it fires the Edge Case weapon (`ENEMY_WEAPONS.edgeCase`: quick, weak, wide).
+ * One branchy function reads as a scatter of small cases around one real body.
+ *
+ * **Measured coverage, because the gates nearly killed it.** A swap needs a
+ * pack of at least `MIN_PACK` so a real enemy is always left behind, and
+ * `MIN_PACK` is the binding constraint: at 4 (complexity >= 15) it fired on
+ * **1 enemy in 7,704** across 252 generated corpus levels — a rule that does
+ * not exist. At 3 it reached 0.12%. At 2 it reaches **0.91% of enemies and
+ * 3.22% of entity rooms**, which is the honest ceiling, because
+ * `switchBranches > 0` is only 4.7% of real entities and most of those are
+ * single-enemy rooms that cannot be mixed at all.
+ *
+ * 3.22% is thin but it is the same order as other flavour features here — Acid
+ * Overflow fires on 2.0% of entities — so it is kept at 2 and its coverage
+ * stated rather than quietly gated into nonexistence.
+ *
+ * **Not DPS-neutral per room, and it cannot be.** A swap is the only archetype
+ * move available inside an entity room, and every archetype move is a *cut*
+ * (normal 4.21/s against edgeCase 1.68/s — quoted rather than imported from
+ * `ENEMY_WEAPONS`, because the map layer must never import the engine layer;
+ * see `architecture.md`). On a 2-member pack that is about -30% of the room's
+ * ranged output; across the corpus it is roughly **-1% of level DPS**, which is
+ * the number that matters and the one `balancing:budget` checks.
+ *
+ * Never index 0: the anchor is the function itself, and `planAcidOverflows`
+ * finds a room's pack leader by `e.entity === room.entity` with `findIndex`,
+ * which returns index 0.
+ */
+const SKIRMISHER_MIN_CASE_BRANCHES = 1;
+const SKIRMISHER_MIN_PACK = 2;
+const SKIRMISHERS_PER_PACK = 1;
+
+/**
+ * Whether `entity`'s pack should trade its tail member for a skirmisher.
+ *
+ * **Labyrinth rooms are excluded, and that exclusion is load-bearing rather
+ * than tidy.** An Edge Case roams on `EDGE_CASE_RETARGET_RATE` /
+ * `EDGE_CASE_ROAM_JITTER_RAD`, both tuned for the open widenings a corridor
+ * gets dressed with. A room at `nestingDepth >= MAZE_THRESHOLD` is carved into
+ * a maze, and the exit gate keys off `Enemy.home` (`exitRoomHasAliveEnemy`), so
+ * a skirmisher pinballing in a maze corner is a wedge risk — the class of bug
+ * that has cost this project weeks. Excluding them removes it by construction
+ * instead of relying on a capture to disprove it.
+ *
+ * Pure function of the entity: no `rng` parameter, which is how the
+ * zero-extra-draw property is enforced rather than asserted.
+ */
+function wantsSkirmisher(entity: CodeEntity, count: number): boolean {
+  if (count < SKIRMISHER_MIN_PACK) return false;
+  if ((entity.switchBranches?.caseCount ?? 0) < SKIRMISHER_MIN_CASE_BRANCHES) return false;
+  return (entity.nestingDepth ?? 0) < MAZE_THRESHOLD;
+}
+
+/**
+ * Per-member HP for a pack of `count` sharing `total`, with the anchor taking
+ * `anchorWeight` shares. Returns `[anchorHp, memberHp]`, and the anchor absorbs
+ * the rounding remainder so the pack sums to `total` exactly.
+ */
+function packHitPoints(total: number, count: number, anchorWeight: number): [number, number] {
+  if (count <= 1 || anchorWeight === 1) {
+    const each = Math.round(total / count);
+    return [each, each];
+  }
+  const member = Math.round(total / (count + anchorWeight - 1));
+  return [total - (count - 1) * member, member];
+}
+
+/**
  * Populate rooms with enemies. Classes, interfaces, and traits get rooms but no
  * enemy — only callable entities are "monsters". A room's total HP scales with
  * the entity's cyclomatic complexity and is always split into a pack, so that no
@@ -132,7 +277,9 @@ export function spawnEnemies(
   multiplayerSpawns: readonly Point[] = [],
 ): Enemy[] {
   const enemies: Enemy[] = [];
-  for (const room of rooms) {
+  // Indexed because `isLockableRoom` needs it — index 0 is the spawn room and
+  // is never lockable, however private its entity happens to be.
+  for (const [roomIndex, room] of rooms.entries()) {
     if (room.entity.kind !== "function" && room.entity.kind !== "method") continue;
 
     const complexity = Math.max(1, room.entity.complexityScore);
@@ -149,12 +296,27 @@ export function spawnEnemies(
     const count = elite
       ? Math.ceil(eliteTotal / ELITE_MEMBER_HP_CAP)
       : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);
-    const hp = elite
-      ? Math.round(eliteTotal / count)
-      : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
+    // A guarded room concentrates its budget in the anchor. Elite packs are
+    // exempt: their `count` is derived from `ELITE_MEMBER_HP_CAP`, so weighting
+    // the anchor would breach that cap by construction.
+    const anchorWeight = !elite && isLockableRoom(room, roomIndex) ? GUARD_ANCHOR_WEIGHT : 1;
+    const total = elite
+      ? eliteTotal
+      : Math.max(HP_PER_COMPLEXITY, Math.round(complexity * HP_PER_COMPLEXITY));
+    const [anchorHp, memberHp] = packHitPoints(total, count, anchorWeight);
+    // Trades the pack's *tail* member, so a before/after roster diff reads as
+    // one changed row rather than a reshuffle.
+    const skirmishers = !elite && wantsSkirmisher(room.entity, count) ? SKIRMISHERS_PER_PACK : 0;
+    const firstSkirmisher = count - skirmishers;
     const home = { x: room.x, y: room.y, w: room.w, h: room.h };
 
     for (const [index, pos] of enemyPositions(room, count, exit, rng, multiplayerSpawns).entries()) {
+      // `ELITE_MEMBER_HP_CAP`'s own doc says no enemy this generator produces
+      // may exceed it "whatever the source file does", but the code only ever
+      // applied it on the Elite branch. Applied to every member here — it does
+      // not bind today (the largest non-elite member is well under it), so this
+      // closes a doc/code gap rather than adding a knob.
+      const hp = Math.min(index === 0 ? anchorHp : memberHp, ELITE_MEMBER_HP_CAP);
       enemies.push({
         x: pos.x,
         y: pos.y,
@@ -179,7 +341,14 @@ export function spawnEnemies(
         // unwinnable fight for an unsurvivable one. It also keeps "one Elite
         // per Elite room" true for every report that counts the archetype.
         elite: elite && index === 0,
-        edgeCase: false,
+        // A skirmisher keeps its peers' complexity-derived HP rather than the
+        // corridor 10-15 roll. Three reasons: that roll *draws rng*, which
+        // would break the zero-extra-draw property this rule is built on; the
+        // room's total must stay exactly `25 * complexity` so density stays the
+        // only difficulty lever; and a thinner skirmisher is counter-intuitively
+        // *worse* for neutrality, since it dies sooner and removes more of the
+        // room's damage than a uniform one does.
+        edgeCase: skirmishers > 0 && index >= firstSkirmisher,
       });
     }
   }
