@@ -14,7 +14,8 @@
 
 /**
  * @param {object} opts
- * @param {() => Promise<any>} opts.runAttempt - plays one attempt, returns a
+ * @param {(ordinal: number) => Promise<any>} opts.runAttempt - plays one
+ *   attempt, returns a
  *   run-result object.
  * @param {(run: any) => boolean} opts.isQualifying - whether a run counts
  *   toward `requiredQualifyingRuns`.
@@ -48,7 +49,12 @@ export async function runQualifyLoop({
 
   while (qualifyingRuns.length < requiredQualifyingRuns && attempts < attemptCap) {
     const batchSize = Math.min(concurrency, attemptCap - attempts);
-    const batch = await Promise.all(Array.from({ length: batchSize }, () => runAttempt()));
+    // The ordinal is this attempt's position within the invocation, counting
+    // from 0. It exists so a caller can make an attempt's *inputs* a function
+    // of its position — specifically the gameplay seed, so two arms of an A/B
+    // can play the same set of maps instead of independently random ones. See
+    // `run-balancing-telemetry.mjs`'s `CODEENSTEIN_TELEMETRY_SEED_BASE`.
+    const batch = await Promise.all(Array.from({ length: batchSize }, (_, i) => runAttempt(attempts + i)));
 
     const crashedInBatch = batch.filter((run) => run.reason?.startsWith("attemptCrashed")).length;
     // If literally every attempt in a batch crashed, the shared browser

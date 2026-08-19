@@ -68,6 +68,52 @@ import { envNumber } from "./lib/envNumber.mjs";
 const execFileAsync = promisify(execFile);
 
 const OUT_DIR = path.join(REPO_ROOT, process.env.CODEENSTEIN_CAPTURE_OUT ?? "balancing_capture");
+/**
+ * Paired gameplay seeds across arms — **on by default**, and the default value
+ * is deliberately constant rather than random.
+ *
+ * Two arms of an A/B are only comparable if they played the same maps and loot
+ * rolls. Unpinned, they do not: the 2026-08-19 step-granularity capture's two
+ * *identical-code* control arms differed by **21-24pp** on per-level clear
+ * rate, a noise floor twice the effect the experiment was sized to detect,
+ * produced entirely by independently random rolls of a fixed campaign.
+ *
+ * Every invocation is handed `SEED_BASE + <attempts already accounted for this
+ * combo>`, so an arm covers a contiguous range per combo even though its chunk
+ * boundaries differ from the other arm's. Both arms therefore draw the same
+ * *set* of seeds, which is what removes the variance; exact per-attempt
+ * pairing is not needed and is not achievable when lanes differ in speed.
+ *
+ * Set `CODEENSTEIN_CAPTURE_SEED_BASE=random` for an unpinned capture (the old
+ * behaviour) — appropriate when measuring the *spread itself* rather than
+ * comparing arms.
+ */
+const SEED_BASE_RAW = process.env.CODEENSTEIN_CAPTURE_SEED_BASE ?? "1000000";
+const SEED_BASE = SEED_BASE_RAW === "random" ? null : Number(SEED_BASE_RAW);
+if (SEED_BASE !== null && !Number.isInteger(SEED_BASE)) {
+  console.error(`CODEENSTEIN_CAPTURE_SEED_BASE must be an integer or "random", got ${SEED_BASE_RAW}`);
+  process.exit(1);
+}
+/**
+ * Skip the renderer work no capture ever looks at — **on by default**.
+ *
+ * `advance()` is unconditionally `simulate(dt)` + `render()`, so every bot
+ * decision pays a full raycast frame into a canvas nobody reads, ~30k times per
+ * attempt. Ablating the draw-pass groups that do not feed gameplay measured
+ * **11.5% faster end to end** (196.7s -> 174.0s over three interleaved
+ * seed-pinned reps) and **byte-identical telemetry** — 81,080 bytes over 8
+ * levels x 12 attempts. See `doc/dev/balancing-telemetry.md`.
+ *
+ * **`sprites`, `walls` and `shade` are deliberately absent and must stay so**:
+ * the `sprites` branch is what sets `this.target` from
+ * `findTargetUnderCrosshair` (its `else` sets `this.target = null`), and
+ * `walls` fills the z-buffer targeting reads — ablating either stops the bot
+ * being able to shoot at all.
+ *
+ * Set `CODEENSTEIN_CAPTURE_ABLATE=` (empty) to render normally, e.g. when
+ * capturing screenshots or diagnosing something visual.
+ */
+const ABLATE = process.env.CODEENSTEIN_CAPTURE_ABLATE ?? "floor,effects,viewmodel,hud";
 const EVENTS_DIR = path.join(OUT_DIR, "events");
 const LOGS_DIR = path.join(OUT_DIR, "logs");
 const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts", "run-balancing-telemetry.mjs");
@@ -123,6 +169,10 @@ const TARGET_CHUNK_MIN = envNumber("CODEENSTEIN_CAPTURE_TARGET_CHUNK_MIN", 45, {
 /** Never below this: a chunk pays a fixed browser+vite startup cost, so tiny
  * chunks spend most of their time on overhead. */
 const MIN_CHUNK = envNumber("CODEENSTEIN_CAPTURE_MIN_CHUNK", 5, { integer: true, min: 1 });
+/** Fraction of the watchdog a chunk may be sized to fill. Well under 1 because
+ * a lane's recorded rate is an average, and the chunk that overruns is by
+ * definition a slower-than-average one. */
+const WATCHDOG_CHUNK_MARGIN = 0.7;
 /** Learned lane speeds, carried between runs. Gitignored scratch — losing it
  * only costs one round of recalibration. */
 const RATES_FILE = path.join(REPO_ROOT, "lane-speed.json");
@@ -251,7 +301,37 @@ function chunkFor(_combo, { remaining, ratePerMin, laneCount = 1 }) {
   // buys a real measurement within minutes.
   if (!ratePerMin || ratePerMin <= 0) return Math.min(MIN_CHUNK, CHUNK, evenShare, Math.max(1, remaining));
   const sized = Math.round(ratePerMin * TARGET_CHUNK_MIN);
-  return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, evenShare, Math.max(1, remaining));
+  // `MIN_CHUNK` is a floor against startup overhead, not a promise the lane can
+  // deliver it — and the two knobs never used to check each other. A lane
+  // slower than `MIN_CHUNK / watchdogMinutes` cannot finish its smallest legal
+  // chunk before the watchdog fires, and because a *killed* invocation records
+  // no rate, its stale rate is never revised: it asks for the same chunk and
+  // times out again, forever. Measured 2026-08-19: two lanes burned 130 minutes
+  // each, three times, and banked nothing.
+  //
+  // So cap the chunk at what actually fits, with a margin — a lane's rate is an
+  // average and a slow chunk is exactly when it matters. `laneFitsWatchdog`
+  // handles the case where even one attempt will not fit.
+  const fitsInWatchdog = Math.floor(ratePerMin * watchdogMinutes() * WATCHDOG_CHUNK_MARGIN);
+  return Math.min(Math.max(MIN_CHUNK, sized), CHUNK, evenShare, Math.max(1, remaining), Math.max(1, fitsInWatchdog));
+}
+
+/** The watchdog in minutes — the same budget `runInvocation` enforces. */
+function watchdogMinutes() {
+  return WATCHDOG_MS / 60_000;
+}
+
+/**
+ * Can this lane finish even a single attempt inside the watchdog?
+ *
+ * A lane that cannot is not slow, it is broken for this campaign: every
+ * invocation it takes is 130 minutes of nothing, and it never learns better
+ * because rates come only from invocations that *finish*. Excluding it loudly
+ * is strictly better than discovering it in the log hours later.
+ */
+export function laneFitsWatchdog(ratePerMin, watchdogMin = watchdogMinutes(), margin = WATCHDOG_CHUNK_MARGIN) {
+  if (!ratePerMin || ratePerMin <= 0) return true; // unmeasured: let calibration decide
+  return ratePerMin * watchdogMin * margin >= 1;
 }
 const SIGTERM_GRACE_MS = 5000;
 /** Computed once at startup: the staged campaign never changes mid-capture —
@@ -328,6 +408,15 @@ function envFor(combo, sequence, outputPath, eventLogPath, { inFlightBefore = 0,
     CODEENSTEIN_TELEMETRY_EVENT_LOG: eventLogPath,
     CODEENSTEIN_TELEMETRY_OUTPUT_FILE: outputPath,
   };
+  if (SEED_BASE !== null) {
+    env.CODEENSTEIN_TELEMETRY_SEED_BASE = String(SEED_BASE);
+    // Offset by what this combo has already accounted for, so concurrent and
+    // successive chunks do not all replay the same seeds. A retried chunk
+    // deliberately reuses its range — repeating a seed is the correct response
+    // to losing its result.
+    env.CODEENSTEIN_TELEMETRY_SEED_START = String(scanExisting(combo).qualifying + reservedAttempts);
+  }
+  if (ABLATE) env.CODEENSTEIN_TELEMETRY_EXTRA_QUERY = `&ablate=${ABLATE}`;
   // Full campaign by default: a capture exists to measure a whole progression,
   // and a stray `CODEENSTEIN_TELEMETRY_LEVEL_LIMIT` in the caller's shell would
   // otherwise silently truncate every cell and produce a denominator that looks
@@ -384,7 +473,34 @@ async function main() {
     process.exit(1);
   }
 
-  const runners = [new LocalRunner({ cwd: REPO_ROOT }), ...sshRunners];
+  let runners = [new LocalRunner({ cwd: REPO_ROOT }), ...sshRunners];
+
+  // Drop lanes that cannot finish a single attempt inside the watchdog on this
+  // campaign. Such a lane does not merely run slowly — it times out, banks
+  // nothing, records no rate (rates come only from invocations that finish),
+  // and therefore asks for the same impossible chunk on every retry. Measured
+  // 2026-08-19: two lanes did this three times over, 130 minutes each.
+  //
+  // Only ever excludes a lane with a *stored* rate for this exact campaign; an
+  // unmeasured lane still gets its calibration chunk and its chance.
+  {
+    const storedRates = loadLaneRates(CAMPAIGN_KEY);
+    const unfit = runners.filter((r) => !laneFitsWatchdog(storedRates[r.label]));
+    if (unfit.length > 0) {
+      for (const r of unfit) {
+        const rate = storedRates[r.label];
+        console.log(
+          `Excluding lane ${r.label}: ${rate}/min cannot finish one attempt within the ` +
+            `${Math.round(watchdogMinutes())}m watchdog on this campaign (needs >= ${(1 / (watchdogMinutes() * WATCHDOG_CHUNK_MARGIN)).toFixed(3)}/min).`,
+        );
+      }
+      runners = runners.filter((r) => !unfit.includes(r));
+    }
+    if (runners.length === 0) {
+      console.error("No lane can finish an attempt within the watchdog — raise CODEENSTEIN_CAPTURE_WATCHDOG_MS or use a cheaper campaign.");
+      process.exit(1);
+    }
+  }
 
   const banked = combos.reduce((sum, combo) => sum + scanExisting(combo).qualifying, 0);
   const wanted = combos.length * TARGET_ATTEMPTS;
