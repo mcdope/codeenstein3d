@@ -306,61 +306,51 @@ describe("simulation outcomes vs integration timestep", () => {
     expect(fine.health).toBeCloseTo(coarse.health, 0);
   });
 
-  it("a rocket steps OVER an enemy at 50ms that it hits at 60Hz — the tunnelling case", async () => {
-    // Demonstrated on `updateRockets` directly rather than through the engine,
-    // because it is a pure function and this is a property of its arithmetic:
-    //
-    //   r.x += r.vx * dt;                                   // advance
-    //   const hitEnemy = nearLivingEnemy(r.x, r.y, 0.4);    // *then* sample
-    //
-    // There is no sweep. ROCKET_SPEED is 18 t/s, so the sample points are
-    // 18 * 0.05 = 0.90 tiles apart, while the trigger window around an enemy is
-    // only 2 * ROCKET_ENEMY_TRIGGER_RADIUS = 0.80 tiles wide. 0.80 < 0.90, so
-    // there is a band the rocket can straddle entirely. At 60Hz the points are
-    // 0.30 apart and the window always catches.
+  it("a rocket hits the same target at 50ms as at 60Hz", async () => {
+    // This is the regression test for a real defect, and it used to assert the
+    // opposite. `updateRockets` advanced `r.x += r.vx * dt` and *then* sampled
+    // `nearLivingEnemy(r.x, r.y, 0.4)` with no sweep, so at ROCKET_SPEED 18 t/s
+    // the samples sat 0.90 tiles apart against an 0.80-tile window and a rocket
+    // could straddle a target entirely. It now sub-steps.
     const { updateRockets } = await import("./rockets");
     const { ROCKET_SPEED, ROCKET_ENEMY_TRIGGER_RADIUS } = await import("./combatConstants");
 
-    // The gap is real, not a rounding artefact — state it as arithmetic first.
+    // The condition that made tunnelling possible is still true of a *single*
+    // step — the fix is the sub-stepping, not a slower rocket. Asserted so a
+    // future speed/radius change that removes the hazard also removes the
+    // reason this test exists, loudly.
     expect(ROCKET_SPEED * COARSE_DT).toBeGreaterThan(2 * ROCKET_ENEMY_TRIGGER_RADIUS);
-    expect(ROCKET_SPEED * FINE_DT).toBeLessThan(2 * ROCKET_ENEMY_TRIGGER_RADIUS);
 
     const map = fakeMap();
     const START_X = 5.9;
     const LANE_Y = 5.5;
-    // Put the enemy exactly between two coarse sample points: 0.45 from each,
-    // which is outside the 0.4 trigger on both sides.
-    const stepsToSkip = 9;
-    const enemyX = START_X + ROCKET_SPEED * COARSE_DT * stepsToSkip + (ROCKET_SPEED * COARSE_DT) / 2;
-    const nearEnemy = (x: number, y: number, radius: number) => Math.hypot(x - enemyX, y - LANE_Y) <= radius;
 
-    const flyUntilExplosion = (dt: number) => {
+    const flyUntilExplosion = (dt: number, enemyX: number) => {
+      const near = (x: number, y: number, radius: number) => Math.hypot(x - enemyX, y - LANE_Y) <= radius;
       const rockets = [{ x: START_X, y: LANE_Y, vx: ROCKET_SPEED, vy: 0, damage: 100, firedBy: "local" }];
       for (let i = 0; i < 2000 && rockets.length > 0; i++) {
-        const explosions = updateRockets(rockets as never, nearEnemy, map, dt);
+        const explosions = updateRockets(rockets as never, near, map, dt);
         if (explosions.length > 0) return explosions[0];
       }
       return null;
     };
 
-    const coarse = flyUntilExplosion(COARSE_DT);
-    const fine = flyUntilExplosion(FINE_DT);
+    // The exact position that used to fall between two coarse samples.
+    const enemyX = START_X + ROCKET_SPEED * COARSE_DT * 9 + (ROCKET_SPEED * COARSE_DT) / 2;
+    const coarse = flyUntilExplosion(COARSE_DT, enemyX);
+    const fine = flyUntilExplosion(FINE_DT, enemyX);
 
-    // Both must detonate somewhere — a null would mean the scenario never ran.
     expect(coarse).not.toBeNull();
     expect(fine).not.toBeNull();
-
     const distFromEnemy = (e: { x: number; y: number }) => Math.hypot(e.x - enemyX, e.y - LANE_Y);
-    // 60Hz: caught by the enemy trigger, so it detonates on top of it.
+    expect(distFromEnemy(coarse!)).toBeLessThanOrEqual(ROCKET_ENEMY_TRIGGER_RADIUS);
     expect(distFromEnemy(fine!)).toBeLessThanOrEqual(ROCKET_ENEMY_TRIGGER_RADIUS);
-    // 50ms — the harness's step: straight past, detonating on the far wall
-    // instead, far outside the blast radius that would have damaged it.
-    expect(distFromEnemy(coarse!)).toBeGreaterThan(ROCKET_ENEMY_TRIGGER_RADIUS);
   });
 
-  it("the tunnelling band is wide enough to matter, not a knife-edge", async () => {
-    // A defect that only fires at one exact offset would be a curiosity. Sweep
-    // the enemy across a whole coarse step and count how much of it is missed.
+  it("no target position along a step is unhittable at 50ms any more", async () => {
+    // The measurement that found the bug, kept as the regression: sweep a
+    // target across a whole coarse step and require every position to connect.
+    // Before the fix, 11.1% of them did not — exactly (0.90 - 0.80) / 0.90.
     const { updateRockets } = await import("./rockets");
     const { ROCKET_SPEED, ROCKET_ENEMY_TRIGGER_RADIUS } = await import("./combatConstants");
     const map = fakeMap();
@@ -372,11 +362,11 @@ describe("simulation outcomes vs integration timestep", () => {
     const SAMPLES = 90;
     for (let i = 0; i < SAMPLES; i++) {
       const enemyX = START_X + stepTiles * 9 + (stepTiles * i) / SAMPLES;
-      const nearEnemy = (x: number, y: number, radius: number) => Math.hypot(x - enemyX, y - LANE_Y) <= radius;
+      const near = (x: number, y: number, radius: number) => Math.hypot(x - enemyX, y - LANE_Y) <= radius;
       const rockets = [{ x: START_X, y: LANE_Y, vx: ROCKET_SPEED, vy: 0, damage: 100, firedBy: "local" }];
       let hit = false;
       for (let n = 0; n < 2000 && rockets.length > 0; n++) {
-        const ex = updateRockets(rockets as never, nearEnemy, map, COARSE_DT);
+        const ex = updateRockets(rockets as never, near, map, COARSE_DT);
         if (ex.length > 0) {
           hit = Math.hypot(ex[0].x - enemyX, ex[0].y - LANE_Y) <= ROCKET_ENEMY_TRIGGER_RADIUS;
           break;
@@ -384,9 +374,6 @@ describe("simulation outcomes vs integration timestep", () => {
       }
       if (!hit) missed++;
     }
-    // 0.90 tiles of travel against a 0.80-tile window: ~11% of positions are
-    // unhittable at the timestep every balance number was measured at.
-    expect(missed / SAMPLES).toBeGreaterThan(0.05);
-    expect(missed / SAMPLES).toBeLessThan(0.30);
+    expect(missed).toBe(0);
   });
 });

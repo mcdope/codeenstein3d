@@ -89,6 +89,17 @@ export interface RocketExplosion {
  * `spatialGrid.ts`) instead of the full enemy-array scan this used to do per
  * rocket per frame.
  */
+/**
+ * Furthest a rocket may travel between collision samples, in tiles.
+ *
+ * Half `ROCKET_ENEMY_TRIGGER_RADIUS`: a target directly on the flight line is
+ * then never more than 0.1 tiles from the nearest sample, so nearly the whole
+ * trigger radius stays usable for targets offset laterally. Independent of
+ * `dt`, which is the point — the outcome must not depend on how finely the
+ * frame clock happens to be chopped.
+ */
+const ROCKET_MAX_SUBSTEP_TILES = ROCKET_ENEMY_TRIGGER_RADIUS / 2;
+
 export function updateRockets(
   list: Rocket[],
   nearLivingEnemy: (x: number, y: number, radius: number) => boolean,
@@ -98,14 +109,41 @@ export function updateRockets(
   const explosions: RocketExplosion[] = [];
   for (let i = list.length - 1; i >= 0; i--) {
     const r = list[i];
-    r.x += r.vx * dt;
-    r.y += r.vy * dt;
+    // Sub-step, because collision here is a *point sample* at the end of the
+    // move and a rocket is the fastest thing in the game.
+    //
+    // At `ROCKET_SPEED` 18 t/s a single 50ms step advances **0.90 tiles**,
+    // while the window around an enemy is only `2 * ROCKET_ENEMY_TRIGGER_RADIUS`
+    // = 0.80 wide — so a rocket could straddle a target completely and sail
+    // past it. Measured before this fix: **11.1% of target positions along the
+    // flight line were unhittable at 50ms**, exactly `(0.90 - 0.80) / 0.90`,
+    // and every one of them was hit at 60Hz.
+    //
+    // That mattered beyond the odd missed shot because 50ms is not a rare
+    // frame — it is `MAX_DT`, and the balancing harness pumps *exactly* one
+    // 50ms frame per bot decision, so every balance number gathered before
+    // this understated ghidra by roughly a ninth of its shots. See
+    // `dtInvariance.test.ts`.
+    //
+    // A swept segment-to-point distance would be exact, but `nearLivingEnemy`
+    // takes a point and a radius (it is backed by the spatial grid), so
+    // sub-stepping keeps that contract. The step is half the trigger radius:
+    // with samples 0.2 apart the worst-case gap to a target on the line is
+    // 0.1, leaving essentially the whole radius usable laterally.
+    const speed = Math.hypot(r.vx, r.vy);
+    const subSteps = Math.max(1, Math.ceil((speed * dt) / ROCKET_MAX_SUBSTEP_TILES));
+    const subDt = dt / subSteps;
+    for (let s = 0; s < subSteps; s++) {
+      r.x += r.vx * subDt;
+      r.y += r.vy * subDt;
 
-    const hitEnemy = nearLivingEnemy(r.x, r.y, ROCKET_ENEMY_TRIGGER_RADIUS);
-    const hitWall = isWall(map, Math.floor(r.x), Math.floor(r.y));
-    if (hitEnemy || hitWall) {
-      explosions.push({ x: r.x, y: r.y, damage: r.damage, firedBy: r.firedBy });
-      list.splice(i, 1);
+      const hitEnemy = nearLivingEnemy(r.x, r.y, ROCKET_ENEMY_TRIGGER_RADIUS);
+      const hitWall = isWall(map, Math.floor(r.x), Math.floor(r.y));
+      if (hitEnemy || hitWall) {
+        explosions.push({ x: r.x, y: r.y, damage: r.damage, firedBy: r.firedBy });
+        list.splice(i, 1);
+        break;
+      }
     }
   }
   return explosions;
