@@ -42,6 +42,7 @@ import { buildSshRunners } from "./lib/sshRunner.mjs";
 import { PROFILES, DIFFICULTIES } from "./run-balancing-telemetry.mjs";
 import { curateMixedProfiles } from "./run-balancing-telemetry-multiplayer.mjs";
 import { envNumber } from "./lib/envNumber.mjs";
+import { ensureDevServer } from "./lib/devServer.mjs";
 
 const TELEMETRY_SCRIPT = path.join(REPO_ROOT, "scripts/run-balancing-telemetry-multiplayer.mjs");
 const RUNS_DIR = path.join(REPO_ROOT, "balancing_runs_multiplayer");
@@ -191,7 +192,29 @@ async function main() {
   ensureDirs();
 
   const combos = buildCombos();
-  const localRunners = Array.from({ length: LANES }, () => new LocalRunner({ label: "local", cwd: REPO_ROOT }));
+  // One dev server for every local lane, owned here.
+  //
+  // Without this each telemetry child resolves the server itself, and
+  // `ensureDevServer` hands *every* child `owned: true` — the losers of the
+  // `--strictPort` race get a dead child handle but still poll, find the
+  // winner's server and believe they started it. Whichever one actually holds
+  // the port then kills it on exit, and every lane still running loses its
+  // server mid-chunk. Reproduced 2026-08-19: the victim lane died with
+  // `ERR_CONNECTION_REFUSED` x6 and the circuit breaker's misleading
+  // "browser appears dead: 3 consecutive fully-crashed batches" — the browser
+  // was fine, the server was gone. It fails loudly and banks nothing, so the
+  // cost is a lost chunk rather than bad data, but it is pure waste.
+  //
+  // Local lanes only: `SshRunner` forwards every `CODEENSTEIN_*` key, so a
+  // localhost URL set globally would point the remote lanes at this machine.
+  const devServer = await ensureDevServer({ url: process.env.CODEENSTEIN_DEV_URL, label: "campaign" });
+  const localRunners = Array.from({ length: LANES }, (_unused, i) => new LocalRunner({
+    // Distinct labels: lane rates are keyed by label, so identical ones
+    // overwrite each other and the utilisation report cannot tell them apart.
+    label: LANES === 1 ? "local" : `local-${i}`,
+    cwd: REPO_ROOT,
+    env: { CODEENSTEIN_DEV_URL: devServer.url },
+  }));
   const sshRunners = await buildSshRunners();
   const runners = [...localRunners, ...sshRunners];
 
@@ -219,6 +242,7 @@ async function main() {
     formatElapsed,
   });
 
+  devServer.stop(); // no-op for a server we did not start
   console.log("\nCampaign complete — all combos reached their qualifying-run target.");
 }
 
