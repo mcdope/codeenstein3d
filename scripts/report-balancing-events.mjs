@@ -55,14 +55,29 @@ function pct(value) {
   return value === null || value === undefined ? "--" : `${(value * 100).toFixed(1)}%`;
 }
 
+/**
+ * Every `.ndjson` under `target`, at any depth.
+ *
+ * Recursive because a *capture* nests them one level down — `events/<combo>-<seq>/`
+ * per invocation — while a plain telemetry run writes them flat. The
+ * non-recursive version silently found **zero** logs when pointed at a capture's
+ * `events/` directory and reported on nothing at all, which reads exactly like a
+ * run that produced no events.
+ */
 function collectLogPaths(target) {
   const stat = fs.statSync(target);
   if (stat.isFile()) return [target];
-  return fs
-    .readdirSync(target)
-    .filter((f) => f.endsWith(".ndjson"))
-    .map((f) => path.join(target, f))
-    .sort();
+  const out = [];
+  const stack = [target];
+  while (stack.length > 0) {
+    const dir = stack.pop();
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      else if (entry.name.endsWith(".ndjson")) out.push(full);
+    }
+  }
+  return out.sort();
 }
 
 function printWeapons(events, profiles) {

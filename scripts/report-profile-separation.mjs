@@ -20,11 +20,50 @@ import path from "node:path";
 import { formatSeparation, gradeSeparation, LADDER } from "./lib/profileSeparation.mjs";
 
 /** Merge one file or a directory of files into `{ profile: { difficulty: combo } }`. */
+/**
+ * Refuse a *chunked capture* directory instead of silently reading one chunk of it.
+ *
+ * A capture writes one file per invocation, every one carrying the same
+ * `profiles.<name>.<difficulty>` key — so a spread-merge keeps only the last
+ * file read, with no error and entirely normal-looking output computed from a
+ * fraction of the data. Measured 2026-08-19 against a live capture: 5 attempts
+ * reported where there were 10, from three chunks; a finished arm has ~33.
+ *
+ * This tool compares *aggregates* (means over a run set), and means cannot be
+ * pooled by merging — they would need re-weighting by each chunk's own sample
+ * counts. Rather than guess at that, refuse and point at the tool that pools
+ * counts correctly.
+ */
+function assertNotChunkedCapture(target, files) {
+  if (files.length < 2) return;
+  const seen = new Map();
+  for (const file of files) {
+    const json = JSON.parse(fs.readFileSync(file, "utf8"));
+    for (const [profileName, byDifficulty] of Object.entries(json.profiles ?? {})) {
+      for (const difficulty of Object.keys(byDifficulty)) {
+        if (difficulty === "crossDifficultyFlags") continue;
+        const key = `${profileName}/${difficulty}`;
+        seen.set(key, (seen.get(key) ?? 0) + 1);
+      }
+    }
+  }
+  const chunked = [...seen.entries()].filter(([, n]) => n > 1);
+  if (chunked.length === 0) return;
+  const [example, n] = chunked[0];
+  throw new Error(
+    `${target} looks like a chunked capture: ${example} appears in ${n} of ${files.length} files.\n` +
+      `This tool merges by profile/difficulty, so it would silently report only the last chunk.\n` +
+      `Use \`npm run report:capture-survival <dir>\` for per-level rates and levels-per-attempt,\n` +
+      `and \`npm run report:aim-error <dir>\` for hit rates — both pool a capture correctly.`,
+  );
+}
+
 function loadCapture(target) {
   const stat = fs.statSync(target);
   const files = stat.isDirectory()
     ? fs.readdirSync(target).filter((f) => f.endsWith(".json")).map((f) => path.join(target, f))
     : [target];
+  assertNotChunkedCapture(target, files);
   const merged = {};
   for (const file of files) {
     const json = JSON.parse(fs.readFileSync(file, "utf8"));

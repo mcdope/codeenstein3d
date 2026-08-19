@@ -241,6 +241,38 @@ let eventAttemptCounter = 0;
 // be its own hand-rolled check — one of only two knobs that validated at all —
 // and `envNumber` expresses the same bounds, so it is no longer a special case.
 const GAMEPLAY_SEED = envNumber("CODEENSTEIN_TELEMETRY_SEED", null, { integer: true, min: 0, max: 0xffffffff });
+/**
+ * Per-attempt gameplay seeds, for *paired* A/B arms.
+ *
+ * `CODEENSTEIN_TELEMETRY_SEED` pins one seed for every attempt in the process,
+ * which is right for a reproducibility check and useless for a capture — all
+ * the attempts would be the same run. This instead makes attempt *n* use
+ * `base + start + n`, so two arms that set the same base cover the same set of
+ * maps and loot rolls rather than independently random ones.
+ *
+ * **Why this exists.** The 2026-08-19 step-granularity capture ran unpinned and
+ * its two *identical-code* control arms differed by **21-24pp** on per-level
+ * clear rate — a noise floor twice the effect the experiment was sized to
+ * detect, produced entirely by the arms playing different rolls of a *fixed*
+ * campaign. Pairing the seeds turns that into a paired comparison. See
+ * `doc/dev/history.md`.
+ *
+ * `START` is the offset the capture assigns per invocation so chunks do not
+ * all replay the same seeds; the arm as a whole then covers a contiguous range
+ * even though its chunk boundaries differ from the other arm's.
+ */
+const SEED_BASE = envNumber("CODEENSTEIN_TELEMETRY_SEED_BASE", null, { integer: true, min: 0, max: 0xffffffff });
+const SEED_START = envNumber("CODEENSTEIN_TELEMETRY_SEED_START", 0, { integer: true, min: 0 });
+
+/** The seed for the attempt at `ordinal` within this invocation, or null for an
+ * unpinned run. An explicit `CODEENSTEIN_TELEMETRY_SEED` still wins — it is the
+ * "every attempt identical" mode the verify scripts rely on. */
+function seedForAttempt(ordinal) {
+  if (GAMEPLAY_SEED !== null) return GAMEPLAY_SEED;
+  if (SEED_BASE === null) return null;
+  // Stays inside uint32 however far a long capture counts.
+  return (SEED_BASE + SEED_START + ordinal) >>> 0;
+}
 
 // How many ticks the final push toward the exit tile gets, once the route's
 // own legs are exhausted — see `playRun`'s final `driveToward` call.
@@ -398,6 +430,11 @@ async function main() {
         // — a consumer comparing two captures has to know whether either side
         // was pinned, the same reason `compareRunFlags` exists at all.
         gameplaySeed: GAMEPLAY_SEED,
+        // Paired-seed range this invocation covered, so a consumer can tell a
+        // paired arm from an unpinned one — and can tell two arms apart that
+        // *claim* to be paired but used different bases.
+        seedBase: SEED_BASE,
+        seedStart: SEED_BASE === null ? null : SEED_START,
         eventLog: EVENT_LOG_DIR !== null,
         // The tuning override, and — separately — what the bot *actually ran
         // with* once `deriveTuningForStep` had its say.
@@ -567,7 +604,7 @@ function writeEventBatches(profileName, difficulty, batches) {
   }
 }
 
-async function runOneAttempt(browser, profileName, profile, difficulty, levelPlans) {
+async function runOneAttempt(browser, profileName, profile, difficulty, levelPlans, attemptOrdinal = 0) {
   let context;
   try {
     context = await browser.newContext();
@@ -577,7 +614,8 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
 
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
-    const seedParam = GAMEPLAY_SEED === null ? "" : `&seed=${GAMEPLAY_SEED}`;
+    const attemptSeed = seedForAttempt(attemptOrdinal);
+    const seedParam = attemptSeed === null ? "" : `&seed=${attemptSeed}`;
     // `?eventLog=1` only when a destination was actually configured — the
     // engine buffers nothing without it, so an ordinary campaign pays nothing
     // for the feature.
@@ -622,7 +660,7 @@ async function runCombo(browser, profileName, profile, difficulty, levelPlans) {
   const concurrency = HEADED ? 1 : ATTEMPT_CONCURRENCY;
   try {
     return await runQualifyLoop({
-      runAttempt: () => runOneAttempt(browser, profileName, profile, difficulty, levelPlans),
+      runAttempt: (ordinal) => runOneAttempt(browser, profileName, profile, difficulty, levelPlans, ordinal),
       isQualifying: (run) => run.reachedExitForLevel[QUALIFY_LEVEL_INDEX],
       requiredQualifyingRuns: REQUIRED_QUALIFYING_RUNS,
       attemptCap: ATTEMPT_CAP,
