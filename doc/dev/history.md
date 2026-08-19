@@ -12,6 +12,18 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **CI's browser jobs moved into Playwright's container image — a deliberate trade of ~30s of mean for the removal of a 98-minute tail (2026-08-19).** Read this before "optimising" the container away: on a good run it is *slightly slower*, and that is not a regression.
+
+  `npx playwright install-deps` is an apt-get against Azure's mirrors, and it ran seven times per workflow (the three-browser matrix plus four chromium-only jobs). Its **mean was never the problem**. Provisioning cost across three pre-container master runs: **210s, 5903s, 206s**. In one run of three, the four slowest steps in the entire workflow were all apt — 2358s, 2119s, 865s, 493s — for a command whose typical cost is 18-85s. That is the hang the item started from, measured.
+
+  `mcr.microsoft.com/playwright:v1.62.1-noble` carries all three browsers and every OS library, so `install-deps`, `playwright install` and the browser cache step all go away. Measured after: container init **240s and 196s** on two runs.
+
+  **So the honest summary is that the mean did not improve — 206-210s of apt became 196-240s of image pull — and the variance collapsed.** An earlier claim of "343s saved, ~21%" was wrong and is retracted here: it compared two *pull-request* runs with different cache states rather than like-for-like master runs. User's call on the trade, explicitly: *"its fine to be slower since its more stable"*.
+
+  Two details that are load-bearing rather than incidental. `--user 1001` (pwuser), not the default root, because Chromium's sandbox cannot start as root under the runner's default seccomp profile — image plus that option is the combination Playwright documents for GitHub Actions. And the image tag must move in lockstep with the `playwright` npm package, since the image bakes in specific browser *builds*; `scripts/assert-browsers-present.mjs` guards it by checking whether the resolved `executablePath()` exists, rather than comparing two version literals in the workflow, which would only prove they agree with each other.
+
+  **Left on the table deliberately.** The four chromium-only jobs got marginally *worse*: their apt was only 18s, because `ubuntu-latest` already ships Chrome's libraries, and they now pay 28-47s for a pull. Dropping both the container and `install-deps` for just those jobs should recover ~100s/run, at the cost of a hybrid config and one CI run to confirm chromium launches bare. Not done — the whole point of the change was fewer ways for provisioning to go wrong.
+
 - [x] **The harness's throughput ceiling was one Node event loop, and sharding it is worth 1.60x (2026-08-19).** This closes the "decouple bot decisions from engine, for more performance" backlog item, and it closes it on an answer none of the item's three clauses named.
 
   **What the item predicted, and what was actually true.** Stage 0a had measured transport at 54% of per-decision cost at concurrency 12, rising 2.5x from c=8 to c=20 while throughput stayed flat — a queueing signature. The conclusion drawn from it was "the fix is fewer round trips", i.e. move the bot's decision loop into the page. That conclusion outran the evidence: every one of those measurements was taken through a *single* `chromium.launch()` with N contexts, so nothing in the data distinguished "a CDP round trip is expensive" from "twelve attempts are queueing on one pipe".
