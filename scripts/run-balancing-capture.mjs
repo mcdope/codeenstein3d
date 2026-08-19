@@ -64,6 +64,8 @@ import {
 import { REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { buildSshRunners, readHostList } from "./lib/sshRunner.mjs";
 import { envNumber } from "./lib/envNumber.mjs";
+import { ensureDevServer } from "./lib/devServer.mjs";
+import os from "node:os";
 
 const execFileAsync = promisify(execFile);
 
@@ -127,6 +129,34 @@ const TARGET_ATTEMPTS = envNumber("CODEENSTEIN_CAPTURE_ATTEMPTS", 60, { integer:
  * attempts/min is roughly a 50-minute invocation. */
 const CHUNK = envNumber("CODEENSTEIN_CAPTURE_CHUNK", 20, { integer: true, min: 1 });
 const CONCURRENCY_PER_LANE = envNumber("CODEENSTEIN_CAPTURE_CONCURRENCY", 10, { integer: true, min: 1 });
+/**
+ * How many *separate local Node processes* share this machine's work.
+ *
+ * One is what every capture did until 2026-08-19, and it wasted about a third
+ * of the wall clock. All of a process's concurrent attempts drive their CDP
+ * traffic — two round trips per decision, ~1,200/s at concurrency 12 — through
+ * a single Node event loop, and that loop, not the browser and not the CPU, is
+ * what saturates. Measured on a 16-core box over 24 seed-pinned attempts with
+ * identical 205,128 decisions on every arm:
+ *
+ *   1 process x concurrency 12                340.5s   53.5% CPU idle
+ *   1 process x concurrency 12, 4 browsers    363.0s   43.4% CPU idle
+ *   4 processes x concurrency 3               213.0s    6.9% CPU idle   <- 1.60x
+ *
+ * The middle row is the one that names the cause: giving one process four
+ * browsers changes nothing, so the queue is the event loop rather than the CDP
+ * socket or the browser process. An A/B/A drift control agreed to within one
+ * second. See `doc/dev/history.md`.
+ *
+ * Defaulted from core count rather than pinned at 4: a 2-core lane host would
+ * thrash. The total context count across the local lanes stays
+ * `CODEENSTEIN_CAPTURE_CONCURRENCY`, so this splits the queue without asking
+ * more of the machine.
+ */
+const LOCAL_LANES = envNumber("CODEENSTEIN_CAPTURE_LOCAL_LANES", Math.max(1, Math.min(4, Math.floor(os.cpus().length / 4))), {
+  integer: true,
+  min: 1,
+});
 /** Sized against a chunk's real cost with headroom, not guessed: 20 attempts
  * at the measured rate is ~50 min, and the 2026-08-04 run showed a watchdog
  * cutting a *working* invocation is far more expensive than one that runs
@@ -473,7 +503,23 @@ async function main() {
     process.exit(1);
   }
 
-  let runners = [new LocalRunner({ cwd: REPO_ROOT }), ...sshRunners];
+  // One dev server for every local lane. A telemetry child that starts its own
+  // also stops it on exit, which with parallel local lanes would kill the
+  // server out from under the lanes still running. Started here, owned here,
+  // and handed to the local lanes only — `SshRunner` forwards every
+  // `CODEENSTEIN_*` key, so a localhost URL set globally would point the remote
+  // lanes at this machine.
+  const devServer = await ensureDevServer({ url: process.env.CODEENSTEIN_DEV_URL, label: "capture" });
+  const perLocalLane = Math.max(1, Math.round(CONCURRENCY_PER_LANE / LOCAL_LANES));
+  const localRunners = Array.from({ length: LOCAL_LANES }, (_unused, i) => new LocalRunner({
+    label: LOCAL_LANES === 1 ? "local" : `local-${i}`,
+    cwd: REPO_ROOT,
+    env: {
+      CODEENSTEIN_DEV_URL: devServer.url,
+      CODEENSTEIN_TELEMETRY_CONCURRENCY: String(perLocalLane),
+    },
+  }));
+  let runners = [...localRunners, ...sshRunners];
 
   // Drop lanes that cannot finish a single attempt inside the watchdog on this
   // campaign. Such a lane does not merely run slowly — it times out, banks
@@ -564,6 +610,7 @@ async function main() {
     },
   });
 
+  devServer.stop();
   console.log("\n=== Capture complete ===");
   let short = false;
   for (const combo of combos) {

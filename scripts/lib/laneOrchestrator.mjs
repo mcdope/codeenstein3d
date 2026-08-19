@@ -76,9 +76,23 @@ function prefixedWrite(stream, chunk, prefix) {
  * resolves with `spawnError` set instead, so one bad invocation can't take
  * down the whole orchestrator. */
 export class LocalRunner {
-  constructor({ label = "local", cwd } = {}) {
+  /**
+   * `env` overrides are merged over each invocation's environment, so several
+   * local lanes on one machine can differ from each other — which is the whole
+   * point of running more than one.
+   *
+   * Two settings need it. Each lane must get a *share* of the machine's
+   * concurrency rather than the whole of it, and every local lane must be
+   * pointed at one shared dev server: a telemetry child that starts its own
+   * `stop()`s it on exit, which with parallel lanes would pull the server out
+   * from under the lanes still running. `SshRunner` forwards every
+   * `CODEENSTEIN_*` key, so a `localhost` URL must never be set globally —
+   * per-runner is the only place it can go.
+   */
+  constructor({ label = "local", cwd, env = {} } = {}) {
     this.label = label;
     this.cwd = cwd;
+    this.env = env;
   }
 
   /** `outputPath`/`eventLogPath` are accepted and ignored: a local child
@@ -89,7 +103,7 @@ export class LocalRunner {
     return new Promise((resolve) => {
       const logStream = fs.createWriteStream(logPath, { flags: "a" });
       const startedAt = Date.now();
-      const child = spawn(process.execPath, [scriptPath], { cwd: this.cwd, env });
+      const child = spawn(process.execPath, [scriptPath], { cwd: this.cwd, env: { ...env, ...this.env } });
 
       let settled = false;
       let killedForTimeout = false;
