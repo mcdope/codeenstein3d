@@ -51,7 +51,7 @@ const HP_PER_COMPLEXITY = 25;
  * moving this re-rolls every level's layout and invalidates every recorded
  * replay. It is paid for with a single `defaultHighscore.ts` regeneration.
  */
-const COMPLEXITY_PER_EXTRA_ENEMY = 5;
+const COMPLEXITY_PER_EXTRA_ENEMY = 10;
 /**
  * Complexity at/above which a function spawns an Elite pack instead of a plain
  * one. It used to justify itself as "exactly the complexity a plain pack would
