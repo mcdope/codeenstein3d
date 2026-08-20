@@ -529,12 +529,13 @@ export function hpOutliers(roster, obtainableDamage) {
  * carryover over the starting formula from level 2 on. Getting that wrong
  * makes every level after the first read as far poorer than it plays.
  */
-export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1 }) {
+export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1, carryoverCapMultiple = Infinity }) {
   const roster = scaleRosterForDifficulty(map.enemies, difficulty, constants.DIFFICULTY_MULTIPLIERS);
   const bonusLevel = Boolean(map.bonusLevel);
   const poolValue = poolDamageValues(constants.profiles, ownedWeapons);
 
-  const startAmmo = carriedAmmo ?? constants.startingAmmo(roster);
+  const freshAmmo = constants.startingAmmo(roster);
+  const startAmmo = carriedAmmo === null ? freshAmmo : capCarryover(carriedAmmo, freshAmmo, carryoverCapMultiple);
   const carriedDamage = AMMO_KINDS.reduce((sum, kind) => sum + (startAmmo[kind] ?? 0) * (poolValue[kind] ?? 0), 0);
 
   const enemies = enemyBudget(roster, constants, difficulty);
@@ -644,13 +645,13 @@ export function guaranteedLoadout(campaignLevelIndex, constants) {
  * charged for the whole roster (a kill rate of 1) while banking none of the
  * drops (a rate of 0).
  */
-export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE }) {
+export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE, carryoverCapMultiple = Infinity }) {
   const results = [];
   let carried = null;
   for (const [i, level] of levels.entries()) {
     const campaignLevelIndex = i + 1;
     const ownedWeapons = guaranteedLoadout(campaignLevelIndex, constants);
-    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex });
+    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex, carryoverCapMultiple });
     results.push({ ...solved, filename: level.filename });
     carried = carryForward(solved, constants, killRate);
   }
@@ -670,6 +671,38 @@ export function solveCampaign({ levels, constants, difficulty, killRate = DEFAUL
  * what drops gets picked up.
  */
 export const DEFAULT_KILL_RATE = 0.71;
+
+/**
+ * **An experiment knob, not game behaviour.** Clamps what a player arrives with
+ * to `capMultiple x` what a *fresh* player would start this level holding —
+ * i.e. ties carried resources to what the level in front of you contains.
+ *
+ * The engine has no such cap: `engine.ts`'s carryover is
+ * `carryover?.bullets ?? startingAmmoRef.bullets`, unconditional, and
+ * §1.2 records that map dimension is the only repo-size normalisation anywhere
+ * in the generator. Which is exactly what the 2026-08-21 corpus sweep measured
+ * the consequence of — median clear ratio 9.6 at level 1 against 4,548 past
+ * level 200, with the roster flat across the same span.
+ *
+ * This exists so that question can be answered *offline*, before anyone books
+ * bot time for an A/B: run the sweep at a few multiples and see whether the
+ * position slope compresses. Default `Infinity` is the shipped behaviour, so
+ * every existing caller and every stored result is unchanged.
+ *
+ * Deliberately **not** wired into `SIMULATION_BALANCE` or `engine.ts` yet: a
+ * new engine constant folded into the balance hash invalidates every shipped
+ * replay and costs a `defaultHighscore.ts` regeneration, which is not a price
+ * to pay for a measurement that might say the lever does not work.
+ */
+export function capCarryover(carried, fresh, capMultiple) {
+  if (!Number.isFinite(capMultiple)) return carried;
+  const capped = {};
+  for (const kind of Object.keys(carried)) {
+    const ceiling = (fresh[kind] ?? 0) * capMultiple;
+    capped[kind] = Math.min(carried[kind] ?? 0, ceiling);
+  }
+  return capped;
+}
 
 /**
  * Ammo left after a level, at perfect accuracy with the most ammo-efficient

@@ -41,7 +41,7 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
@@ -50,6 +50,9 @@ function parseArgs(argv) {
     else if (arg === "--json") args.json = path.resolve(argv[++i]);
     else if (arg === "--max-levels") args.maxLevels = Number(argv[++i]);
     else if (arg === "--kill-rate") args.killRate = Number(argv[++i]);
+    // Experiment knob — see `capCarryover`. Nothing in the game caps carryover;
+    // this exists to price a cap offline before anyone books bot time for it.
+    else if (arg === "--carryover-cap") args.carryoverCap = Number(argv[++i]);
     else {
       console.error(`unknown argument: ${arg}`);
       process.exit(2);
@@ -277,12 +280,16 @@ async function main() {
   console.log(`# ${levels.length} levels, perfect-accuracy lower bound on cost`);
   console.log(`# kill rate ${args.killRate} — the share of each roster assumed fought, which sets both`);
   console.log("# the ammo spent and the drops carried on. Override with --kill-rate.");
+  if (Number.isFinite(args.carryoverCap)) {
+    console.log(`# CARRYOVER CAPPED at ${args.carryoverCap}x this level's fresh starting ammo — an`);
+    console.log("# experiment, not shipped behaviour: the engine caps nothing.");
+  }
   if (skipped.length > 0) console.log(`# skipped, no parser matched (${skipped.length}): ${skipped.slice(0, 8).join(", ")}${skipped.length > 8 ? ", ..." : ""}`);
   printWeaponTable(profiles);
 
   const byDifficulty = new Map();
   for (const difficulty of args.difficulties) {
-    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate });
+    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate, carryoverCapMultiple: args.carryoverCap });
     byDifficulty.set(difficulty, results);
     console.log(`\n\n===== difficulty: ${difficulty} =====\n`);
     printBudgetTable(results);
