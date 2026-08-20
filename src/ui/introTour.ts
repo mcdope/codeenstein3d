@@ -70,7 +70,7 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "launch-tabs",
     title: "Six tabs, five ways in",
-    body: "Four of these tabs load source code to play — from your machine, a saved run, GitHub, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
+    body: "Four of these tabs load source code to play — from your machine, a saved run, a public repository, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
   },
   {
     targetId: "tab-demo",
@@ -80,7 +80,7 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "tab-multiplayer",
     title: "Co-op, up to four",
-    body: "Host a session and share the short code, or join with someone else's — joining needs no workspace of your own at all. Only the host loads the code; everyone else receives the finished level over the connection. A locally-picked folder can't be hosted, so host from Demos or GitHub.",
+    body: "Host a session and share the short code, or join with someone else's — joining needs no workspace of your own at all. Only the host loads the code; everyone else receives the finished level over the connection. A locally-picked folder can't be hosted, so host from Demos or a loaded repository.",
   },
   {
     targetId: "tab-settings",

@@ -14,7 +14,7 @@ Codeenstein 3D runs entirely in your browser. There is no account, no analytics,
   - Nothing is ever pushed, written, or reported back — these are read-only `GET` requests.
 - **Demos** (the "Demos" tab's bundled showcase campaign) — makes no network request and reads no local files at all. Every level's source text is baked directly into the app's own bundle at build time, so it works fully offline.
 
-No other feature besides Multiplayer (below) makes any network request. A locally-picked workspace never touches the network at all, including in multiplayer — hosting or joining a session is only available for a GitHub-loaded repo or the Demos campaign, never a local folder.
+No other feature besides Multiplayer (below) makes any network request. A locally-picked workspace never touches the network at all, including in multiplayer — hosting or joining a session is only available for a repository loaded from the **Repo** tab or the Demos campaign, never a local folder.
 
 ## Multiplayer
 

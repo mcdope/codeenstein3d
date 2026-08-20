@@ -84,7 +84,7 @@ enemies and 1001 HP on the floor where `demoCampaign.ts` puts one enemy and 50.
 Level difficulty tracks code complexity, and in an arbitrary repo that is
 unrelated to filename order.
 
-`collectSourceFiles` (`scripts/report-level-budget.mjs:80`) walks the directory
+`collectSourceFiles` (`scripts/report-level-budget.mjs`) walks the directory
 using the real `src/fs/workspace.ts` helpers — `isIgnoredDirectoryName`,
 `isIgnoredFileName`, `compareNodes` — recursing the way `flattenParsableFiles`
 does in `main.ts`: directories before files at each level, then case-insensitive
@@ -134,7 +134,7 @@ which are *not* the same rule:
 
 | consumer | recursion | ignore rules | ordering |
 |---|---|---|---|
-| the game (`flattenParsableFiles`, `main.ts:2884`) | recursive | `IGNORED_DIRECTORIES`, `isIgnoredFileName` | directories first, then case-insensitive alphabetical |
+| the game (`flattenParsableFiles`, `main.ts`) | recursive | `IGNORED_DIRECTORIES`, `isIgnoredFileName` | directories first, then case-insensitive alphabetical |
 | the solver (`collectSourceFiles`) | recursive | same, via the real helpers | same |
 | **the bot planner (`planLevels`, `:234`)** | **flat — `readdirSync` + `isFile()`** | **none** | case-insensitive alphabetical |
 

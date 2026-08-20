@@ -10,7 +10,7 @@ For *why the arsenal is shaped the way it is* — five ammo pools, why Toolchain
 
 **2. Ranged or melee.** The two are different code paths end to end, not a flag (see [Melee weapons are a different path](#melee-weapons-are-a-different-path) below). The discriminator is `meleeRange`: any weapon that sets it is structurally excluded from number keys, from `NUMBER_KEY_WEAPONS`, and from `updateFiring` entirely.
 
-**3. Whether it needs a new ammo pool.** Reusing `"bullets"`/`"smg"`/`"rockets"`/`"gas"` is a small change. A *new* `AmmoType` is by far the largest part of this checklist (step 6) — roughly 15 files, several of which hand-write the four pools as four parallel fields rather than iterating `AMMO_TYPES`. Both of the last two ranged weapons brought their own pool, so this is the common case, not the exotic one.
+**3. Whether it needs a new ammo pool.** Reusing `"bullets"`/`"shells"`/`"smg"`/`"rockets"`/`"gas"` is a small change. A *new* `AmmoType` is by far the largest part of this checklist (step 6) — roughly 15 files, several of which hand-write the four pools as four parallel fields rather than iterating `AMMO_TYPES`. Both of the last two ranged weapons brought their own pool, so this is the common case, not the exotic one.
 
 ---
 
@@ -25,6 +25,8 @@ For *why the arsenal is shaped the way it is* — five ammo pools, why Toolchain
 - `meleeRange` vs `maxRange` — both bound reach in `resolveShot` (`rangeLimit = weapon.meleeRange ?? weapon.maxRange`), but `meleeRange` additionally *makes the weapon melee* everywhere else. Don't reach for it to mean "short-ranged gun"; that's `maxRange` (only Friday Hotfix uses it).
 - `fullDamageRange` — pairs with `maxRange` to make it a decay curve instead of a wall: full `damagePerPellet` out to here, falling linearly to zero at `maxRange` (`rangeDamageScale`). Without it `maxRange` stays all-or-nothing. **If you add one, mirror it into the bot** — `WEAPON_STATS` *and* `expectedDamagePerShot`, which multiplies by the same curve. Mirroring the number alone is worse than not mirroring at all: the old hard cutoff at least made the bot score zero out of reach, whereas an unmirrored curve has it scoring full damage at a range where the engine lands a fraction of it.
 - `maxConeDeviationPx` — per-weapon override of the shared Cone-of-Fire falloff; omit unless you specifically want this weapon to stay accurate further out than the pistol curve allows.
+- `magazineSize`/`reloadSec` — **paired, both or neither** by contract (`Weapon`'s own doc comment says `reloadSec` is "present exactly when `magazineSize` is"), though **no test enforces it** — a `magazineSize` with no `reloadSec` reloads in zero seconds and nothing goes red. Omitting both is legal and means "no magazine": `updateFiring` treats no-magazine and magazine-full identically, so the weapon fires straight from the reserve and never reloads — which is Friday Hotfix's deliberate shape, and is also what you silently get if you forget. `magazineSize` counts the same units as `ammoPerShot` and the reserve, so `magazineSize / ammoPerShot` is the shots a full magazine is good for.
+- `TOOL_SLOTS` (`src/engine/hudLayout.ts`) — **not a `Weapon` field, but pinned against `NUMBER_KEY_WEAPONS.length` by `hud.test.ts`**, so a new *ranged* weapon means bumping it, and the TOOLS panel's minimum width with it. A melee weapon needs no change (melee is structurally excluded from number keys).
 
 **What breaks if skipped:** nothing else works; this is the source of truth everything below mirrors.
 
@@ -79,7 +81,7 @@ Two further rules that follow from it:
 
 ### 6. A new ammo pool (skip if reusing one)
 
-`AmmoType` is a four-member union that a lot of code enumerates by hand. In rough dependency order:
+`AmmoType` is a five-member union that a lot of code enumerates by hand. In rough dependency order:
 
 | file | what to add |
 |---|---|
@@ -88,8 +90,8 @@ Two further rules that follow from it:
 | `src/engine/loot.ts` | `LOOT_WEIGHTS`/`NORMAL_LOOT_WEIGHTS`/`BONUS_LOOT_WEIGHTS` rows, `*_DROP_AMOUNT` + `ELITE_*_DROP_AMOUNT`, and a `has<Weapon>` parameter on `rollLoot` so the pool is excluded from the roll until the weapon is owned |
 | `src/map/types.ts` | `LootKind` and `AmmoPickup["kind"]` |
 | `src/engine/sprites.ts` | `lootColors` — a `switch` over `LootDrop["kind"]` with a real return type, so **tsc catches this one** |
-| `src/engine/hud.ts` | the `ammoType` if/else chain that picks the ammo label and value |
-| `src/engine/scoring.ts` | `final<Pool>`/`starting<Pool>` on `ScoreInput`, the per-pool fraction, **and the `/ 4` divisor** in `ammoBonus` |
+| `src/engine/hud.ts` | **nothing** — the AMMO panel and the per-type ammo table both read `AMMO_META[weapon.ammoType]`, so a pool that has a full `AMMO_META` entry (including its ≤4-character `short`, which the table's fixed-width column needs) shows up on its own |
+| `src/engine/scoring.ts` | `final<Pool>`/`starting<Pool>` on `ScoreInput`, the per-pool fraction, **and the divisor** in `ammoBonus` (currently `/ 5`, one per pool — leaving it stale silently rescales every score and invalidates the shipped board) |
 | `src/engine/engine.ts` | `EngineStats`' per-pool fields (hand-written, not `AmmoPools`) |
 | `src/main.ts` | the campaign save shape, carryover, and the stats plumbing between them |
 | `src/map/mapGenerator.ts` | a `has<Pool>` generation option, defaulted, threaded to `vendorDepots.ts` (and `pickups.ts`/`secretRooms.ts`/`exceptionZones.ts` if the pool should appear there) |
@@ -156,6 +158,8 @@ One real ceiling worth knowing: `digitKeyIndex` (`input.ts`) matches `/^(?:Digit
 - [`game-design.md`](game-design.md#weapon-and-economy-intent) — if the weapon's *role* is new (a distinct combat identity, a new economy shape). [`decisions.md`](decisions.md) if you deliberately did **not** do something, and [`history.md`](history.md) if you measured an approach and reverted it — a reversal leaves no trace in the code, so it has to be written down.
 - `notes` — close the open item, per the workflow in this doc set's [README](README.md).
 
+**Some of this is now enforced.** `scripts/lib/docPins.test.mjs` builds sentences out of the real weapon table and asserts the docs contain them, so a new or retuned weapon turns `README.md`, `doc/user/controls.md` and `doc/dev/balancing-telemetry.md` red until each one is updated — magazine sizes, reload times and ammo pools especially. It cannot check the prose *around* those numbers, so the list above still has to be walked; what it removes is the class where a number silently disagrees with the code. See [Testing](testing.md#doc-pins--scriptslibdocpinstestmjs).
+
 ---
 
 ## Melee weapons are a different path
@@ -184,6 +188,6 @@ Worth internalising, because it predicts which mistakes you'll actually make:
 
 **The compiler catches** — exactly two things: `MUZZLE_GEOMETRY` (a `Record` over a viewKind union, TS2741) and `lootColors` (a switch whose declared return type doesn't include `undefined`, TS2366). Both confirmed by direct experiment against this repo's `tsconfig.json`.
 
-**Tests catch** — the `fireIntervalSec` invariant, `UNLOCKABLE_WEAPONS`' exact membership, `NUMBER_KEY_WEAPONS`' completeness, and (indirectly, via `PROFILES_HASH`) a bot-profile change without a highscore regeneration.
+**Tests catch** — the `fireIntervalSec` invariant, `UNLOCKABLE_WEAPONS`' exact membership, `NUMBER_KEY_WEAPONS`' completeness, `TOOL_SLOTS` against that same length, the whole `combatPolicy.mjs` bot mirror (`constantMirrors.test.mjs`, added after it drifted 3.6x on rocket speed), the docs' own copies of the weapon numbers (`docPins.test.mjs`), and (indirectly, via `PROFILES_HASH`) a bot-profile change without a highscore regeneration.
 
-**Nothing catches** — `audio.ts`'s `playShoot` (a `void` switch with no `default`), `viewmodel.ts`'s `drawWeapon` default case, `loot.ts`'s weight tables, `hud.ts`'s ammo chain, `scoring.ts`'s `/ 4`, and the entire `combatPolicy.mjs`/`profiles.mjs` bot mirror. That last one is the whole reason this document exists. (The wire ammo shapes and the `[3, 4, 5]` literals in `scripts/` used to be in this list; both were fixed rather than documented, by reusing `AmmoPools` and the real `UNLOCKABLE_WEAPONS` respectively.)
+**Nothing catches** — `audio.ts`'s `playShoot` (a `void` switch with no `default`), `viewmodel.ts`'s `drawWeapon` default case, `loot.ts`'s weight tables, `scoring.ts`'s per-pool divisor, and `profiles.mjs`'s weapon-priority lists. The bot mirror used to head this list, and it is the reason this document exists; it moved up one paragraph only because the drift it caused was expensive enough to build a guard for. (The wire ammo shapes and the `[3, 4, 5]` literals in `scripts/` used to be in this list; both were fixed rather than documented, by reusing `AmmoPools` and the real `UNLOCKABLE_WEAPONS` respectively.)

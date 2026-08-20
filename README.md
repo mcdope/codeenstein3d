@@ -12,8 +12,8 @@ Load anything from a massive Symfony enterprise project to low-level C code like
 
 A hosted build runs at **[codeenstein3d.mcdope.org](https://codeenstein3d.mcdope.org)** — nothing to clone, install, or
 build. The **Demos** tab launches a bundled multi-language campaign that ships inside the app (no local files and no
-network needed), and the **GitHub** tab turns any public `owner/repo` into a dungeon over the network. Both work in any
-modern browser.
+network needed), and the **Repo** tab turns any public repository — GitHub, GitLab or Codeberg — into a dungeon over the
+network. Both work in any modern browser.
 
 Pointing the game at your *own* code is the one thing the hosted build can't do everywhere: reading a local folder uses
 the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker), which only
@@ -84,9 +84,9 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 
 ### Loading Options
 - ✅ **Local workspace** — pick any folder on your machine (File System Access API)
-- ✅ **GitHub repos** — type `owner/repo` to load any public repo over the network
+- ✅ **Public repositories** — paste a GitHub, GitLab or Codeberg URL (or a bare `owner/repo`, which still means GitHub) to load any public repo over the network
 - ✅ **Bundled demo campaign** — a multi-language showcase campaign baked into the app itself, no local files or network needed
-- ✅ **Replay from any source** — re-pick workspace, auto-fetch GitHub repo, or rebuild the bundled demo campaign
+- ✅ **Replay from any source** — re-pick workspace, auto-fetch the repo from the host it came from, or rebuild the bundled demo campaign
 
 ---
 
@@ -108,7 +108,7 @@ Procedural Map Generator (grid, enemies, hazards, teleporters)
 Each stage only consumes the data structure from the previous stage — languages, map styles, and renderers can evolve independently.
 
 ### Level Generation
-- **Functions → Enemies** carrying `cyclomatic_complexity × 25` HP *between them* — one enemy below complexity 10, then one more per 10 on top, splitting that pool rather than inflating a single body
+- **Functions → Enemies** carrying `cyclomatic_complexity × 25` HP *between them* — one enemy below complexity 5, then one more per 5 on top, splitting that pool rather than inflating a single body
   - At complexity ≥ 40 the room becomes an **Elite pack** instead: 2× the room's HP budget, capped and split across up to 8 members, led by a gold-tinted Elite dealing 2× damage
   - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   
@@ -136,12 +136,14 @@ Each stage only consumes the data structure from the previous stage — language
 - **Roams** its room until they notice you (aggro radius + line-of-sight OR just took damage)
 - **Chases** around corners and walls
 - **Melees** up close on a cooldown
-- **Lobs ranged plasma bolts** at range if they have line-of-sight
+- **Lobs ranged bolts** at range if they have line-of-sight — one per archetype, and the colour tells you which: a regular enemy's magenta bolt, an Elite's slow, heavy orange shell (rare, dodgeable), an Edge Case's fast, weak, slightly-off-target cyan spray (twice as often). Each archetype's damage-over-time is unchanged; only its arrival shape is
 - **Elite variants** do everything harder (gold-tinted, 2× damage)
+- **Guarded rooms** — a private/protected method's pack puts a heavier gatekeeper up front with lighter escorts behind, at the same total room HP
 
 ### Player Combat
-- **7 weapons** — echo pistol (hitscan), Regex Shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, short hard max range), SIGKILL Knife (instant melee, infinite ammo), Toolchain (unlockable full-auto chainsaw that permanently replaces the knife)
-- **Ammo pools** — Bullets (echo pistol/Regex Shotgun), SMG (gdb), Rockets (ghidra), and Gas (Friday Hotfix), with sparse map pickups as a bullets/rockets backup; gdb/ghidra/Friday Hotfix's own pools only drop/spawn once each weapon is unlocked
+- **7 weapons** — echo pistol (hitscan), Regex Shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, full damage to 2.5 tiles decaying to nothing at 6.5), SIGKILL Knife (instant melee, infinite ammo), Toolchain (unlockable full-auto chainsaw that permanently replaces the knife)
+- **Ammo pools** — Bullets (echo pistol), Shells (Regex Shotgun), SMG (gdb), Rockets (ghidra), and Gas (Friday Hotfix), with sparse map pickups as a backup; gdb/ghidra/Friday Hotfix's own pools only drop/spawn once each weapon is unlocked
+- **Magazines & reloading** — every gun but the flamethrower holds a magazine (9 pistol, 2 shells, 45 gdb, 1 rocket) and reloads on `R` or automatically when it runs dry; a reload only ever *moves* ammo, and switching weapons cancels it
 - **Swap buffer** — absorbs damage 1:1 before health, capped at 100
 - **No wasted health drops** — a kill never drops a health pack while you're at full health (elites included); it rolls ammo/swap instead
 - **Quick-melee** — Space for an instant knife swing (heals sliver on kill, never switches weapon); once Toolchain is found it permanently takes over Space instead, revving continuously (infinite ammo) for as long as the button's held
@@ -190,7 +192,7 @@ npm run build      # Production build to dist/
 npm run preview    # Serve production build locally
 ```
 
-There are 16 further `npm run verify:*` scripts — 10 of them driving the real app through Playwright, the rest pure Node — plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
+There are 16 further `npm run verify:*` scripts — 11 of them driving the real app through Playwright, the rest pure Node — plus the balancing-bot harness. They need a dev server you started yourself and, for the multiplayer ones, a signaling server started *before* it — see [Testing](doc/dev/testing.md#running-the-verify-scripts-locally), which is the file to read before running any of them.
 
 Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with a scope — `fix(multiplayer):`, `refactor(map):`, `docs:`. Player-visible changes get a line under `## Unreleased` in [`CHANGELOG.md`](CHANGELOG.md), in player-facing voice.
 
@@ -227,15 +229,24 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 - **RT/R2** — Fire
 - **LB/RB** — Cycle weapons
 - **R3 or B** — Quick-melee
+- **X** — Reload
+- **A** — Read a lore terminal / open a fake wall
+- **L3 (left-stick click)** — Sprint, held (same 2× speed as `Shift`)
 - **Any button** — Dismiss level-start/commit-summary overlays (after ~1.2s lock)
 
 ### UI Controls
+
+Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, grouped into Gameplay, Audio and Texture Pack — except the compass, which is drawn in-game.
+
 - **Compass** — Circular badge (bottom-right of minimap), points toward exit relative to your facing
-- **Gore** — Sidebar dropdown (None/Normal/More/Extreme/Excessive/Absurd) scales blood-particle count, size and how long stains last; Absurd's stains never expire
-- **Difficulty** — Sidebar dropdown (Easy/Normal/Hard) scales enemy HP, damage, ammo scarcity
+- **Player name** — Labels your highscore entries, and floats above your character in co-op
+- **Gore** — None/Normal/More/Extreme/Excessive/Absurd, scaling blood-particle count, size and how long stains last; Absurd's stains never expire
+- **Difficulty** — Easy/Normal/Hard, scaling enemy HP, damage, ammo scarcity
+- **Render quality** — Classic (640×400, the default) or Sharp (1280×800 with a half-resolution floor); applies at the next level, and aiming is identical in both
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
-- **Select BGM Folder** — Pick a local folder of audio files for custom playlist
+- **Select BGM Folder** — Pick a local folder of audio files for custom playlist (session-only — a browser can't hold onto the folder handle)
 - **Load WAD Texture Pack** — Pick a DOOM `.wad` file to source real wall/door/floor textures from (auto-selected, no picker); session-only, falls back silently to defaults for anything not found
+- **Or pick an online texture pack** — The curated, license-checked catalog; **remembered between sessions**, with **Use built-in textures** to revert and forget it
 
 ### Level Flow
 - **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
@@ -259,7 +270,7 @@ level-end player stats screen (a measurable frame-time cost). See
 [Feature Flags](doc/dev/architecture.md#feature-flags) for the current defaults and the
 reasoning behind each.
 
-Releases are git tags (`beta-1` … `beta-6`) — that tag is the only release identity there is.
+Releases are git tags (`beta-1` … `beta-7`) — that tag is the only release identity there is.
 `package.json`'s `version` is deliberately unused (`0.0.0`, `private: true`), and nothing in the
 running app reports a version, so "which build is this?" is answered by the tag or the commit,
 not by the app.
@@ -310,7 +321,7 @@ src/
 ├── main.ts                  # App entry: wires sidebar, parser, map, engine, HUD
 ├── difficulty.ts            # Difficulty multiplier tables (Easy/Normal/Hard)
 ├── prng.ts                  # Seeded PRNG (map generation & engine randomness)
-├── fs/                      # File System Access API, GitHub repo loader, and the bundled demo-campaign loader
+├── fs/                      # File System Access API, GitHub/GitLab/Codeberg repo loaders (remoteHost.ts is the shared adapter contract), and the bundled demo-campaign loader
 ├── ui/                      # Sidebar, console, highscores, overlays (gameHud.ts)
 ├── parser/                  # Language-agnostic AST layer
 │   ├── php/                 # PHP adapter (bespoke)
@@ -357,7 +368,7 @@ src/
 
 ## Browser Requirements
 
-**Loading a local folder** needs the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker), which is currently only available in **Chromium-based browsers** (Chrome, Edge, Brave) served over `localhost` or HTTPS. That is the only feature gated on it: the Demos and GitHub tabs, and everything downstream of them, work in any modern browser.
+**Loading a local folder** needs the [File System Access API](https://developer.mozilla.org/en-US/docs/Web/API/Window/showDirectoryPicker), which is currently only available in **Chromium-based browsers** (Chrome, Edge, Brave) served over `localhost` or HTTPS. That is the only feature gated on it: the Demos and Repo tabs, and everything downstream of them, work in any modern browser.
 
 The app detects unsupported browsers and disables the workspace picker with a message, leaving the other tabs usable.
 
@@ -365,7 +376,7 @@ The app detects unsupported browsers and disables the workspace picker with a me
 
 ## Documentation
 
-Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting started, controls, HUD/UI, game mechanics, multiplayer, and tips.
+Full player-facing docs live in [`doc/user`](doc/user/README.md) — getting started, controls, HUD/UI, game mechanics, colours & pickups, designing your own levels, multiplayer, tips, and troubleshooting.
 
 🔒 If you're wondering what happens to the workspace you point this at, or what gets stored on your machine, see [`doc/user/privacy.md`](doc/user/privacy.md).
 

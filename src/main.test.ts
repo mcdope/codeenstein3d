@@ -2245,7 +2245,7 @@ describe("main.ts — multiplayer connect flow", () => {
       // showing as selected.
       const hostSubtab = document.querySelector<HTMLButtonElement>("#multiplayer-subtab-host")!;
       expect(hostSubtab.disabled).toBe(true);
-      expect(hostSubtab.title).toContain("Hosting requires a GitHub-loaded repo or the Demos campaign");
+      expect(hostSubtab.title).toContain("Hosting requires a loaded repository or the Demos campaign");
       expect(document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.getAttribute("aria-selected")).toBe(
         "true",
       );

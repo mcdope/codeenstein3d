@@ -12,6 +12,19 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **GitLab and Codeberg, behind one auto-detecting Repo tab (2026-08-20).** The backlog item stays open — Bitbucket is unproven, and its own probe 404'd — but the two hosts that shipped are done, and what the work found is worth not re-deriving. The item's central prediction held exactly: `RemoteFileHandle` is a one-method interface, so the tree UI, entrypoint detection, level launching and replay were all untouched. What it did *not* predict is the whole cost.
+
+  **Both new hosts paginate the recursive tree at 100 entries; GitHub does not.** That is the one structural difference between the three APIs, and it forces a cap rather than a loop: `gitlab-org/gitlab-foss` is 86,540 entries — **866 pages** — against an unauthenticated budget of about **500 requests an hour**, so fetching one repo whole would spend a visitor's entire hour on it. `MAX_TREE_PAGES = 40` stops well short and reuses GitHub's existing "partial listing" marker, which is the same user-visible outcome by a different mechanism.
+
+  **Two things had to be verified against the live hosts rather than reasoned about**, both because the failure looks like something else entirely:
+
+  - *GitLab's rate-limit headers are not CORS-exposed.* It sends `ratelimit-remaining`/`ratelimit-reset`, but its `Access-Control-Expose-Headers` omits them, so a header-gated check is dead code from a page — the identical trap `github.ts` already documents for `raw.githubusercontent.com`. Status code only.
+  - *GitLab's raw-file path must be `%2F`-encoded.* The obvious `/-/raw/<path>` URL sends no CORS header at all, and the unencoded API path 404s. From the page both read as "that file isn't there".
+
+  **A URL parser that accepts nested groups will swallow another host's URLs.** Supporting `group/subgroup/project` means accepting any number of path segments, so GitLab's parser read `codeberg.org/owner/repo` as a project in a group named `codeberg.org/owner` — and being registered first, it won. Caught by a UI test rather than by the parser's own unit tests, which is the lesson: a per-host parser can be individually correct and collectively wrong, so the ordering test belongs at the registry.
+
+  **The truncation marker had GitHub hardcoded in it**, so a page-capped GitLab tree would have told the player GitHub truncated it. Host-neutral now — worth remembering as the general shape of this change: every string that named a forge was a latent bug the moment a second one existed, and the docs had the same problem (see the 2026-08-20 docs audit).
+
 - [x] **The DOOM status bar, and the three premises in its own backlog item that were wrong (2026-08-20).** Ships `AMMO | STABIL | TOOLS | face | SWAP | KEYS | SCORE | ammo table` with the vocabulary settled at scoping. Read the corrections before trusting any other scoping note of the same vintage — two of the three were stale rather than mistaken, which is a different failure and a more likely one.
 
   **What the item got wrong, all three checked against the code before planning:**

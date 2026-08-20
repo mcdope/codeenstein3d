@@ -8,7 +8,7 @@ The bottom status bar is one full-width bezel, laid out like DOOM's — but with
 
 - **AMMO** — the current weapon's count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it). A weapon with a magazine shows `loaded / reserve`, so `9 / 31` means nine in the gun and thirty-one behind it
 - **STABIL** — System Stability, your health, as a big percentage over a bar
-- **TOOLS** — which dev tools you are carrying, one cell per number key. A dim digit is a weapon you have not found, a bright one is owned, and a filled box is what is in your hands. Your melee weapon is not shown here, because it has no number key — it is always on Space, and the AMMO panel reads `MELEE` whenever it is in your hands
+- **TOOLS** — which dev tools you are carrying, one cell per number key. A dim digit on its own is a weapon you have not found, an outlined box is one you own, and a filled box is what is in your hands. Your melee weapon is not shown here, because it has no number key — it is always on Space, and the AMMO panel reads `MELEE` whenever it is in your hands
 - **the face** — you. It looks worse as your Stability drops, and when something hits you it turns toward whatever hit you, so a bite from off-screen tells you which way to look. Traps and acid have no direction and just hurt
 - **SWAP** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
 - **KEYS** — one pip per locked room on the level, in that room's own colour
@@ -51,9 +51,9 @@ Gore, Difficulty, Render quality, the volume sliders and your **online texture p
 
 ## The file tree
 
-The bottom of the sidebar lists the files of the loaded workspace, **under the tab you loaded it from** — load a repository and its files are under **GitHub**; launch the demo campaign and its files are under **Demos**. The other tabs say what they'd load instead of showing you someone else's files. **Local** and **Continue** share one, since both are the same local folder on your machine, and **Settings** and **Multiplayer** never show a tree at all.
+The bottom of the sidebar lists the files of the loaded workspace, **under the tab you loaded it from** — load a repository and its files are under **Repo**; launch the demo campaign and its files are under **Demos**. The other tabs say what they'd load instead of showing you someone else's files. **Local** and **Continue** share one, since both are the same local folder on your machine, and **Settings** and **Multiplayer** never show a tree at all.
 
-One workspace is loaded at a time, as it always has been: loading a repository replaces the demo campaign rather than sitting beside it, so a tree on screen always means "this is what's loaded". To go back you load it again — instant for **Demos**, a re-fetch for **GitHub**, re-picking the folder for **Local**.
+One workspace is loaded at a time, as it always has been: loading a repository replaces the demo campaign rather than sitting beside it, so a tree on screen always means "this is what's loaded". To go back you load it again — instant for **Demos**, a re-fetch for **Repo**, re-picking the folder for **Local**.
 
 Switching tabs is purely a change of view: it never disturbs the level you're playing, and the folders you expanded stay expanded when you come back. The tab the game is running from is marked, so you can tell at a glance from anywhere — including the tabs that show no tree — and the mark doubles as a transport readout: **▶** while the level is running, **❚❚** whenever it isn't, which covers a pause, reading a lore terminal, a briefing overlay you haven't dismissed yet, and sitting back at the file tree between levels.
 
