@@ -752,6 +752,10 @@ export interface EngineStats {
   maxHealth: number;
   /** Swap points, absorbed 1:1 before health on any hit (see `damage()`). */
   swap: number;
+  /** Swap capacity (`MAX_SWAP`), so the HUD can draw a capacity strip beside
+   * the number instead of hardcoding a second copy of the constant. Sent for
+   * the same reason `maxHealth` is. */
+  maxSwap: number;
   /** Bullets remaining (echo pistol). */
   bullets: number;
   /** Shells remaining (Regex Shotgun) — its own pool since the shotgun stopped
@@ -5793,6 +5797,7 @@ export class RaycasterEngine {
       health: Math.ceil(local.health),
       maxHealth: MAX_HEALTH,
       swap: Math.ceil(local.swap),
+      maxSwap: MAX_SWAP,
       bullets: statsAmmo.bullets,
       shells: statsAmmo.shells,
       rockets: statsAmmo.rockets,

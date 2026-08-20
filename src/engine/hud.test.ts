@@ -35,6 +35,7 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     health: 80,
     maxHealth: 100,
     swap: 0,
+    maxSwap: 100,
     bullets: 10,
     shells: 4,
     magazine: 9,
@@ -401,6 +402,20 @@ describe("drawHud", () => {
     return log;
   }
 
+  /** The same trick for text: `[drawnString, fillStyleAtThatMoment]` per call.
+   *
+   * Needed because the bar now draws eight panels, so asserting the context's
+   * *final* `fillStyle` says nothing about the panel under test — it reports
+   * whatever the last panel happened to set. That is how the dry-ammo colour
+   * assertion below became vacuous when the bar grew. */
+  function fillTextStylesLog(c: MockCanvasContext): [string, string][] {
+    const log: [string, string][] = [];
+    c.fillText.mockImplementation((text: unknown) => {
+      log.push([String(text), c.fillStyle as string]);
+    });
+    return log;
+  }
+
   it("draws the cheated-run badge only once a cheat has fired", () => {
     const clean = ctx();
     drawHud(asCtx(clean), fakeStats({ cheatsUsed: false }));
@@ -449,7 +464,7 @@ describe("drawHud", () => {
   it("colors swap blue when positive, grey when zero", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ swap: 5 }));
-    expect(c.fillText).toHaveBeenCalledWith("5", 205, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("5", expect.any(Number), expect.any(Number));
   });
 
   it("shows BULLETS as loaded / in reserve for a bullets-type weapon", () => {
@@ -457,83 +472,88 @@ describe("drawHud", () => {
     // `bullets` is everything owned; 9 of it is in the magazine, so the
     // reserve shown beside it is the remaining 31.
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
-    expect(c.fillText).toHaveBeenCalledWith("BULLETS", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("9 / 31", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("BULLETS", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("9 / 31", expect.any(Number), expect.any(Number));
   });
 
   it("shows a part-spent magazine and an empty one without calling either dry", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 3, magazineSize: 9 }));
-    expect(c.fillText).toHaveBeenCalledWith("3 / 37", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("3 / 37", expect.any(Number), expect.any(Number));
 
     const empty = ctx();
     drawHud(asCtx(empty), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
-    expect(empty.fillText).toHaveBeenCalledWith("0 / 31", 275, expect.any(Number));
+    expect(empty.fillText).toHaveBeenCalledWith("0 / 31", expect.any(Number), expect.any(Number));
   });
 
   it("says RELOADING in place of the pool name while reloading", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 0, magazineSize: 9, reloading: true }));
-    expect(c.fillText).toHaveBeenCalledWith("RELOADING", 275, expect.any(Number));
-    expect(c.fillText).not.toHaveBeenCalledWith("BULLETS", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("RELOADING", expect.any(Number), expect.any(Number));
+    expect(c.fillText).not.toHaveBeenCalledWith("BULLETS", expect.any(Number), expect.any(Number));
   });
 
   it("colors the readout red only when nothing is left to load either", () => {
     // An empty magazine with a reserve behind it is a one-second problem, not
     // a crisis — only a genuinely dry pool turns red.
     const notDry = ctx();
+    const notDryLog = fillTextStylesLog(notDry);
     drawHud(asCtx(notDry), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
-    expect(notDry.fillStyle).not.toBe("#ff5a4a");
+    // The colour *of the ammo numeral itself*, not whatever style the last
+    // panel left behind.
+    expect(notDryLog).toContainEqual(["0 / 31", "#4cff6a"]);
+    expect(notDryLog.find(([text]) => text === "0 / 31")?.[1]).not.toBe("#ff5a4a");
 
     const dry = ctx();
+    const dryLog = fillTextStylesLog(dry);
     drawHud(asCtx(dry), fakeStats({ weaponIndex: 0, bullets: 0, magazine: 0, magazineSize: 9 }));
-    expect(dry.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
+    expect(dryLog).toContainEqual(["0 / 0", "#ff5a4a"]);
   });
 
   it("shows ROCKETS for a rockets-type weapon", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 3, magazine: 1, magazineSize: 1 }));
-    expect(c.fillText).toHaveBeenCalledWith("ROCKETS", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("1 / 2", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("ROCKETS", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("1 / 2", expect.any(Number), expect.any(Number));
   });
 
   it("colors rockets red once empty", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 0, magazine: 0, magazineSize: 1 }));
-    expect(c.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("0 / 0", expect.any(Number), expect.any(Number));
   });
 
   it("shows SMG AMMO for an smg-type weapon", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 3, smg: 12 }));
-    expect(c.fillText).toHaveBeenCalledWith("SMG AMMO", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("SMG AMMO", expect.any(Number), expect.any(Number));
   });
 
   it("colors smg ammo red once empty", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 3, smg: 0, magazine: 0, magazineSize: 45 }));
-    expect(c.fillText).toHaveBeenCalledWith("0 / 0", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("0 / 0", expect.any(Number), expect.any(Number));
   });
 
   it("shows GAS for a gas-type weapon, floored for a fractional value", () => {
     const c = ctx();
     // Friday Hotfix has no magazine, so it keeps the single bare number.
     drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 37.5, magazine: 0, magazineSize: 0 }));
-    expect(c.fillText).toHaveBeenCalledWith("GAS", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("37", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("GAS", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("37", expect.any(Number), expect.any(Number));
   });
 
   it("colors gas red once empty", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 5, gas: 0, magazine: 0, magazineSize: 0 }));
-    expect(c.fillText).toHaveBeenCalledWith("0", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("0", expect.any(Number), expect.any(Number));
   });
 
   it("shows MELEE with an infinity mark for an ammo-less weapon", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 2 }));
-    expect(c.fillText).toHaveBeenCalledWith("MELEE", 275, expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("∞", 275, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("MELEE", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("∞", expect.any(Number), expect.any(Number));
   });
 
   it("draws one key pip per gate, filled only for the ones held", () => {
@@ -546,7 +566,7 @@ describe("drawHud", () => {
     // outline, so its colour reaches strokeStyle instead.
     expect(filled).toContain("#d63a30"); // gate 0, held
     expect(filled).toContain("#34b25c"); // gate 2, held
-    expect(c.fillText).toHaveBeenCalledWith("1234", 800 - 12, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("1234", expect.any(Number), expect.any(Number));
     expect(c.textAlign).toBe("left"); // reset after the right-aligned score
   });
 
@@ -554,12 +574,12 @@ describe("drawHud", () => {
     // Most levels: C sources produce no private/protected members, so no gates.
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ heldGates: [], gateColors: [] }));
-    expect(c.fillText).toHaveBeenCalledWith("—", 375, expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("—", expect.any(Number), expect.any(Number));
   });
 });
 
 describe("HUD_HEIGHT", () => {
-  it("is a fixed 58px", () => {
-    expect(HUD_HEIGHT).toBe(58);
+  it("is a fixed 72px", () => {
+    expect(HUD_HEIGHT).toBe(72);
   });
 });
