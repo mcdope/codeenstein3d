@@ -787,12 +787,14 @@ function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
  * different sprite rather than doing more work — the direction costs nothing.
  */
 function drawFacePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
-  const key = faceKeyFor(stats);
-  drawGlyph(ctx, faceGlyph(key), rect.x + rect.w / 2, rect.y + 2 + FACE_BOX / 2);
+  const glyph = faceGlyph(faceKeyFor(stats));
+  // Centred in the bar's *full* height, not hung from the top. The first
+  // version anchored the sprite two pixels under the accent, which put the
+  // hair line hard against it and left a band of empty bezel underneath — the
+  // face read as falling out of the bar rather than sitting in it. This is the
+  // one panel with no label row to align to, so it centres on its own.
+  drawGlyph(ctx, glyph, rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
-
-/** The face sprite's box, centred in its panel below the accent. */
-const FACE_BOX = 44;
 
 /** Running campaign total. DOOM has no score panel; this keeps ours in the
  * numeral template so it reads as part of the bar rather than as a caption. */

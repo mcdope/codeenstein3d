@@ -90,70 +90,87 @@ export function damageBucket(px: number, py: number, dirX: number, dirY: number,
   return right > 0 ? 1 : -1;
 }
 
-/** Palette. `.` is transparent. */
+/**
+ * Palette. `.` is transparent.
+ *
+ * Warmer and higher-contrast than a flat two-tone, because the face is drawn
+ * at 3px per cell inside a 48px panel — at that size a subtle shade reads as
+ * mud. Hair and the jaw shadow are what give it a silhouette at a glance.
+ */
 const COLORS: Record<string, string> = {
-  s: "#c8a06a", // skin
-  d: "#8a6a44", // shadow
-  e: "#1a1a1a", // eye / mouth
+  s: "#e0a878", // skin
+  d: "#8a5636", // shadow / jaw
+  h: "#4a2f1c", // hair
+  e: "#1a1a1a", // eye, mouth, nostril
+  w: "#f2f2f2", // eye white
   r: "#c03028", // blood
   g: "#8effa0", // god-mode glow
 };
 
-const SCALE = 4;
-const GRID = 11;
+const SCALE = 3;
+const GRID_W = 13;
+const GRID_H = 15;
 
-/** One face, 11x11. Rows are read top to bottom. */
-function matrix(rows: string[]): string[] {
-  return rows;
-}
+/**
+ * The head, before eyes and mouth are stamped on.
+ *
+ * Taller than wide, like DOOM's own 24x29 `STFACE` — a square head reads as a
+ * ball. The hair block is doing most of the work: it is what makes the shape
+ * legible as a face at 39x45 rather than as a beige rectangle.
+ */
+const BASE: readonly string[] = [
+  "....hhhhh....",
+  "..hhhhhhhhh..",
+  ".hhhhhhhhhhh.",
+  ".hhhhhhhhhhh.",
+  ".dsssssssssd.",
+  ".dsssssssssd.",
+  ".dsssssssssd.",
+  ".dsssssssssd.",
+  ".dssssesssdd.",
+  ".dsssssssssd.",
+  ".dsssssssssd.",
+  ".dsssssssssd.",
+  "..dsssssssd..",
+  "...ddddddd...",
+  ".............",
+];
 
-const BASE = matrix([
-  "...ddddd...",
-  "..ddsssdd..",
-  ".dssssssssd",
-  ".dsseseessd",
-  ".dsssssssd.",
-  ".dsssssssd.",
-  ".dssеssssd.".replace("е", "s"),
-  "..dsssssd..",
-  "...ddddd...",
-  "...........",
-  "...........",
-]);
+/** Row the eyes sit on, and the row the mouth sits on. */
+const EYE_ROW = 6;
+const MOUTH_ROW = 10;
 
-/** Eyes at a horizontal offset, and a mouth shape, stamped onto the base. */
+/**
+ * Stamp eyes and a mouth onto the head.
+ *
+ * `eyeShift` moves both eyes together, which is the whole directional tell —
+ * DOOM does the same, and it reads far better than rotating or mirroring the
+ * head. Shifts of -1..1 keep both 2-wide eyes inside columns 2-10, every one
+ * of which is skin, so no bounds check is needed (see the well-formedness
+ * test, which is what actually defends that).
+ */
 function face(eyeShift: -1 | 0 | 1, mouth: string, extra?: (rows: string[][]) => void): string[] {
   const rows = BASE.map((r) => r.split(""));
-  // clear the default eye row, then place both eyes shifted together
-  for (let x = 0; x < GRID; x++) if (rows[3][x] === "e") rows[3][x] = "s";
-  const leftEye = 3 + eyeShift;
-  const rightEye = 7 + eyeShift;
-  // No bounds or transparency guard: an eye shift of -1..1 lands on columns
-  // 2-4 and 6-8 of an 11-wide row, all of them skin. A guard here would be an
-  // unreachable branch, and `matrices are well-formed` below is the check that
-  // actually defends the assumption — at test time rather than every frame.
-  rows[3][leftEye] = "e";
-  rows[3][rightEye] = "e";
-  // mouth occupies row 6, centred
-  // Mouths are at most 5 wide and centred, so they land on columns 3-7 of an
-  // 11-wide row — all skin. Unguarded for the same reason the eyes are: the
-  // matrices make it true, and `the face matrices` test is what checks that.
-  const start = Math.floor((GRID - mouth.length) / 2);
-  for (let i = 0; i < mouth.length; i++) rows[6][start + i] = mouth[i];
+  for (const start of [3 + eyeShift, 8 + eyeShift]) {
+    rows[EYE_ROW][start] = "w";
+    rows[EYE_ROW][start + 1] = "e";
+  }
+  const mStart = Math.floor((GRID_W - mouth.length) / 2);
+  for (let i = 0; i < mouth.length; i++) rows[MOUTH_ROW][mStart + i] = mouth[i];
   extra?.(rows);
   return rows.map((r) => r.join(""));
 }
 
-/** Blood spatter grows with the tier, so a hurt face reads at a glance. */
+/** Blood, growing with the tier so a hurt face reads without a health bar. */
 function bleed(amount: number): (rows: string[][]) => void {
   return (rows) => {
     const spots: [number, number][] = [
-      [2, 3],
-      [2, 7],
-      [1, 5],
-      [4, 2],
+      [4, 3],
+      [5, 9],
+      [7, 2],
+      [9, 10],
       [4, 8],
-      [5, 4],
+      [11, 4],
     ];
     for (let i = 0; i < Math.min(amount, spots.length); i++) {
       const [y, x] = spots[i];
@@ -162,20 +179,27 @@ function bleed(amount: number): (rows: string[][]) => void {
   };
 }
 
-/** Mouths, healthiest first. */
-const MOUTHS = ["eee", "ee", "e", "eee", "eeeee"];
+/** Mouths, worst health first: a grimace opens as things get bad. */
+const MOUTHS = ["eee", "eeee", "eeeee", "eeeee", "eeeee"];
 
 function matrixFor(key: string): string[] {
-  if (key === "dead") return face(0, "eeeee", bleed(6));
-  if (key === "god") {
-    const rows = face(0, "eee");
-    return rows.map((r) => r.replace(/s/g, "g"));
+  if (key === "dead") {
+    // Eyes crossed out and the jaw slack — unmistakable at a glance, which is
+    // the one thing this expression has to be.
+    const rows = face(0, "eeeeee", bleed(6)).map((r) => r.split(""));
+    rows[EYE_ROW][3] = "e";
+    rows[EYE_ROW][4] = "e";
+    rows[EYE_ROW][8] = "e";
+    rows[EYE_ROW][9] = "e";
+    rows[MOUTH_ROW + 1][6] = "e";
+    return rows.map((r) => r.join(""));
   }
+  if (key === "god") return face(0, "eee").map((r) => r.replace(/[sdh]/g, "g"));
   const hurt = key.startsWith("hurt");
   const tier = Number(key.replace(/^(idle|hurt)/, "").split("_")[0]);
   const dir = hurt ? (Number(key.split("_")[1]) as HurtDir) : 0;
-  // A hurt face looks *toward* the attacker, so the eyes shift that way.
-  return face(dir, MOUTHS[Math.max(0, Math.min(MOUTHS.length - 1, 4 - tier))], hurt ? bleed(5 - tier) : undefined);
+  // A hurt face looks *toward* whatever hit it.
+  return face(dir, MOUTHS[Math.max(0, Math.min(MOUTHS.length - 1, tier))], hurt ? bleed(5 - tier) : undefined);
 }
 
 const glyphCache = new Map<string, Glyph>();
@@ -191,13 +215,13 @@ export function faceGlyph(key: string): Glyph {
   if (cached) return cached;
   const rows = matrixFor(key);
   const glyph: Glyph = {
-    width: GRID * SCALE,
-    height: GRID * SCALE,
-    anchorX: (GRID * SCALE) / 2,
-    anchorY: (GRID * SCALE) / 2,
+    width: GRID_W * SCALE,
+    height: GRID_H * SCALE,
+    anchorX: (GRID_W * SCALE) / 2,
+    anchorY: (GRID_H * SCALE) / 2,
     draw: (g, ox, oy) => {
-      const x0 = ox - (GRID * SCALE) / 2;
-      const y0 = oy - (GRID * SCALE) / 2;
+      const x0 = ox - (GRID_W * SCALE) / 2;
+      const y0 = oy - (GRID_H * SCALE) / 2;
       for (let y = 0; y < rows.length; y++) {
         const row = rows[y];
         let x = 0;

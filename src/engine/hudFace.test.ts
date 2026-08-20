@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { describe, expect, it } from "vitest";
+import { HUD_HEIGHT, layoutHud } from "./hudLayout";
 import { HURT_FACE_FRAMES, allFaceKeys, damageBucket, faceGlyph, faceKeyFor, type FaceInputs } from "./hudFace";
 
 function inputs(over: Partial<FaceInputs> = {}): FaceInputs {
@@ -46,6 +47,29 @@ describe("faceKeyFor", () => {
         }
       }
     }
+  });
+});
+
+describe("the face's box", () => {
+  it("fits inside the bar with clearance from the accent, top and bottom", () => {
+    // It shipped once hung from the top, two pixels under the accent, so the
+    // hair line collided with it and a band of empty bezel sat underneath.
+    // Centred now — and pinned, because "looks fine" is not a regression test.
+    const g = faceGlyph("idle4");
+    const ACCENT = 2;
+    const margin = (HUD_HEIGHT - g.height) / 2;
+    expect(g.height).toBeLessThan(HUD_HEIGHT);
+    expect(margin).toBeGreaterThan(ACCENT + 6);
+  });
+
+  it("is taller than it is wide, like a head", () => {
+    const g = faceGlyph("idle4");
+    expect(g.height).toBeGreaterThan(g.width);
+  });
+
+  it("fits the narrowest face panel the layout can hand it", () => {
+    const panel = layoutHud(640, 400).panels.face;
+    expect(faceGlyph("idle4").width).toBeLessThanOrEqual(panel.w);
   });
 });
 
