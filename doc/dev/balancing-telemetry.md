@@ -916,7 +916,7 @@ it came out bad; anything without such an answer is in §2.6 instead.
 
 | Metric | Kind | Definition / computation | Needs | Bad when |
 |---|---|---|---|---|
-| `ttkAnalytic[w][arch]` | A | `shotsToKill × fireIntervalSec`. No reload term — there are no magazines. | constants + roster | > 8 s vs a normal enemy (matches the existing `NORMAL_TTK_HIGH_SEC`) |
+| `ttkAnalytic[w][arch]` | A | `(gaps − reloads) × fireIntervalSec + reloads × max(fireIntervalSec, reloadSec)`. The reload term was added 2026-08-21, six days late; `max` rather than `+` because `engine.ts` ticks the fire cooldown above the reload gate, so the two run concurrently. | constants + roster | > 8 s vs a normal enemy (matches the existing `NORMAL_TTK_HIGH_SEC`) |
 | `ttkObserved[arch]` | E | aggro→death window; already collected as `avgTtkByCategory` | `kill` | ≫ analytic (means the weapon is unusable at real range, not merely slow) |
 | `shotsToKill[w][arch]` | A | `ceil(hp / (damagePerPellet × pellets))`, pellets=1 for ghidra | constants + roster | any weapon needing > total obtainable ammo for that pool |
 | `overkill[w]` | E | mean `−hpAfter` on the killing blow ÷ damage dealt | `damageDealt{hpBefore,hpAfter}` | > 30% — the weapon's granularity is wrong for this roster |
@@ -1029,8 +1029,8 @@ them back for completeness:
 
 | Excluded | Why |
 |---|---|
-| Magazine size, reload time, reload-adjusted TTK | No magazines and no reload exist anywhere in the codebase. |
-| Burst DPS vs sustained DPS | Same reason — with no magazine to empty, the two collapse to one number. |
+| ~~Magazine size, reload time, reload-adjusted TTK~~ | **No longer excluded.** True until 2026-08-15, when magazines shipped; the solver kept saying it until 2026-08-21, understating a pistol kill on a 504 HP Elite as 3.30s against a real 5.20s. Now charged — see `timeToKill`. |
+| Burst DPS vs sustained DPS | Still excluded, but no longer for the stated reason: magazines exist now, so the two genuinely differ. What the solver models is a single sustained kill, which is where its `reloads` term lands; a burst/sustained split needs an engagement model it does not have. |
 | Weapon draw / switch **cost** | Switching is instant. Switch *frequency* is kept in §2.1 as a bot-policy signal; the cost half would measure a constant zero. |
 | Hitscan damage falloff | Does not exist. Damage is flat with range; *accuracy* falls off cubically, and §2.1 measures that instead. |
 | Armour as a separate pool with its own curve | `swap` absorbs 1:1 with no reduction, so effective HP is exactly `health + swap` and a second model adds nothing. |

@@ -125,6 +125,12 @@ export function weaponProfile(weapon, index) {
     damagePerAmmo: weapon.ammoType ? damagePerTrigger / weapon.ammoPerShot : Infinity,
     ammoPerShot: weapon.ammoPerShot,
     maxRange: weapon.maxRange ?? null,
+    // `magazineSize` counts the same units as `ammoPerShot`, so shots-per-
+    // magazine is the ratio, not the size (see `Weapon.magazineSize`). Null
+    // for a weapon with no magazine — the flamethrower and both melee weapons
+    // — which `timeToKill` reads as "never reloads".
+    shotsPerMagazine: weapon.magazineSize === undefined ? null : Math.floor(weapon.magazineSize / weapon.ammoPerShot),
+    reloadSec: weapon.reloadSec ?? null,
   };
 }
 
@@ -166,14 +172,35 @@ export function poolDamageValues(profiles, ownedWeapons) {
  * That matters most for ghidra, whose 1.1s cadence would otherwise dominate
  * every TTK it appears in.
  *
- * There is no reload term because there are no magazines — see the stat
- * catalog's "Deliberately excluded".
+ * **Reloads are charged, and `max` rather than `+` is the whole subtlety.**
+ * Magazines shipped 2026-08-15; until 2026-08-21 this function still carried a
+ * comment saying "there is no reload term because there are no magazines",
+ * which understated ghidra — a 1-round magazine, so *every* shot after the
+ * first costs a reload — by more than a factor of two against a capped Elite.
+ *
+ * `engine.ts` decrements `weaponCooldown` on the line *above* the
+ * `if (p.reloadRemaining > 0) continue` gate, so the fire cadence and the
+ * reload run concurrently, and the shot that empties a magazine starts that
+ * magazine's reload on the same frame. The gap across a magazine boundary is
+ * therefore `max(fireIntervalSec, reloadSec)` — not their sum, which would
+ * double-charge the cadence, and not the cadence alone, which is what this
+ * used to do.
+ *
+ * Assumes the magazine starts **full**, which is what a player who reloads
+ * between fights actually has, and keeps this a lower bound in line with the
+ * perfect-accuracy assumption everywhere else in the solver.
  */
 export function timeToKill(profile, hp) {
   const shots = Math.ceil(hp / profile.damagePerTrigger);
+  const gaps = Math.max(0, shots - 1);
+  const perMag = profile.shotsPerMagazine;
+  const reloads = perMag && perMag > 0 ? Math.ceil(shots / perMag) - 1 : 0;
+  const reloadSec = profile.reloadSec ?? 0;
+  const seconds = (gaps - reloads) * profile.fireIntervalSec + reloads * Math.max(profile.fireIntervalSec, reloadSec);
   return {
     shots,
-    seconds: Math.max(0, shots - 1) * profile.fireIntervalSec,
+    seconds,
+    reloads,
     ammo: profile.melee ? 0 : shots * profile.ammoPerShot,
   };
 }

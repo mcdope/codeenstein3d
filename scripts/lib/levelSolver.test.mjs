@@ -59,6 +59,11 @@ const WEAPONS = [
   { name: "scattergun", pellets: 5, damagePerPellet: 10, ammoPerShot: 2, ammoType: "bullets", fireIntervalSec: 1 },
   { name: "shiv", pellets: 1, damagePerPellet: 25, ammoPerShot: 0, meleeRange: 1.5 },
   { name: "boomstick", pellets: 1, damagePerPellet: 100, ammoPerShot: 1, ammoType: "rockets", fireIntervalSec: 2, isRocket: true },
+  // Two magazine shapes, deliberately mirroring the two the real table has:
+  // a one-round launcher that reloads after *every* shot, with a reload longer
+  // than its cadence, and a short magazine whose reload is shorter than it.
+  { name: "single-loader", pellets: 1, damagePerPellet: 50, ammoPerShot: 1, ammoType: "rockets", fireIntervalSec: 1, magazineSize: 1, reloadSec: 3 },
+  { name: "double-barrel", pellets: 1, damagePerPellet: 50, ammoPerShot: 1, ammoType: "bullets", fireIntervalSec: 2, magazineSize: 2, reloadSec: 1 },
 ];
 
 const DIFFICULTY_MULTIPLIERS = {
@@ -157,17 +162,52 @@ describe("weaponProfile", () => {
 describe("timeToKill", () => {
   it("counts the gaps between shots, not the shots -- a one-shot kill is instant", () => {
     const boom = weaponProfile(WEAPONS[3], 3);
-    expect(timeToKill(boom, 100)).toEqual({ shots: 1, seconds: 0, ammo: 1 });
+    expect(timeToKill(boom, 100)).toEqual({ shots: 1, seconds: 0, reloads: 0, ammo: 1 });
   });
 
   it("charges N-1 intervals for N shots", () => {
     const pea = weaponProfile(WEAPONS[0], 0);
     // 35 HP needs 4 shots of 10, so 3 gaps of 0.2s.
-    expect(timeToKill(pea, 35)).toEqual({ shots: 4, seconds: expect.closeTo(0.6, 10), ammo: 4 });
+    expect(timeToKill(pea, 35)).toEqual({ shots: 4, seconds: expect.closeTo(0.6, 10), reloads: 0, ammo: 4 });
   });
 
   it("charges no ammo for melee", () => {
     expect(timeToKill(weaponProfile(WEAPONS[2], 2), 100).ammo).toBe(0);
+  });
+
+  it("charges nothing extra for a weapon with no magazine", () => {
+    // The flamethrower's shape. `shotsPerMagazine` is null, so the reload
+    // branch has to be skipped rather than dividing by it.
+    expect(timeToKill(weaponProfile(WEAPONS[0], 0), 100).reloads).toBe(0);
+  });
+
+  it("charges a reload per magazine boundary crossed, not per shot", () => {
+    const single = weaponProfile(WEAPONS[4], 4); // 1 round, 3s reload, 1s cadence
+    // 150 HP is 3 shots. Two boundaries, so two reloads, and each reload
+    // *replaces* the 1s cadence rather than adding to it: 2 x max(1, 3) = 6.
+    expect(timeToKill(single, 150)).toEqual({ shots: 3, seconds: 6, reloads: 2, ammo: 3 });
+    // One shot crosses no boundary at all.
+    expect(timeToKill(single, 50)).toEqual({ shots: 1, seconds: 0, reloads: 0, ammo: 1 });
+  });
+
+  it("takes the cadence, not the reload, when the cadence is longer", () => {
+    // `engine.ts` ticks `weaponCooldown` above the reload gate, so the two run
+    // concurrently — a reload shorter than the pump is free. Summing them here
+    // would double-charge every shotgun kill.
+    const double = weaponProfile(WEAPONS[5], 5); // 2 rounds, 1s reload, 2s cadence
+    // 150 HP is 3 shots: one boundary after shot 2, and max(2, 1) === 2.
+    expect(timeToKill(double, 150)).toEqual({ shots: 3, seconds: 4, reloads: 1, ammo: 3 });
+    // Exactly one magazine's worth crosses nothing.
+    expect(timeToKill(double, 100)).toEqual({ shots: 2, seconds: 2, reloads: 0, ammo: 2 });
+  });
+
+  it("counts shots per magazine in shots, not in ammo units", () => {
+    // The trap `Weapon.magazineSize`'s own doc warns about: the field counts
+    // the same units as `ammoPerShot`, so a 2-ammo-per-shot weapon with a
+    // 2-round magazine gets *one* shot before reloading, not two.
+    const twoPerShot = weaponProfile({ ...WEAPONS[5], ammoPerShot: 2 }, 5);
+    expect(twoPerShot.shotsPerMagazine).toBe(1);
+    expect(timeToKill(twoPerShot, 150).reloads).toBe(2);
   });
 });
 
