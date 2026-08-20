@@ -108,8 +108,22 @@ describe("updateRockets", () => {
     const map = fakeMap();
     const list = [rocket({ x: 5, y: 5, damage: 40 })];
     const explosions = updateRockets(list, () => true, map, 0.1);
-    expect(explosions).toEqual([{ x: 5, y: 5, damage: 40, firedBy: "p1" }]);
+    expect(explosions).toEqual([{ x: 5, y: 5, damage: 40, firedBy: "p1", hitEnemy: true }]);
     expect(list).toHaveLength(0);
+  });
+
+  it("distinguishes an enemy detonation from a wall one, which damage alone cannot", () => {
+    // The tunnelling analysis had to *simulate* this distinction because it was
+    // unrecoverable from the log. A rocket that sails past its target and blows
+    // up on the wall behind still deals splash, so "did it connect" is not
+    // inferable from damage dealt — only from what stopped it.
+    const g: Tile[][] = Array.from({ length: 10 }, () => new Array(10).fill(0) as Tile[]);
+    g[3][3] = 1;
+    const map = fakeMap({ grid: g });
+    const onEnemy = updateRockets([rocket({ x: 5, y: 5 })], () => true, map, 0.1);
+    const onWall = updateRockets([rocket({ x: 3.5, y: 3.5, vx: 0, vy: 0 })], noEnemiesNear, map, 0.1);
+    expect(onEnemy[0].hitEnemy).toBe(true);
+    expect(onWall[0].hitEnemy).toBe(false);
   });
 
   it("detonates on hitting a wall", () => {
@@ -148,7 +162,10 @@ describe("updateRockets", () => {
       rocket({ x: 3.5, y: 3.5, vx: 0, vy: 0, damage: 20 }), // hits wall
     ];
     const explosions = updateRockets(list, noEnemiesNear, map, 0.1);
-    expect(explosions).toEqual([{ x: 3.5, y: 3.5, damage: 20, firedBy: "p1" }]);
+    // hitEnemy false: the wall stopped it, not an enemy. Splash still lands
+    // either way, which is exactly why the flag has to be carried rather than
+    // inferred from the damage.
+    expect(explosions).toEqual([{ x: 3.5, y: 3.5, damage: 20, firedBy: "p1", hitEnemy: false }]);
     expect(list).toHaveLength(1);
     expect(list[0].damage).toBe(10);
   });
@@ -163,7 +180,7 @@ describe("updateRockets", () => {
 
 describe("rocketDamageAt", () => {
   function explosion(overrides: Partial<RocketExplosion> = {}): RocketExplosion {
-    return { x: 0, y: 0, damage: 100, firedBy: "p1", ...overrides };
+    return { x: 0, y: 0, damage: 100, firedBy: "p1", hitEnemy: true, ...overrides };
   }
 
   it("deals max damage at ground zero", () => {

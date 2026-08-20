@@ -75,6 +75,20 @@ export interface RocketExplosion {
   y: number;
   damage: number;
   firedBy: string;
+  /**
+   * Whether this detonation was triggered by a living enemy inside
+   * `ROCKET_ENEMY_TRIGGER_RADIUS` rather than by a wall.
+   *
+   * Telemetry only — nothing in the simulation reads it, and the damage
+   * fan-out is identical either way (`rocketDamageAt` works off distance from
+   * the blast point, not off what stopped the rocket). It exists because the
+   * distinction is otherwise unrecoverable after the fact, and it is exactly
+   * the one the 2026-08-19 tunnelling analysis had to *simulate* to answer:
+   * a rocket that sails past its target and detonates on the wall behind
+   * still does splash damage, so "did it connect" cannot be inferred from the
+   * damage it dealt.
+   */
+  hitEnemy: boolean;
 }
 
 /**
@@ -140,7 +154,7 @@ export function updateRockets(
       const hitEnemy = nearLivingEnemy(r.x, r.y, ROCKET_ENEMY_TRIGGER_RADIUS);
       const hitWall = isWall(map, Math.floor(r.x), Math.floor(r.y));
       if (hitEnemy || hitWall) {
-        explosions.push({ x: r.x, y: r.y, damage: r.damage, firedBy: r.firedBy });
+        explosions.push({ x: r.x, y: r.y, damage: r.damage, firedBy: r.firedBy, hitEnemy });
         list.splice(i, 1);
         break;
       }

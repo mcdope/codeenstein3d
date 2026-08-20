@@ -1093,6 +1093,29 @@ that separating this from `hit` is what fixes the >100% accuracy problem in §7.
 `hpAfter` is the pre-clamp negative value, which `engine.ts:4462-4467` currently
 computes and immediately discards.
 
+**`rocketDetonated`** — one per rocket blast (schema 3+).
+`w`, `x`, `y`, `direct`, `dist`, `enemiesHit`, `dmg`, `selfDmg`, `hits`
+(`{eid, arch, amt}[]`).
+
+**Why it exists.** A rocket is the one weapon that emits no `shot`-time `hit`
+events at all: `fire()` returns at `if (w.isRocket)` before `resolveShot` runs,
+so across the entire archive **0 of 3,248,140 `hit` events are ghidra**. Every
+rocket question therefore had to be simulated or dropped —
+`report:damage-model`'s ghidra rows read 100% miss on every capture on disk, and
+the 2026-08-20 finding that the shotgun is the only weapon hitting 2+ enemies
+(23.8% of its shots, against 0.0% for pistol and gdb) could not be evaluated for
+rockets at all, because splash leaves no per-target trace.
+
+`hits` is deliberately the same `{eid, arch, amt}[]` shape `damageTaken.by` uses,
+so "how many enemies did one shot hit, and which archetypes" is the *same query*
+for a rocket as for a shotgun blast.
+
+**`direct` is the field that cannot be reconstructed.** It says an enemy stopped
+the rocket rather than the wall behind it. Splash lands either way, so damage
+dealt cannot distinguish the two — which is exactly the distinction the
+2026-08-19 tunnelling analysis had to reproduce in a simulation because the log
+could not answer it.
+
 **`kill`** — `eid`, `arch`, `maxHp`, `w`, `forcedMelee`, `aggroAt`† (closes the TTK
 window without needing the separate `ttkRecords` array).
 
