@@ -25,7 +25,7 @@ export function buildIndexDom(): void {
           <div id="launch-tabs" role="tablist">
             <button id="tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="tab-panel-local">Local</button>
             <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
-            <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
+            <button id="tab-repo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-repo">GitHub</button>
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
             <button id="tab-multiplayer" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-multiplayer" disabled title="Multiplayer requires a GitHub-loaded repo or the Demos campaign">Multiplayer</button>
             <button id="tab-settings" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-settings" aria-label="Settings" title="Settings">⚙</button>
@@ -36,11 +36,11 @@ export function buildIndexDom(): void {
           <div id="tab-panel-continue" class="tab-panel" role="tabpanel" hidden>
             <button id="continue-run" type="button">📁 Continue Run</button>
           </div>
-          <div id="tab-panel-github" class="tab-panel" role="tabpanel" hidden>
-            <input id="github-repo-input" type="text" />
-            <button id="load-github-repo" type="button">Load from GitHub</button>
-            <p id="github-status" class="muted"></p>
-            <div id="github-suggestions" class="github-suggestions">
+          <div id="tab-panel-repo" class="tab-panel" role="tabpanel" hidden>
+            <input id="repo-input" type="text" />
+            <button id="load-repo" type="button">Load from GitHub</button>
+            <p id="repo-status" class="muted"></p>
+            <div id="repo-suggestions" class="repo-suggestions">
               <button type="button" class="suggestion-btn" data-repo="EnterpriseQualityCoding/FizzBuzzEnterpriseEdition" title="EnterpriseQualityCoding/FizzBuzzEnterpriseEdition">Easy</button>
               <button type="button" class="suggestion-btn" data-repo="id-Software/DOOM" title="id-Software/DOOM">Medium</button>
             </div>

@@ -17,13 +17,15 @@
  * given file is never fetched twice.
  */
 
+import type { TreeNode } from "./workspace";
 import {
-  compareNodes,
-  isIgnoredDirectoryName,
-  isIgnoredFileName,
-  type RemoteFileHandle,
-  type TreeNode,
-} from "./workspace";
+  CachedRemoteFileHandle,
+  buildRemoteTree,
+  formatRateLimitReset,
+  rateLimitMessage,
+  readJsonWithProgress,
+  type RemoteHost,
+} from "./remoteHost";
 
 const GITHUB_API = "https://api.github.com";
 
@@ -50,38 +52,6 @@ interface GithubTreeEntry {
   path: string;
   type: "blob" | "tree" | "commit";
 }
-
-/** Lazily fetches (and caches) one file's raw text from a public repo. */
-class GithubFileHandle implements RemoteFileHandle {
-  private cached: string | null = null;
-
-  constructor(private readonly rawUrl: string) {}
-
-  async getFile(): Promise<{ text(): Promise<string> }> {
-    if (this.cached === null) {
-      const res = await fetch(this.rawUrl);
-      if (!res.ok) {
-        // This one fires *mid-session*, long after the tree loaded fine —
-        // the next level's source is fetched only when it's about to be
-        // played — so it needs to name its own cause just as much as the
-        // initial load does. `false`: raw.githubusercontent.com's rate-limit
-        // headers are not CORS-exposed, so a 403 has to be read as a rate
-        // limit rather than confirmed as one (see `isRateLimited`).
-        throw new Error(describeHttpFailure(res, `Failed to fetch "${this.rawUrl}"`, false));
-      }
-      this.cached = await res.text();
-    }
-    const text = this.cached;
-    return { text: async () => text };
-  }
-}
-
-/** A directory node's `handle` is never actually called (only `kind` is
- * checked before deciding to recurse) — this stub only exists to satisfy
- * `TreeNode.handle`'s type. */
-const DIRECTORY_STUB: RemoteFileHandle = {
-  getFile: () => Promise.reject(new Error("Not a file")),
-};
 
 /**
  * Fetches a public repo's default branch, then its full recursive file tree,
@@ -111,7 +81,21 @@ export async function fetchGithubTree(
   }
   const treeJson = await readJsonWithProgress<{ tree: GithubTreeEntry[]; truncated?: boolean }>(treeRes, onTreeBytes);
 
-  const tree = buildTree(ref, branch, treeJson.tree);
+  const tree = buildRemoteTree(
+    ref.repo,
+    treeJson.tree.filter((e) => e.type === "blob").map((e) => e.path),
+    (path) =>
+      new CachedRemoteFileHandle(
+        `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${branch}/${path}`,
+        // `false`: raw.githubusercontent.com's rate-limit headers are not
+        // CORS-exposed, so a 403 has to be read as a rate limit rather than
+        // confirmed as one (see `isRateLimited`). This fires *mid-session*,
+        // long after the tree loaded fine — the next level's source is fetched
+        // only when it is about to be played — so it must name its own cause
+        // just as much as the initial load does.
+        (res, url) => describeHttpFailure(res, `Failed to fetch "${url}"`, false),
+      ),
+  );
 
   if (treeJson.truncated) {
     tree.truncated = true;
@@ -147,9 +131,7 @@ function describeHttpFailure(res: Response, whatFailed: string, budgetHeadersRea
     // request failed is not the useful half here, and "Repository … not
     // found or inaccessible: you've hit the rate limit" reads as two
     // contradictory diagnoses of the same failure.
-    return `GitHub's public rate limit reached${formatRateLimitReset(res)}. ` +
-      "Requests from this app are unauthenticated, so a lot of browsing runs the limit down. " +
-      "Waiting is the fix — or load a local folder from the Local tab in the meantime.";
+    return rateLimitMessage("GitHub", formatRateLimitReset(res, "x-ratelimit-reset"));
   }
   return `${whatFailed} (${res.status} ${res.statusText})`;
 }
@@ -172,46 +154,6 @@ function isRateLimited(res: Response, budgetHeadersReadable: boolean): boolean {
   return res.headers?.get("x-ratelimit-remaining") === "0";
 }
 
-/** " — it resets in about 7 minutes", when the response says when. GitHub
- * sends `x-ratelimit-reset` as a Unix timestamp in seconds. */
-function formatRateLimitReset(res: Response): string {
-  const reset = Number(res.headers?.get("x-ratelimit-reset"));
-  if (!Number.isFinite(reset) || reset <= 0) return "";
-  const minutes = Math.ceil((reset * 1000 - Date.now()) / 60_000);
-  if (minutes <= 0) return "";
-  return ` — it resets in about ${minutes} minute${minutes === 1 ? "" : "s"}`;
-}
-
-/**
- * Reads `res`'s body and JSON-parses it, calling `onBytes` with the
- * cumulative byte count as each chunk of the stream arrives. Falls back to a
- * plain `res.json()` when no callback was given or the runtime doesn't
- * expose a streamable body (some test environments) — same end result,
- * just without the incremental callback.
- */
-async function readJsonWithProgress<T>(res: Response, onBytes?: (bytesReceived: number) => void): Promise<T> {
-  if (!onBytes || !res.body) return (await res.json()) as T;
-
-  const reader = res.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let received = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-    received += value.byteLength;
-    onBytes(received);
-  }
-
-  const merged = new Uint8Array(received);
-  let offset = 0;
-  for (const chunk of chunks) {
-    merged.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return JSON.parse(new TextDecoder("utf-8").decode(merged)) as T;
-}
-
 async function resolveDefaultBranch(ref: GithubRepoRef, signal?: AbortSignal): Promise<string> {
   const res = await fetch(`${GITHUB_API}/repos/${ref.owner}/${ref.repo}`, { signal });
   if (!res.ok) {
@@ -223,52 +165,10 @@ async function resolveDefaultBranch(ref: GithubRepoRef, signal?: AbortSignal): P
   return json.default_branch;
 }
 
-function buildTree(ref: GithubRepoRef, branch: string, entries: GithubTreeEntry[]): TreeNode {
-  const root: TreeNode = { name: ref.repo, path: ref.repo, kind: "directory", handle: DIRECTORY_STUB, children: [] };
-  const dirsByPath = new Map<string, TreeNode>([["", root]]);
-
-  const ensureDir = (path: string, name: string, parent: TreeNode): TreeNode => {
-    let dir = dirsByPath.get(path);
-    if (!dir) {
-      dir = { name, path: `${ref.repo}/${path}`, kind: "directory", handle: DIRECTORY_STUB, children: [] };
-      parent.children!.push(dir);
-      dirsByPath.set(path, dir);
-    }
-    return dir;
-  };
-
-  for (const entry of [...entries].sort((a, b) => a.path.localeCompare(b.path))) {
-    if (entry.type !== "blob") continue; // directories are synthesized from file paths below
-
-    const segments = entry.path.split("/");
-    if (segments.some((seg) => isIgnoredDirectoryName(seg))) continue;
-
-    const fileName = segments[segments.length - 1];
-    if (isIgnoredFileName(fileName)) continue;
-
-    let parent = root;
-    let accPath = "";
-    for (let i = 0; i < segments.length - 1; i++) {
-      accPath = accPath ? `${accPath}/${segments[i]}` : segments[i];
-      parent = ensureDir(accPath, segments[i], parent);
-    }
-
-    parent.children!.push({
-      name: fileName,
-      path: `${ref.repo}/${entry.path}`,
-      kind: "file",
-      handle: new GithubFileHandle(
-        `https://raw.githubusercontent.com/${ref.owner}/${ref.repo}/${branch}/${entry.path}`,
-      ),
-    });
-  }
-
-  sortRecursively(root);
-  return root;
-}
-
-function sortRecursively(node: TreeNode): void {
-  if (!node.children) return;
-  node.children.sort(compareNodes);
-  for (const child of node.children) sortRecursively(child);
-}
+/** The adapter, for the host registry in `remoteHosts.ts`. */
+export const GITHUB_HOST: RemoteHost = {
+  id: "github",
+  label: "GitHub",
+  parseInput: parseGithubRepoInput,
+  fetchTree: fetchGithubTree,
+};

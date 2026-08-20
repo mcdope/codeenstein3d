@@ -150,7 +150,7 @@ body {
 
 #select-workspace,
 #continue-run,
-#load-github-repo,
+#load-repo,
 #launch-demo-campaign {
   width: 100%;
   padding: 10px 12px;
@@ -163,7 +163,7 @@ body {
   cursor: pointer;
 }
 
-#load-github-repo {
+#load-repo {
   margin-top: 8px;
 }
 
@@ -173,14 +173,14 @@ body {
 
 #select-workspace:hover:not(:disabled),
 #continue-run:hover:not(:disabled),
-#load-github-repo:hover:not(:disabled),
+#load-repo:hover:not(:disabled),
 #launch-demo-campaign:hover:not(:disabled) {
   filter: brightness(1.12);
 }
 
 #select-workspace:disabled,
 #continue-run:disabled,
-#load-github-repo:disabled,
+#load-repo:disabled,
 #launch-demo-campaign:disabled {
   background: var(--border);
   cursor: not-allowed;
@@ -227,7 +227,7 @@ body {
   accent-color: var(--accent);
 }
 
-#github-repo-input,
+#repo-input,
 /* Every single-line text field in the sidebar — the session code and lobby
  * listing name in the Multiplayer tab, and the Player name setting. Named for
  * where it is used rather than for multiplayer, which is where it started. */
@@ -336,12 +336,12 @@ body {
   background: var(--bg-hover);
 }
 
-#github-status {
+#repo-status {
   margin: 6px 0 0;
   overflow-wrap: anywhere;
 }
 
-.github-suggestions {
+.repo-suggestions {
   display: flex;
   gap: 6px;
 }
@@ -685,7 +685,7 @@ a.settings-btn {
 }
 
 /* "This listing is partial" — drawn above the tree by `renderFileTree` when
- * GitHub truncated the file list. Sticky so it stays readable while
+ * the file listing came back incomplete. Sticky so it stays readable while
  * scrolling a big tree; it's a property of the whole listing, not of the
  * rows currently in view. */
 .tree-notice {
