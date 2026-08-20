@@ -607,35 +607,45 @@ must not widen, and it is why §3 adds no per-frame work whatsoever.
 
 ### 1.2 Balance constants
 
-**There is no single constants module.** Numbers live across ~14 files in two
-layers. `SIMULATION_BALANCE` (`engine.ts:308-322`) is a partial aggregator feeding
-`computeBalanceHash`, and it is explicitly incomplete — its own comment
-(`engine.ts:300-306`) names `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`,
-`SPIKE_DPS`, `MINE_DAMAGE_FALLOFF_FLOOR` and `PROJECTILE_SPEED` as *not* covered.
+**There is no single constants module**, but since 2026-08-19 there is a single
+*aggregator*. `SIMULATION_BALANCE` (`engine.ts`) feeds `computeBalanceHash` and now
+folds in whole tables — `WEAPONS`, `COMBAT_BALANCE` and `TRAP_BALANCE` — rather than
+a hand-picked list of scalars. The list of five constants this section used to name
+as uncovered (`ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`, `SPIKE_DPS`,
+`MINE_DAMAGE_FALLOFF_FLOOR`, `PROJECTILE_SPEED`) is covered by those tables today, and
+`simulationBalanceCoverage.test.ts` fails on any value-carrying export that is missing —
+so "wholesale" is enforced rather than claimed. See
+[Design Decisions](decisions.md#simulation-constants-are-hashed-as-tables-not-as-picked-scalars).
 
-#### Weapons — `src/engine/weapons.ts:150-292`
+#### Weapons — `WEAPONS` in `src/engine/weapons.ts`
 
-| # | `name` | Dmg/pellet | Pellets | `spreadPx` | Fire interval | Auto | Ammo/shot | Pool | Kind | Range limit | Lifesteal |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| 0 | echo pistol | 22 | 1 | 0 | 0.15 s | — | 1 | bullets | hitscan | — | — |
-| 1 | Regex Shotgun | 25 | 7 | 70 | 0.85 s | — | 4 | bullets | hitscan | — | — |
-| 2 | SIGKILL Knife | 40 | 1 | 0 | (default 0.15 s) | — | 0 | *none* | melee | `meleeRange` 1.5 | 1 |
-| 3 | gdb | 12 | 1 | 0 | 0.09 s | yes | 1 | smg | hitscan | — | — |
-| 4 | ghidra | 150 | 1 | 0 | 1.1 s | — | 1 | rockets | **projectile** | blast 2.6 | — |
-| 5 | Friday Hotfix | 8 | 6 | 45 | 0.1 s | yes | 2.5 | gas | hitscan | full to 2.5, zero at `maxRange` 6.5 | — |
-| 6 | Toolchain | 80 | 1 | 0 | 0.35 s | yes | 0 | *none* | melee | `meleeRange` 1.5 | 3 |
+| # | `name` | Dmg/pellet | Pellets | `spreadPx` | Fire interval | Auto | Ammo/shot | Pool | Magazine / reload | Kind | Range limit | Lifesteal |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 0 | echo pistol | 22 | 1 | 0 | 0.15 s | — | 1 | bullets | 9 / 1.1 s | hitscan | — | — |
+| 1 | Regex Shotgun | 25 | 7 | 70 | 0.85 s | — | 1 | **shells** | 2 / 1.2 s | hitscan | — | — |
+| 2 | SIGKILL Knife | 40 | 1 | 0 | (default 0.15 s) | — | 0 | *none* | — | melee | `meleeRange` 1.5 | 1 |
+| 3 | gdb | 12 | 1 | 0 | 0.09 s | yes | 1 | smg | 45 / 2.0 s | hitscan | — | — |
+| 4 | ghidra | 150 | 1 | 0 | 1.1 s | — | 1 | rockets | 1 / 1.6 s | **projectile** | blast 2.6 | — |
+| 5 | Friday Hotfix | 8 | 6 | 45 | 0.1 s | yes | 2.5 | gas | *none* | hitscan | full to 2.5, zero at `maxRange` 6.5 | — |
+| 6 | Toolchain | 80 | 1 | 0 | 0.35 s | yes | 0 | *none* | — | melee | `meleeRange` 1.5 | 3 |
 
-gdb overrides `maxConeDeviationPx` to 20 (`weapons.ts:230`); everything else uses
-the shared `MAX_CONE_DEVIATION_PX = 38` (`engine.ts:338`).
+gdb overrides `maxConeDeviationPx` to 20 (its own `WEAPONS` entry); everything else
+uses the shared `MAX_CONE_DEVIATION_PX = 38` (`engine.ts`).
 
-**There are no magazines, no reload, and no weapon switch/draw time anywhere in the
-codebase.** Ammo is a flat continuous pool per type, decremented directly at
-`fire()` (`engine.ts:4340`); switching is instant (`consumeWeaponRequest` → `equip`,
-no timer). **Ammo has no upper cap** — `engine.ts:222-223` states it outright; only
-the IDKFA cheat's `CHEAT_MAX_AMMO = 999` bounds anything.
+**Magazines and reloading shipped 2026-08-15**; the table's last two columns are
+them. Every ranged weapon but Friday Hotfix draws from a magazine that empties into a
+reload (auto on dry, or `R`/gamepad `X` early), and a reload only *moves* ammo between
+the reserve and the magazine — nothing is ever lost, so the pools below still bound
+total output exactly as they did. A weapon with no `magazineSize` never reloads and
+never blocks its own trigger (`updateFiring` treats "no magazine" and "magazine full"
+identically). **Switching weapons is still instant** (`consumeWeaponRequest` → `equip`,
+no draw timer) and **cancels a reload in progress**. **Ammo still has no upper cap** —
+`engine.ts` states it outright; only the IDKFA cheat's `CHEAT_MAX_AMMO = 999` bounds
+anything, which is why the status bar's ammo table shows one number per row rather
+than current/max.
 
 **Hitscan weapons have no damage falloff.** Damage is flat per pellet at any range.
-What falls off is *accuracy* — the Cone of Fire, `engine.ts:4268-4270`:
+What falls off is *accuracy* — the Cone of Fire (`fire()` in `engine.ts`):
 
 ```
 rangeFraction = min(1, zBuffer[col] / FOG_FAR)          // FOG_FAR = 14 tiles
@@ -649,16 +659,21 @@ computable offline — see §4.4.
 Ghidra is the one projectile: `ROCKET_SPEED = 18` t/s, `ROCKET_BLAST_RADIUS = 2.6`,
 damage `150 * max(0.3, 1 - d/2.6)`, and it damages the firer too (`rockets.ts:20-121`).
 
-Starting ammo (`ammo.ts:86-104`), before carryover:
+Starting ammo (`startingAmmo()` in `ammo.ts`), before carryover:
 
 ```
 bullets = max(28, round(shotsToClear * 1.7 + enemies.length * 2.5) + 10)
           where shotsToClear = Σ ceil(enemy.maxHp / 22)      // 22 = pistol damage
-rockets = 4    smg = 40    gas = 40
+shells = 12    rockets = 4    smg = 40    gas = 40
 ```
 
-Note this is computed *after* difficulty HP scaling (`createPlayerState` at
-`engine.ts:1044` runs after the rescale at `:1016-1020`), so it scales with
+`shells` is the one flat reserve that is *not* gated on owning its weapon — the
+shotgun is a starting weapon. Its size was derived from what the old shared pool
+afforded at 4 bullets a pull, not from a capture; drop amounts are
+`SHELLS_DROP_AMOUNT = 2` (one full magazine) and `ELITE_SHELLS_DROP_AMOUNT = 8`.
+
+Note this is computed *after* difficulty HP scaling (`createPlayerState` runs after
+the roster rescale in the `RaycasterEngine` constructor), so it scales with
 difficulty for free. It also means **level 1 already ships with a guaranteed
 bullets-only clear margin**: the `× 1.7` applies to the perfect-accuracy shot count,
 the per-enemy `ceil` rounds each enemy's cost up on top of that, and the miss buffer
@@ -678,26 +693,38 @@ Three archetypes, distinguished by two booleans on `Enemy`, not by a stat table.
 
 | | Regular | Elite | Edge Case |
 |---|---|---|---|
-| Trigger | function/method entity | same, `complexity ≥ 40` | corridor dressing |
-| HP | `max(25, round(c*25/count))` | `c * 25 * 2` | 10–15 uniform |
+| Trigger | function/method entity | same, `complexity ≥ 40` | corridor dressing, and the tail of a `switch`-heavy entity's pack |
+| Pack size | `1 + floor(c/5)` | `ceil(min(c*25*2, 8*350) / 350)`, ≤ 8 | 1 |
+| HP | `max(25, round(c*25/count))`, anchor-weighted in a guarded (private/protected) room | `min(c*25*2, 2800)` split across the pack, each member ≤ 350 | 10–15 uniform |
 | Melee dmg | 10 | 20 | 4 |
-| Bolt dmg | 8 | 16 | 3.2 |
+| Bolt dmg | 8 | **32** | **1.6** |
+| Bolt speed | 5 | **3.6** | **7.5** |
+| Bolt spread | 0° | 0° | **7°** |
 | Melee interval | 0.8 s | 0.8 s | 0.8 s |
-| Ranged interval | 1.2–2.6 s uniform | same | same |
+| Ranged interval | 1.2–2.6 s uniform | **2.4–5.2 s** | **0.6–1.3 s** |
 | Aggro radius | 7.5 | 7.5 | 7.5 |
 | Melee radius | 0.5 | 0.5 | 0.5 |
 | Ranged range | 8 | 8 | 8 |
 | Chase speed | 1.7 | 1.7 | 3.74 |
 | Roam speed | 0.8 | 0.8 | 1.76 |
 
-Sources: `enemyAi.ts:26-62` (`AGGRO_RADIUS`, `MOVEMENT_SPEED`, `RANGED_RANGE`,
+**Ranged attacks are per-archetype since 2026-08-19** (`ENEMY_WEAPONS` in
+`combatConstants.ts`): each archetype's bolt carries its own damage, speed, cooldown
+window, aim spread and palette (magenta / orange / cyan), sized so **mean ranged DPS
+per archetype is unchanged** — an Elite's shell is 2× damage on a 2× cooldown, an Edge
+Case's spray 0.5× on a 0.5× cooldown. That DPS-neutrality is deliberate: it is what let
+`COMPLEXITY_PER_EXTRA_ENEMY` move the next day as the only difficulty lever in its
+change.
+
+Sources: `combatConstants.ts` (`AGGRO_RADIUS`, `MOVEMENT_SPEED`, `RANGED_RANGE`,
 `FIRE_COOLDOWN_MIN/MAX`, `ROAM_SPEED`, `ATTACK_RADIUS`, `ATTACK_COOLDOWN`,
 `ATTACK_DAMAGE`, `ELITE_DAMAGE_MULTIPLIER`, `EDGE_CASE_SPEED_MULTIPLIER`,
-`EDGE_CASE_DAMAGE_MULTIPLIER`), `projectiles.ts:15-19` (`PROJECTILE_SPEED` 5,
-`PROJECTILE_DAMAGE` 8, `PROJECTILE_RADIUS` 0.15), `enemies.ts:11-68`.
+`EDGE_CASE_DAMAGE_MULTIPLIER`, `PROJECTILE_SPEED/DAMAGE/RADIUS`, `ENEMY_WEAPONS`),
+`enemies.ts` (the generator-side pack maths).
 
-**Every one of those `enemyAi.ts` constants is module-private.** That is the
-solver's one real blocker for incoming-DPS and threat-score metrics — see §7.
+**Those constants are no longer module-private.** They moved out of `enemyAi.ts` into
+`combatConstants.ts` and are exported as `COMBAT_BALANCE`, which is what closed the
+solver blocker this section used to record for incoming-DPS and threat-score metrics.
 
 Aggro needs proximity **and** line of sight (`enemyAi.ts:173-182`) and is sticky;
 being shot sets it unconditionally, bypassing LOS (`engine.ts:4454`). There is no
@@ -705,8 +732,9 @@ telegraph on either attack. Bolts do not home.
 
 #### Player — `src/engine/engine.ts`
 
-`MAX_HEALTH` 100 (`:203`), `MOVE_SPEED` 3.2 (`:182`), `SPRINT_MULTIPLIER` 2.0
-(`:184`), `ROT_SPEED` 2.6 rad/s (`:186`), collision radius 0.2 (`player.ts:23`).
+`MAX_HEALTH` 100 (in `combatConstants.ts` since the 2026-08-19 move, re-exported
+through `COMBAT_BALANCE`), `MOVE_SPEED` 3.2, `SPRINT_MULTIPLIER` 2.0, `ROT_SPEED`
+2.6 rad/s, collision radius 0.2 (`player.ts`).
 Strafe is the *same* speed as forward (`player.ts:80-84`) and reversing is too.
 
 Armour is `swap`, starts at 0, caps at `MAX_SWAP = 100` (`loot.ts:167`), and
@@ -817,15 +845,22 @@ Complexity is `1 + decisionPoints + smellBonus` (`genericParser.ts:175`), where 
 smell bonus adds 2 per parameter beyond 5 and 3 per nesting level beyond 3
 (`astUtils.ts:108-117`).
 
-The enemy mapping, verbatim (`enemies.ts:92-101`):
+The enemy mapping, condensed from `spawnEnemies` (`map/generation/enemies.ts`):
 
 ```ts
 const complexity = Math.max(1, room.entity.complexityScore);
-const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;          // 40
-const count = elite ? 1 : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);  // 10
-const hp = elite
-  ? complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER          // 25 * 2
-  : Math.max(HP_PER_COMPLEXITY, Math.round((complexity * HP_PER_COMPLEXITY) / count));
+const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;           // 40
+const eliteTotal = Math.min(
+  complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER,           // 25 * 2
+  ELITE_MAX_MEMBERS * ELITE_MEMBER_HP_CAP,                        // 8 * 350 = 2800
+);
+const count = elite
+  ? Math.ceil(eliteTotal / ELITE_MEMBER_HP_CAP)                   // 350
+  : 1 + Math.floor(complexity / COMPLEXITY_PER_EXTRA_ENEMY);      // 5, was 10 until 2026-08-19
+// A guarded (private/protected) room weights the anchor; Elite packs are exempt.
+const anchorWeight = !elite && isLockableRoom(room, roomIndex) ? GUARD_ANCHOR_WEIGHT : 1;
+const [anchorHp, memberHp] = packHitPoints(elite ? eliteTotal : total, count, anchorWeight);
+// every member is additionally clamped to ELITE_MEMBER_HP_CAP
 ```
 
 **There is no clamp, cap or normalisation on enemy HP.** The only `clamp()` near

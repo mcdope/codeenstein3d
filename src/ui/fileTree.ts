@@ -29,7 +29,7 @@ export function renderFileTree(
 }
 
 /** The wording deliberately matches `doc/user/troubleshooting.md`'s
- * "A big GitHub repo loaded, but it seems incomplete" entry, down to the
+ * "A big repo loaded, but it seems incomplete" entry, down to the
  * advice — cloning and using the **Local** tab is the only real fix, since
  * the truncation happens inside GitHub's API before anything here sees it. */
 function buildTruncatedNotice(): HTMLElement {

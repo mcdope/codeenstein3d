@@ -11,11 +11,11 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 | File | A level |
 | Folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order levels are played in |
 | Function, method, class or global | A room of that level |
-| Function | An enemy in its room — HP scales with its cyclomatic complexity |
+| Function | An enemy in its room — HP scales with its cyclomatic complexity, and past complexity 5 it becomes a *pack* sharing that HP (one more member per 5 points) rather than a single sponge |
 | Function with more than 5 params or more than 3 nesting levels | A tougher enemy (a "code smell" bonus on top of complexity) |
 | Function at extreme complexity (≥40) | An **Elite pack** — 2× the room's usual HP budget, led by a gold-tinted Elite dealing 2× melee damage (and one heavy, slow, dodgeable ranged shell — see [Enemies](#enemies)) with a 60% chance of an extra weapon drop |
 | Global variable | An acid pool (hazard terrain) |
-| Private/protected method | A locked room, gated behind a key placed somewhere already reachable |
+| Private/protected method | A locked room, gated behind a key placed somewhere already reachable — and a *guarded* pack: a noticeably tougher gatekeeper at the front with lighter escorts behind it, at the same total room strength. Kill the gatekeeper first and you'll take more damage than if you clear the escorts and leave it for last |
 | `goto`/label pair | A linked teleporter pad pair |
 | Large comment | A glowing lore terminal — press `F` to read it |
 | Comment flagged `TODO`/`FIXME` | Also a lore terminal, plus a small "technical debt" encounter nearby: a spike trap, a proximity mine, or a weak enemy (equally likely) |
@@ -28,7 +28,7 @@ Codeenstein 3D parses your source into an AST and turns its structure into a pla
 
 The level-start briefing shows how many secret rooms a level actually has ("Secrets") alongside its room/enemy counts — worth keeping an eye on the walls. A single level tops out at 5 of them, however many triggers the file contains.
 
-**What doesn't become a level.** Before anything is parsed, the loader drops directories that are tooling rather than authored code — `.git`, `node_modules`, `vendor`, `dist`, `build`, `.cache`, `.idea`, `.vscode`, `__pycache__` — and test directories (`test`, `tests`, `__tests__`) along with colocated test files (`foo_test.go`, `FooTests.cs`, `bar.spec.ts`). Test code is someone else's map of your code, not your code; letting it in roughly doubles a well-tested repo's campaign with levels that read as duplicates of the ones beside them. The same list applies to a local folder and a GitHub repo alike. See [Troubleshooting](troubleshooting.md) for the rest of what gets skipped silently, and why.
+**What doesn't become a level.** Before anything is parsed, the loader drops directories that are tooling rather than authored code — `.git`, `node_modules`, `vendor`, `dist`, `build`, `.cache`, `.idea`, `.vscode`, `__pycache__` — and test directories (`test`, `tests`, `__tests__`) along with colocated test files (`foo_test.go`, `FooTests.cs`, `bar.spec.ts`). Test code is someone else's map of your code, not your code; letting it in roughly doubles a well-tested repo's campaign with levels that read as duplicates of the ones beside them. The same list applies to a local folder and a loaded repository alike. See [Troubleshooting](troubleshooting.md) for the rest of what gets skipped silently, and why.
 
 There are two kinds of door, and they're easy to tell apart. A **key-locked** door comes in one of four colours — red, blue, green or violet — and needs that colour's dependency key; the generator always places a reachable one first. A level locks at most four rooms, so a colour is never reused within a level: the colour *is* the room's identity. An **amber** door is a Switchboard branch door — no key, just walk into it and it opens. Both show in their own colour on the minimap and automap too, so you can tell at a glance whether a door is worth walking to. There's deliberately no yellow key, by the way — amber is spoken for by the branch door, and telling those two apart matters more than matching Doom's key set. See [Colours & Pickups](colors-and-pickups.md#what-a-key-looks-like) for what each key looks like on the ground and on the HUD.
 
@@ -38,17 +38,19 @@ Corridors aren't left as bare tubes. Rooms are placed next to each other, so the
 
 ## Weapons
 
-| Weapon | Slot | Type | Notes |
-|---|---|---|---|
-| echo pistol | 1 | Hitscan, ~6.6 shots/sec | Starting weapon |
-| Regex Shotgun | 2 | 7-pellet cone, pump-action (one blast per 0.85s) | Starting weapon |
-| SIGKILL Knife | `Space` only | Melee | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
-| gdb | 3 | Full-auto hitscan | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
-| ghidra | 4 | Rocket / splash damage | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
-| Friday Hotfix | 5 | Full-auto 6-pellet cone; full damage to 2.5 tiles, thinning out to nothing by 6.5 | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
-| Toolchain | `Space` only | Full-auto melee | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |
+| Weapon | Slot | Type | Magazine | Notes |
+|---|---|---|---|---|
+| echo pistol | 1 | Hitscan, ~6.6 shots/sec | 9 rounds | Starting weapon |
+| Regex Shotgun | 2 | 7-pellet cone, pump-action (one blast per 0.85s) | 2 shells | Starting weapon |
+| SIGKILL Knife | `Space` only | Melee | — | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
+| gdb | 3 | Full-auto hitscan | 45 rounds | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
+| ghidra | 4 | Rocket / splash damage | 1 rocket | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
+| Friday Hotfix | 5 | Full-auto 6-pellet cone; full damage to 2.5 tiles, thinning out to nothing by 6.5 | none — it never reloads | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
+| Toolchain | `Space` only | Full-auto melee | — | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |
 
-Ranged weapons draw from four separate ammo pools: **Bullets** (echo pistol/Regex Shotgun), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally thins out with distance on top of that — full damage out to about 2.5 tiles, fading to nothing by 6.5 — so it has a genuine flamethrower's reach rather than a wide cone that happens to scatter, and fires a fanning flame stream instead of the thin tracer line every other gun draws. It used to stop dead at 3.5 tiles, which meant full damage at 3.4 and none at all at 3.6.
+Ranged weapons draw from five separate ammo pools: **Bullets** (echo pistol only), **Shells** (Regex Shotgun only), **SMG Ammo** (gdb only), **Rockets** (ghidra only), and **Gas** (Friday Hotfix only). Bullets and shells are both there from the first minute, since both weapons are; SMG/rocket/gas ammo won't drop or spawn on the map at all until you actually own the matching weapon. Hitscan pellets deviate more the further away the target is, so point-blank shots are reliable and very long-range ones can miss. Friday Hotfix additionally thins out with distance on top of that — full damage out to about 2.5 tiles, fading to nothing by 6.5 — so it has a genuine flamethrower's reach rather than a wide cone that happens to scatter, and fires a fanning flame stream instead of the thin tracer line every other gun draws. It used to stop dead at 3.5 tiles, which meant full damage at 3.4 and none at all at 3.6.
+
+Every gun but the flamethrower also holds a **magazine** and reloads — see [Reloading](controls.md#reloading) for the sizes and what a reload does and doesn't cost you.
 
 Every gun also has its own **cadence**, and clicking faster can't beat it. The Regex Shotgun is the one you'll feel: it's pump-action, so it cycles for 0.85s after each blast — you'll hear it rack — and that pause is exactly what buys its huge burst damage up close. The echo pistol cycles far quicker (~6.6 shots/sec) but still has a floor. The cadence is tracked per *player*, not per weapon, so switching guns mid-cycle won't let you shoot any sooner; quick-melee on `Space` is always available though, which is your out while a pump finishes.
 

@@ -8,13 +8,13 @@ Play a campaign as a coop team, 2-4 players, in real time. There's no deathmatch
 
 ## Hosting a session
 
-1. Load a workspace the same way you would for single-player — a GitHub repo or the Demos campaign (a locally-picked folder can't be hosted, see [Privacy](privacy.md)).
+1. Load a workspace the same way you would for single-player — a repository from the **Repo** tab (GitHub, GitLab or Codeberg) or the Demos campaign (a locally-picked folder can't be hosted, see [Privacy](privacy.md)).
 
    Only the host needs the workspace. Everyone else receives the finished level
    from the host over the connection — nobody else downloads the repo, and nobody
    else re-builds the level from it. That means it doesn't matter if your friends
-   couldn't load that repo themselves, or if GitHub returned a
-   [partial file listing](troubleshooting.md#a-big-github-repo-loaded-but-it-seems-incomplete)
+   couldn't load that repo themselves, or if the host it came from returned a
+   [partial file listing](troubleshooting.md#a-big-repo-loaded-but-it-seems-incomplete)
    for a very large one: you all play exactly the campaign the host has, however
    long or short that turned out to be.
 

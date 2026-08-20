@@ -56,7 +56,7 @@ Four things drop files before anything is parsed, and all four are deliberate:
 A file whose parse simply *fails* is also skipped rather than ending the run, with
 `[parser] Skipping "…": parse failed — …` in the console.
 
-## "A big GitHub repo loaded, but it seems incomplete"
+## "A big repo loaded, but it seems incomplete"
 
 Very large repositories can come back with an incomplete file listing, and there is nothing
 this app can do about it from the browser. GitHub's API truncates the listing itself; GitLab
@@ -76,12 +76,15 @@ large enough that some files are missing. The campaign still plays, built from
 whatever GitHub returned; clone the repo and use the Local tab to get all of it.
 ```
 
-The campaign still plays; it's just built from whatever GitHub returned. For a repo that
-size, cloning it and using the **Local** tab gets you the whole thing.
+The campaign still plays; it's just built from whatever the host returned. For a repo that
+size, cloning it and using the **Local** tab gets you the whole thing. GitLab and Codeberg
+log the same thing under their own `[gitlab]`/`[codeberg]` prefix, saying the tree was
+truncated after 40 pages rather than by the API.
 
-Note also that GitHub requests here are unauthenticated, so they're subject to the normal
-public rate limit. If loads start failing after a lot of browsing, that's usually it —
-waiting is the fix, and the app now says so outright rather than reporting a bare `403`:
+Note also that requests here are unauthenticated on every host, so they're subject to that
+host's normal public rate limit. If loads start failing after a lot of browsing, that's
+usually it — waiting is the fix, and the app now says so outright rather than reporting a
+bare `403`:
 
 ```
 Failed to fetch repository tree: you've hit GitHub's public rate limit — it resets in
@@ -100,7 +103,7 @@ Reading a local folder needs the [File System Access API](https://developer.mozi
 which only Chromium-based browsers (Chrome, Edge, Brave) implement, and only over `localhost`
 or HTTPS. The app detects this and says so in place of the workspace name.
 
-Everything else works anywhere: the **GitHub** tab and the bundled **Demos** campaign don't
+Everything else works anywhere: the **Repo** tab and the bundled **Demos** campaign don't
 touch the local filesystem at all.
 
 ## Multiplayer
@@ -113,11 +116,12 @@ when the dev server starts, so there's no in-app setting to flip — see
 
 ### "The Host sub-tab is greyed out"
 
-Hovering it says *"Hosting requires a GitHub-loaded repo or the Demos campaign"*, and that's
+Hovering it says *"Hosting requires a loaded repository or the Demos campaign"*, and that's
 the whole rule: **a locally-picked folder can't be hosted.** Your guests need the same source
 to build the same level from, and shipping your local files to them is exactly what this
 project doesn't do — so hosting is limited to sources they can obtain themselves. Load the
-repo through the **GitHub** tab instead, or host the **Demos** campaign.
+repo through the **Repo** tab instead (GitHub, GitLab or Codeberg all count), or host the
+**Demos** campaign.
 
 Joining has no such restriction. A guest receives the map from the host and needs no
 workspace of its own.

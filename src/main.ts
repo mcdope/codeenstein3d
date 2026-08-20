@@ -1501,7 +1501,7 @@ function isMultiplayerEligibleWorkspace(): boolean {
   return workspaceIsRemote || workspaceIsDemo;
 }
 
-const MULTIPLAYER_HOST_SUBTAB_DISABLED_TITLE = "Hosting requires a GitHub-loaded repo or the Demos campaign";
+const MULTIPLAYER_HOST_SUBTAB_DISABLED_TITLE = "Hosting requires a loaded repository or the Demos campaign";
 // No signaling server means multiplayer can't work at all in this build, so
 // the tab is fully hidden rather than just disabled (unlike the
 // workspace-eligibility case below, there's no action the user can take).
