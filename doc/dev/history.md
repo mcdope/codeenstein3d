@@ -12,6 +12,36 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The cluster fast-path's premise is right, its close-range handoff is not (2026-08-20, offline).** Follow-up to the finding that the fast-path — not `scoreRangedWeapon` — picks the shotgun and ghidra. The open question was whether handing clusters to a spread weapon is even justified in this engine. It is, for the shotgun.
+
+  **`resolveShot` resolves a target per pellet**, not per shot: `findTargetInProjections(...)` runs inside the pellet loop, so pellets can land on different enemies. Measured over 187k shots, the share hitting **two or more distinct enemies**:
+
+  | weapon | shots | 2 enemies | 3+ | mean pellets connecting |
+  |---|---|---|---|---|
+  | **shotgun** | 6,238 | **23.8%** | 1.4% | 3.26 of 7 |
+  | Friday Hotfix | 18,795 | 3.2% | 0.1% | 3.73 of 6 |
+  | pistol | 42,112 | **0.0%** | 0.0% | 1 of 1 |
+  | gdb | 120,134 | **0.0%** | 0.0% | 1 of 1 |
+
+  So the shotgun really is the only weapon in the arsenal that hits more than one enemy, a quarter of the time. **A geometric estimate said it would barely spread at 3 tiles and was wrong** — enemies bunch laterally while chasing, and pellets also catch targets at different depths down the same column. Measured, not reasoned.
+
+  **This also explains why the fast-path has to exist.** `scoreRangedWeapon` computes a single-target time-to-kill; it structurally cannot express "this shot also hits the enemy next to it". The fast-path is covering a real blind spot in the economics rather than overriding them arbitrarily — which is a coherent design and worth stating, because the previous entry's tone could be read as calling the fast-path a wart.
+
+  **The defect is the close-range handoff.** The fast-path gives clusters inside `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` (2.5) to Friday Hotfix and everything beyond to the shotgun. Multi-hit rate by firing distance:
+
+  | | 0-1.5 | 1.5-2.5 | 2.5-3.5 | 3.5-5 | 5-8 |
+  |---|---|---|---|---|---|
+  | shotgun | 8.2% | **17.5%** | 27.3% | **34.0%** | 27.7% |
+  | Friday Hotfix | 9.0% | **8.3%** | 0.3% | 0.1% | 0.0% |
+
+  **In Friday's own band the shotgun spreads 2.1x better (17.5% against 8.3%)**, and past 2.5 tiles Friday stops spreading altogether (0.3%, then 0.1%, then 0.0%) despite firing six pellets. Its 45px spread lands entirely inside one enemy's silhouette once that enemy is close enough to fill the screen, which is exactly the range it is given.
+
+  **Stated fairly: this does not make Friday's priority wrong.** It is the fastest killer in the game and the fast-path's own comment says so. The claim here is narrower and it is what was not known before — **Friday is not a spread weapon in practice**, so if its close-cluster priority is meant to be about hitting several enemies, it is not doing that. If it is about raw DPS, it is fine and the comment should say that instead.
+
+  **The shotgun's own numbers are internally coherent**: as range grows its multi-hit rate rises (8.2% -> 34.0%) while its mean connecting pellets falls (3.86 -> 1.73). The cone scatters pellets across more enemies and fewer of them land. Its best band, 3.5-5 tiles, is one it already gets.
+
+  **What stays unmeasurable.** Ghidra's 2.6-tile splash is the other AoE in the game and is invisible here, because rockets emit no `hit` events at all (0 of 3.2M) — the same telemetry blind spot recorded on 2026-08-19. So nothing in this data says whether ghidra or the shotgun is the better answer to a distant cluster, and any change to that half of the fast-path is unguided until rockets emit a detonation event.
+
 - [x] **Neither the shotgun nor ghidra is chosen by the weapon scorer — a cluster fast-path picks both, and it explains three separate open questions (2026-08-20, offline).** No machine time: the whole answer is in `combatPolicy.mjs` and the shot distribution the density capture already wrote.
 
   **The question.** The shotgun is a *starting* weapon, so unlike ghidra it is always owned — yet it is **2.9% of all shots** (5,854 of 212,210). Availability cannot explain it, so it looked like a `scoreRangedWeapon` problem.
