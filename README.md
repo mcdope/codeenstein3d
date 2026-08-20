@@ -270,7 +270,7 @@ level-end player stats screen (a measurable frame-time cost). See
 [Feature Flags](doc/dev/architecture.md#feature-flags) for the current defaults and the
 reasoning behind each.
 
-Releases are git tags (`beta-1` … `beta-7`) — that tag is the only release identity there is.
+Releases are git tags (`beta-1` … `beta-N`) — that tag is the only release identity there is.
 `package.json`'s `version` is deliberately unused (`0.0.0`, `private: true`), and nothing in the
 running app reports a version, so "which build is this?" is answered by the tag or the commit,
 not by the app.
