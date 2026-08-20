@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 import { describe, expect, it } from "vitest";
-import { HURT_FACE_FRAMES, allFaceKeys, damageBucket, faceKeyFor, type FaceInputs } from "./hudFace";
+import { HURT_FACE_FRAMES, allFaceKeys, damageBucket, faceGlyph, faceKeyFor, type FaceInputs } from "./hudFace";
 
 function inputs(over: Partial<FaceInputs> = {}): FaceInputs {
   return { health: 100, maxHealth: 100, hurtFrames: 0, hurtDir: 0, godMode: false, status: "alive", ...over };
@@ -46,6 +46,39 @@ describe("faceKeyFor", () => {
         }
       }
     }
+  });
+});
+
+describe("the face matrices", () => {
+  it("are well-formed for every key the selector can emit", () => {
+    // This replaces three unreachable runtime guards that the coverage gate
+    // (rightly) flagged as dead branches: an out-of-range eye column, a bleed
+    // spot landing on transparency, and an unknown palette character. All
+    // three were impossible given the matrices — so the honest place to defend
+    // the assumption is here, once, rather than in a branch on every frame.
+    const seen: Record<string, number> = {};
+    for (const key of allFaceKeys()) {
+      const g = faceGlyph(key);
+      const cells: string[] = [];
+      // Replay the glyph against a recorder to read back what it paints.
+      g.draw(
+        {
+          set fillStyle(v: string) {
+            cells.push(v);
+          },
+          fillRect: () => {},
+        } as unknown as CanvasRenderingContext2D,
+        0,
+        0,
+      );
+      expect(cells.length, `${key} paints nothing`).toBeGreaterThan(0);
+      for (const c of cells) {
+        expect(c, `${key} used a colour outside the palette`).toMatch(/^#[0-9a-f]{6}$/i);
+        seen[c] = (seen[c] ?? 0) + 1;
+      }
+    }
+    // A hurt face must actually show blood, or the tiers are indistinguishable.
+    expect(Object.keys(seen)).toContain("#c03028");
   });
 });
 

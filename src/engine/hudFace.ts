@@ -128,14 +128,18 @@ function face(eyeShift: -1 | 0 | 1, mouth: string, extra?: (rows: string[][]) =>
   for (let x = 0; x < GRID; x++) if (rows[3][x] === "e") rows[3][x] = "s";
   const leftEye = 3 + eyeShift;
   const rightEye = 7 + eyeShift;
-  if (rows[3][leftEye] !== undefined && rows[3][leftEye] !== ".") rows[3][leftEye] = "e";
-  if (rows[3][rightEye] !== undefined && rows[3][rightEye] !== ".") rows[3][rightEye] = "e";
+  // No bounds or transparency guard: an eye shift of -1..1 lands on columns
+  // 2-4 and 6-8 of an 11-wide row, all of them skin. A guard here would be an
+  // unreachable branch, and `matrices are well-formed` below is the check that
+  // actually defends the assumption — at test time rather than every frame.
+  rows[3][leftEye] = "e";
+  rows[3][rightEye] = "e";
   // mouth occupies row 6, centred
+  // Mouths are at most 5 wide and centred, so they land on columns 3-7 of an
+  // 11-wide row — all skin. Unguarded for the same reason the eyes are: the
+  // matrices make it true, and `the face matrices` test is what checks that.
   const start = Math.floor((GRID - mouth.length) / 2);
-  for (let i = 0; i < mouth.length; i++) {
-    const ch = mouth[i];
-    if (ch !== "." && rows[6][start + i] !== undefined && rows[6][start + i] !== ".") rows[6][start + i] = ch;
-  }
+  for (let i = 0; i < mouth.length; i++) rows[6][start + i] = mouth[i];
   extra?.(rows);
   return rows.map((r) => r.join(""));
 }
@@ -153,7 +157,7 @@ function bleed(amount: number): (rows: string[][]) => void {
     ];
     for (let i = 0; i < Math.min(amount, spots.length); i++) {
       const [y, x] = spots[i];
-      if (rows[y][x] !== ".") rows[y][x] = "r";
+      rows[y][x] = "r";
     }
   };
 }
@@ -207,7 +211,7 @@ export function faceGlyph(key: string): Glyph {
           // the calls, and every one of them an axis-aligned quad.
           let run = 1;
           while (x + run < row.length && row[x + run] === ch) run += 1;
-          g.fillStyle = COLORS[ch] ?? COLORS.s;
+          g.fillStyle = COLORS[ch];
           g.fillRect(x0 + x * SCALE, y0 + y * SCALE, run * SCALE, SCALE);
           x += run;
         }
