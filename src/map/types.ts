@@ -134,23 +134,36 @@ export interface Enemy {
   /** The function/method this enemy represents. */
   entity: CodeEntity;
   /**
-   * An "extreme complexity" function spawned as a single boss-tier enemy
-   * instead of a multi-member pack: `ELITE_HP_MULTIPLIER` times the HP a single
-   * enemy would have at the same complexity (2x — see that constant in
-   * `generation/enemies.ts` for why it was lowered from 4x), higher
-   * melee/ranged damage (see `enemyAi.ts`), a larger sprite and a distinct tint
-   * (see `sprites.ts`), and a guaranteed high-value drop on death instead of
-   * the normal loot roll.
+   * The **anchor** of an "extreme complexity" function's boss-tier pack: higher
+   * melee/ranged damage (see `enemyAi.ts` and `ENEMY_WEAPONS.elite`), a larger
+   * sprite and a distinct tint (see `sprites.ts`), and a guaranteed high-value
+   * drop on death instead of the normal loot roll.
+   *
+   * **Not "a single boss-tier enemy instead of a multi-member pack"**, which is
+   * what this said until 2026-08-20 and which the Elite-pack split had already
+   * made wrong. An Elite room's budget is `ELITE_HP_MULTIPLIER` times what one
+   * enemy would have at that complexity (2x — see `generation/enemies.ts` for
+   * why it came down from 4x), capped at `ELITE_MAX_MEMBERS * ELITE_MEMBER_HP_CAP`
+   * and split across the pack like any other. Only the anchor carries this
+   * flag: `damageMultiplier` applies per *enemy*, so flagging all eight would
+   * multiply the room's incoming DPS by its size.
    */
   elite: boolean;
   /**
-   * A weak, small, jarringly-tinted "bug in the system" enemy spawned only in
-   * a corridor feature injected by `dressCorridors` in
-   * `mapGenerator.ts` (never in a normal AST-derived room). Very low HP, very
-   * fast, erratic idle roaming, low melee/ranged damage (see `enemyAi.ts`);
-   * still uses the ordinary aggro/LOS/chase state machine, just with
-   * different speed/damage constants and a distinct roam behaviour. Visuals
+   * A weak, small, jarringly-tinted "bug in the system" enemy: very fast,
+   * erratic idle roaming, low melee damage, and its own quick/weak/scattering
+   * bolt (`ENEMY_WEAPONS.edgeCase`). It still uses the ordinary aggro/LOS/chase
+   * state machine — only its constants and roam behaviour differ. Visuals
    * (small size, cyan tint) live in `sprites.ts`.
+   *
+   * **This used to say "never in a normal AST-derived room", and that stopped
+   * being true on 2026-08-20.** It is spawned from three places now:
+   * `spawnEdgeCaseEnemies` (the corridor features `dressCorridors` injects,
+   * still the overwhelming majority), `placeSwitchboardEncounters` (a
+   * Switchboard's case rooms — which was already true when the old wording was
+   * written), and `spawnEnemies`, which may trade a `switch`-heavy function's
+   * tail pack member for one. Read the flag as *which weapon and behaviour
+   * this enemy has*, never as *where it came from*.
    */
   edgeCase: boolean;
 }

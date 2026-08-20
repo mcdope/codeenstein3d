@@ -138,7 +138,20 @@ function placeTodoEncounter(
   //
   // Measured on the real campaign before landing: trap 4 / mine 3 / Bug 1
   // across its 8 TODO comments, so the coverage check passes with all three
-  // present. (The backlog's own proposal — cycle the outcomes per level —
+  // present.
+  //
+  // **That "Bug 1" was load-bearing on a coincidence, and it broke again on
+  // 2026-08-20.** Hashing the text removed the *rng* coupling, but not the
+  // other one: an encounter still needs a free floor tile near its terminal
+  // (`free.length === 0` above), and raising enemy density crowded that tile
+  // out on the one level whose TODO hashed to Bug — so the campaign spawned
+  // zero of them while every comment stayed exactly as authored. Rescued the
+  // same way the keys change was, by authoring more Bug-hashing TODOs; there
+  // are now three across three levels (`stage06_pipeline.py`,
+  // `stage09_worker.go`, `stage11_core_service.cs`), so the check no longer
+  // rests on a single placement succeeding. If you are here because it failed
+  // again, add a fourth rather than relaxing the check — it is guarding a
+  // mechanic the showcase campaign is supposed to showcase. (The backlog's own proposal — cycle the outcomes per level —
   // could not have worked: it guarantees all three only on a level holding
   // three TODOs, and no level holds more than two. Cycling from a fixed start
   // would have given seven levels a trap and produced no Bug enemy at all.)

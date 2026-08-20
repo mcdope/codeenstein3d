@@ -12,6 +12,39 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Enemy density was nearly inert, and "diversity" turned out to need a fourth archetype (2026-08-20).** Half-closes the enemy-diversity backlog item. Read the second half before proposing another fact-driven archetype rule — the ceiling is structural, not a missing idea.
+
+  **Density: `COMPLEXITY_PER_EXTRA_ENEMY` 10 -> 5.** The constant had never been tuned, and measuring it first is what changed the plan. With the real parser over **8,143 callable entities** (laravel, curl, ripgrep, serilog, django), `complexityScore` runs p25=1, **p50=1**, p75=3, p90=6, p99=19 — so at one extra enemy per 10 points, **95.5% of entity rooms spawned exactly one enemy** (p99=2, max=4). The pack curve existed mostly on paper.
+
+  | divisor | entity-room enemies | rooms with >1 |
+  |---|---|---|
+  | 10 (was) | baseline | 4.5% |
+  | 8 | +3.2% | 6.8% |
+  | 6 | +9.0% | 10.1% |
+  | **5 (now)** | **+15.7%** | **14.3%** |
+  | 4 | +26.6% | 20.3% |
+  | 3 | +43.7% | 27.9% |
+
+  Measured end to end on demo-campaign: **320 -> 362 enemies (+13.1%)**, normals +22.4%, Elites unchanged at 7.
+
+  **Two shapes measured and rejected, recorded so nobody re-derives them.** A **cap** is a no-op — cap 3 removes 0.2% of enemies, cap 4 removes 0.0%, because there is no per-room tail to cap. A **floor** of 2 is the explosive option at +90.4%, touching 95.5% of rooms. Both were in an earlier draft of this plan on the assumption that the 522-enemy laravel level came from dense rooms. **It does not**: it is a file with hundreds of methods at ≈1 enemy each plus 60% corridor Edge Cases. This constant was never that tail's lever.
+
+  **Distribution: the guard, and why it lives on the HP axis.** A private/protected room (`isLockableRoom` — the same code that becomes a key-locked room) now splits its pack `[2s, s, s, …]` instead of evenly. Room total HP is unchanged, so instantaneous DPS moves by **exactly zero**; integrated damage-taken moves ±12% and the sign is the player's choice, not the generator's. Fires on **47.1% of multi-member packs**.
+
+  That shape is not a stylistic preference — it is the only DPS-neutral axis available. Inside an entity room only `normal` and `edgeCase` exist, because flagging a member `elite` breaks "one Elite per Elite room" that `stage-campaign.mjs` and every archetype report depend on. So **every archetype move is a DPS cut** (normal 4.21/s against edgeCase 1.68/s) and there is no tougher archetype to reach for. HP shape is orthogonal to `ENEMY_WEAPONS`; archetype is not.
+
+  **The skirmisher swap, and its measured ceiling.** A switch-heavy room trades its tail member for an Edge Case. Gate sizing was the whole story: at a 4-member minimum it fired on **1 enemy in 7,704** across 252 generated corpus levels — a rule that did not exist. At 2 it reaches **0.91% of enemies / 3.22% of entity rooms**, which is the ceiling, because `switchBranches > 0` is 4.7% of entities and most of those are single-enemy rooms that cannot be mixed at all. Kept at 2 and labelled, on the grounds that 3.22% is the same order as Acid Overflow's 2.0%. Not DPS-neutral and cannot be: ≈-30% on a 2-member room, ≈-1% of level DPS overall.
+
+  Labyrinth rooms are excluded from the swap **by construction**. An Edge Case roams on jitter tuned for open corridor widenings, and the exit gate keys off `Enemy.home`, so a skirmisher pinballing in a maze corner is a wedge risk — the class of bug that has cost this project weeks. Removed by design rather than disproved by a capture.
+
+  **Why the diversity item stays open.** Archetype uniformity inside an entity room is essentially unfixed, and an availability check says no further rule over the existing three archetypes will fix it: private/protected is 33.8% overall but **10% (django) to 53% (ripgrep)** — a language marker more than a code marker; `nestingDepth ≥ 2` is 14.9% and already triple-used by terrain; switch 4.7%; allocation-dense 2.0%; and **54.7% of entities carry no fact at all**. The next step is a fourth archetype, not another rule.
+
+  **Two gaps closed on the way.** `computeBalanceHash` fingerprinted the roster as `[x, y, maxHp, elite]` and omitted `edgeCase` — fine when an archetype was only a damage multiplier, wrong the moment `ENEMY_WEAPONS` gave it its own weapon, since an archetype flip changes playback while leaving every hashed field identical. And `ELITE_MEMBER_HP_CAP` is now applied to every member rather than only Elites, which its own doc already claimed.
+
+  **The second-order failure worth remembering.** `verify:campaign` went red with zero Bug enemies. Not a hashing regression — a TODO's outcome is a pure function of its comment text and no comment moved. An encounter still needs a *free floor tile* near its terminal, and denser rooms crowded that tile out on the one level whose TODO hashed to Bug. `lore.ts` had already recorded the mix as "trap 4 / mine 3 / **Bug 1**" and noted the check had been rescued once before by authoring another TODO — rescued rather than fixed, so it broke the same way again. There are now three Bug-hashing TODOs across three levels.
+
+  Verified: `tsc` clean, 3,192 `src` + 588 `scripts` tests, `balancing:budget --all-difficulties` green both before and after, `verify:campaign` full coverage, `verify:campaign:playthrough` against the real app, and `verify:replay` failing before the board regeneration and passing after.
+
 - [x] **Enemies have weapons now, and `SIMULATION_BALANCE` covers them — one regeneration paid for both (2026-08-19).** Closes the "cheapest high-payoff fix" bullet of the enemy-diversity item. Read the second half before retuning any of these numbers: the DPS invariant is what makes the change measurable, and it is easy to break by accident.
 
   **The gap first, because shipping the table through it would have been the bug.** `balanceHash` exists so a tuned simulation constant cannot silently change how a recorded replay plays back. It did not cover the enemy half — not `PROJECTILE_SPEED`/`DAMAGE`/`RADIUS`, not `ELITE_DAMAGE_MULTIPLIER`, not any `EDGE_CASE_*`, and not the traps. `SIMULATION_BALANCE`'s own comment named five of them as uncovered and deferred the work to *"worth doing if one of them is ever tuned"*; a per-archetype weapon table tunes exactly those.

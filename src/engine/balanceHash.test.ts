@@ -14,7 +14,7 @@
 import { describe, expect, it } from "vitest";
 import { balanceHashMatches, computeBalanceHash, computeSimulationHash, sha256Hex, simulationHashMatches, stableStringify, type BalanceRelevantEnemy } from "./balanceHash";
 
-const enemy = (over: Partial<BalanceRelevantEnemy> = {}): BalanceRelevantEnemy => ({ x: 3, y: 4, maxHp: 100, elite: false, ...over });
+const enemy = (over: Partial<BalanceRelevantEnemy> = {}): BalanceRelevantEnemy => ({ x: 3, y: 4, maxHp: 100, elite: false, edgeCase: false, ...over });
 const SIM = { MOVE_SPEED: 3.2, MAX_HEALTH: 100 } as const;
 
 describe("stableStringify", () => {
@@ -67,6 +67,16 @@ describe("computeBalanceHash", () => {
   it("changes when an enemy's max HP changes — the Elite-nerf case", async () => {
     const before = await computeBalanceHash({ enemies: [enemy({ maxHp: 4400, elite: true })] }, SIM);
     const after = await computeBalanceHash({ enemies: [enemy({ maxHp: 2200, elite: true })] }, SIM);
+    expect(after).not.toBe(before);
+  });
+
+  it("changes when an enemy becomes an Edge Case — the archetype the roster used to ignore", async () => {
+    // The regression test for a real gap. Until 2026-08-20 the roster tuple was
+    // [x, y, maxHp, elite], so flipping a pack member to `edgeCase` — which
+    // now means it fires a different weapon entirely (`ENEMY_WEAPONS`) — left
+    // the fingerprint untouched. Same position, same HP, different fight.
+    const before = await computeBalanceHash({ enemies: [enemy()] }, SIM);
+    const after = await computeBalanceHash({ enemies: [enemy({ edgeCase: true })] }, SIM);
     expect(after).not.toBe(before);
   });
 

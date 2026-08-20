@@ -100,6 +100,19 @@ export interface BalanceRelevantEnemy {
   y: number;
   maxHp: number;
   elite: boolean;
+  /**
+   * **Added 2026-08-20, closing a gap this guard would otherwise have missed
+   * entirely.** `edgeCase` used to be excluded on the reasoning that an
+   * archetype only changed a *damage multiplier*, which `maxHp` and the
+   * simulation constants between them already covered.
+   *
+   * `ENEMY_WEAPONS` ended that: an Edge Case now fires a different weapon —
+   * its own speed, damage, cadence and scatter — so flipping a pack member's
+   * archetype changes what a recorded replay plays back while leaving `x`,
+   * `y` and `maxHp` byte-identical. Exactly the silent-divergence shape this
+   * module exists to catch, arriving through the one field it did not read.
+   */
+  edgeCase: boolean;
 }
 
 /**
@@ -123,7 +136,7 @@ export async function computeBalanceHash(
   map: { enemies: readonly BalanceRelevantEnemy[] },
   simulation: Readonly<Record<string, unknown>>,
 ): Promise<string> {
-  const roster = map.enemies.map((e) => [e.x, e.y, e.maxHp, e.elite ? 1 : 0]);
+  const roster = map.enemies.map((e) => [e.x, e.y, e.maxHp, e.elite ? 1 : 0, e.edgeCase ? 1 : 0]);
   return sha256Hex(stableStringify({ roster, simulation }));
 }
 
