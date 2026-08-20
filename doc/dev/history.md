@@ -12,6 +12,20 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Rockets emit a detonation event — the last weapon invisible to the balance log (2026-08-20).** Closes the "any future ghidra measurement has to come off a new event emitted at detonation" line, and unblocks the half of the cluster fast-path that had no data behind it.
+
+  **The gap.** `fire()` returns at `if (w.isRocket)` before `resolveShot` runs, so a rocket emits no shot-time `hit` events — **0 of 3,248,140 across the whole archive**. Every rocket question was therefore simulated or dropped: `report:damage-model`'s ghidra rows read 100% miss on every capture on disk, and the finding that the shotgun is the only weapon hitting 2+ enemies (23.8% of shots, against 0.0% for pistol and gdb) could not be evaluated for rockets at all, because splash leaves no per-target trace.
+
+  **`rocketDetonated`** carries `w`, `x`, `y`, `direct`, `dist`, `enemiesHit`, `dmg`, `selfDmg` and `hits`. `hits` is deliberately the same `{eid, arch, amt}[]` shape `damageTaken.by` uses, so the AoE question is now the *same query* for a rocket as for a shotgun blast rather than a bespoke analysis.
+
+  **`direct` is the field that could not be reconstructed.** `RocketExplosion` gains `hitEnemy` so the engine can say whether an enemy stopped the rocket or the wall behind it. Splash lands either way, so damage dealt cannot distinguish them — which is precisely the distinction the 2026-08-19 tunnelling analysis had to reproduce in a simulation because the log could not answer it. With it, "what fraction of rockets actually connect" becomes a query instead of a model.
+
+  **Cost.** Nothing on an ordinary frame: `advanceRockets` already returns early with no rocket in flight, and the per-hit array is allocated only when the event log is on (`?eventLog=1`, DEV-gated). Archetype is read *before* the damage lands, since a killing blow flips `alive` and the question is what the rocket hit, not what survived it.
+
+  Schema 2 -> 3 in both the engine and the `scripts/lib/eventLog.mjs` mirror, with a test pinning them equal. Additive — a schema-2 reader skips an unknown event type — but a consumer can now distinguish a log that can answer these questions from one that structurally cannot.
+
+  **What it does not do: it does not make the existing archive readable.** Every capture on disk predates it, so the ghidra half of the cluster fast-path stays unguided until a *new* capture runs. The event removes the blocker; it does not retroactively answer anything.
+
 - [x] **Enemy density was nearly inert, and "diversity" turned out to need a fourth archetype (2026-08-20).** Half-closes the enemy-diversity backlog item. Read the second half before proposing another fact-driven archetype rule — the ceiling is structural, not a missing idea.
 
   **Density: `COMPLEXITY_PER_EXTRA_ENEMY` 10 -> 5.** The constant had never been tuned, and measuring it first is what changed the plan. With the real parser over **8,143 callable entities** (laravel, curl, ripgrep, serilog, django), `complexityScore` runs p25=1, **p50=1**, p75=3, p90=6, p99=19 — so at one extra enemy per 10 points, **95.5% of entity rooms spawned exactly one enemy** (p99=2, max=4). The pack curve existed mostly on paper.

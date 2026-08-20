@@ -51,9 +51,17 @@
  * timestamp join finds nothing to attribute — the flight time is seconds, not
  * a rounding error. Rockets also emit no `hit` event whatsoever (0 of
  * 3,248,140 in the archive), since `fire()` returns at `if (w.isRocket)`
- * before `resolveShot` runs. Measuring ghidra needs a flight-tolerant join or
- * an event emitted at detonation; until then, ignore its rows rather than
- * discounting them. **The "ghidra 93 against 150" figure quoted above does not
+ * before `resolveShot` runs.
+ *
+ * **Since 2026-08-20 there is somewhere else to look.** A `rocketDetonated`
+ * event (schema 3) records each blast's `direct`, `dist`, `enemiesHit`, `dmg`
+ * and an itemised `hits` array, so ghidra is measurable without this report.
+ * These rows stay empty regardless — the timestamp join cannot be repaired
+ * here, because a rocket's damage genuinely arrives seconds after its shot —
+ * so keep ignoring them and read `rocketDetonated` instead. Captures predating
+ * schema 3 remain unanswerable either way.
+ *
+ * **The "ghidra 93 against 150" figure quoted above does not
  * reproduce** from the 2026-08-06 captures or any other on disk — this script
  * prints 0.0 for all of them. It is left in the sentence rather than deleted
  * because whatever produced it is unaccounted for; the shotgun half of that
