@@ -4,9 +4,9 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { EngineStats } from "./engine";
-import { HUD_PAD, layoutHud } from "./hudLayout";
+import { HUD_PAD, layoutHud, TOOL_SLOTS } from "./hudLayout";
 import { emptyPlayerFacingStats } from "./playerStats";
-import { NUMBER_KEY_WEAPONS, TOOLCHAIN_WEAPON_INDEX } from "./weapons";
+import { NUMBER_KEY_WEAPONS } from "./weapons";
 import { zeroScoreBreakdown } from "./scoring";
 import {
   drawAcidOverflowToast,
@@ -674,20 +674,49 @@ describe("the TOOLS grid", () => {
     expect(log.find(([t]) => t === "2")?.[1]).toBe("#5aa869"); // owned
     expect(log.find(([t]) => t === "5")?.[1]).toBe("#2f4a33"); // not owned
   });
-
-  it("shows which melee weapon is current, which has no number key at all", () => {
-    const knife = ctx();
-    drawHud(asCtx(knife), fakeStats({ ownedWeapons: [0, 1, 2] }));
-    expect(knife.fillText.mock.calls.map((c2) => String(c2[0]))).toContain("K");
-
-    const chainsaw = ctx();
-    drawHud(asCtx(chainsaw), fakeStats({ ownedWeapons: [0, 1, 2, TOOLCHAIN_WEAPON_INDEX] }));
-    expect(chainsaw.fillText.mock.calls.map((c2) => String(c2[0]))).toContain("T");
-  });
 });
 
 describe("HUD_HEIGHT", () => {
   it("is a fixed 72px", () => {
     expect(HUD_HEIGHT).toBe(72);
+  });
+});
+
+describe("TOOLS grid", () => {
+  /** Every string the bar draws, in call order. */
+  function drawnText(stats: EngineStats): string[] {
+    const c = ctx();
+    const seen: string[] = [];
+    c.fillText.mockImplementation((text: unknown) => {
+      seen.push(String(text));
+    });
+    drawHud(asCtx(c), stats);
+    return seen;
+  }
+
+  it("has exactly one cell per number-key weapon", () => {
+    // The grid's width is derived from TOOL_SLOTS in `hudLayout.ts`, which
+    // cannot import the weapon table without a cycle. If a weapon is ever
+    // added to the number keys, this is what says the panel has to grow.
+    expect(TOOL_SLOTS).toBe(NUMBER_KEY_WEAPONS.length);
+  });
+
+  it("draws the slot digits and no melee letter", () => {
+    // Regression: the grid used to end in a `K`/`T` cell for the knife or
+    // Toolchain. Melee has no number key — it is bound to Space — so a letter
+    // in a row of key digits read as a keybind that does not exist, and the
+    // cell overflowed the panel into the face besides.
+    const drawn = drawnText(fakeStats({ ownedWeapons: [0, 1, 2, 6], weaponIndex: 0 }));
+    for (const slot of ["1", "2", "3", "4", "5"]) expect(drawn).toContain(slot);
+    expect(drawn).not.toContain("K");
+    expect(drawn).not.toContain("T");
+  });
+
+  it("still shows melee elsewhere, so removing the cell lost no information", () => {
+    // The knife/Toolchain distinction is carried by the AMMO panel, which is
+    // why the grid does not need to carry it: it reads MELEE with an infinity
+    // mark whenever one is in your hands.
+    const drawn = drawnText(fakeStats({ ownedWeapons: [0, 1, 2], weaponIndex: 2 }));
+    expect(drawn).toContain("MELEE");
   });
 });

@@ -59,6 +59,32 @@ export const HUD_HEIGHT = 72;
 export const HUD_PAD = 8;
 
 /**
+ * Inset from the canvas edge to the first and last panel.
+ *
+ * Half `HUD_PAD`, and a separate constant because it answers a different
+ * question: `HUD_PAD` keeps a panel's text off its own bezel, while this keeps
+ * the bar's contents off the screen edge, where there is no neighbouring panel
+ * to collide with. Sharing one value cost 8px of usable width at 640 — enough,
+ * on its own, to push the minimums past what that preset can hold.
+ */
+export const HUD_BAR_MARGIN = 4;
+
+/**
+ * The TOOLS grid's cell geometry, here rather than in `hud.ts` because the
+ * panel's minimum width is *derived* from it below. Keeping the two in
+ * separate modules is what let the grid grow wider than the panel holding it:
+ * the melee cell overflowed 20px into the face panel, and the face — drawn
+ * afterwards — painted over it, leaving a letter poking out from behind the
+ * head. Change a cell size here and the minimum follows.
+ */
+export const TOOL_CELL = 14;
+export const TOOL_GAP = 3;
+/** Cells in the grid. Pinned against `NUMBER_KEY_WEAPONS.length` by a test in
+ * `hud.test.ts`; this module must not import the weapon table. */
+export const TOOL_SLOTS = 5;
+const TOOLS_MIN = HUD_PAD * 2 + TOOL_SLOTS * TOOL_CELL + (TOOL_SLOTS - 1) * TOOL_GAP;
+
+/**
  * The bar's contents stop widening past this, and centre instead.
  *
  * Classic (640) and Sharp (1280) both stretch fully, so every real preset uses
@@ -72,25 +98,45 @@ export const HUD_MAX_CONTENT_W = 1280;
  * Minimum width and surplus share per panel.
  *
  * `min` is what the panel needs to be legible; `weight` distributes whatever
- * is left over. The sum of `min` plus the dividers is 613, so 640 fits with
- * slack and the squeeze branch below is unreachable at any real preset — it
- * exists only so `?renderRes=160x100` degrades instead of producing negative
- * widths.
+ * is left over.
+ *
+ * **These are measured, not guessed.** The first set was guessed, summed to
+ * 634 against the 617 usable at 640x400, and so ran the squeeze branch below
+ * at the game's own default preset — every panel 2.7% under its minimum, with
+ * the doc comment here asserting the opposite. The numbers now come from
+ * `measureText` against the real fonts: 9px labels are 22px for `AMMO` and
+ * 33px for the widest, `STABIL`; a key pip is 10px; the face glyph is 39px.
+ *
+ * `hudLayout.test.ts` pins the sum against 640 directly, because a comment
+ * claiming they fit is exactly what was wrong before.
  */
-const PANEL_SPECS: readonly { key: HudPanelKey; min: number; weight: number }[] = [
-  { key: "ammo", min: 92, weight: 1.0 },
-  { key: "stabil", min: 120, weight: 1.2 },
-  { key: "tools", min: 90, weight: 0.8 },
+export const PANEL_SPECS: readonly { key: HudPanelKey; min: number; weight: number }[] = [
+  { key: "ammo", min: 100, weight: 1.0 },
+  // "STABIL" is 33px and "100%" 53px, so 112 is still generous — it is sized
+  // for the bar strip beneath them, not the text, and the face needed the 8px
+  // more than the strip did.
+  { key: "stabil", min: 112, weight: 1.2 },
+  { key: "tools", min: TOOLS_MIN, weight: 0.8 },
+  // The glyph is 44px wide and has no label row to clear, so it needs the
+  // sprite plus a hair of bezel and nothing else.
   { key: "face", min: 48, weight: 0.3 },
-  { key: "swap", min: 64, weight: 0.8 },
-  { key: "keys", min: 68, weight: 0.8 },
+  { key: "swap", min: 60, weight: 0.8 },
+  // "KEYS" is 22px; four pips at 10px with gaps is 40px. 56 clears both.
+  { key: "keys", min: 56, weight: 0.8 },
   { key: "score", min: 76, weight: 0.9 },
-  { key: "table", min: 76, weight: 0.9 },
+  // A row is the 22px `BULL` plus a 20px three-digit count, with a gap.
+  { key: "table", min: 64, weight: 0.9 },
 ];
 
 /** Panel labels. Named so a rename moves one string — the settled shorthands
  * (see `doc/dev/game-design.md`): our words, DOOM's layout. `STAB` was
  * rejected for health because it reads as a melee verb in a shooter. */
+/** Each panel's minimum, keyed — so a test can assert the layout actually
+ * grants it rather than trusting the comment above, which was wrong. */
+export const PANEL_MIN_WIDTHS: Readonly<Record<HudPanelKey, number>> = Object.freeze(
+  Object.fromEntries(PANEL_SPECS.map((p) => [p.key, p.min])),
+) as Readonly<Record<HudPanelKey, number>>;
+
 export const LABEL_AMMO = "AMMO";
 export const LABEL_STABIL = "STABIL";
 export const LABEL_TOOLS = "TOOLS";
@@ -123,7 +169,7 @@ export const LABEL_SCORE = "SCORE";
 export function layoutHud(canvasW: number, canvasH: number): HudLayout {
   const bar: HudPanelRect = { x: 0, y: canvasH - HUD_HEIGHT, w: canvasW, h: HUD_HEIGHT };
   const dividerCount = PANEL_SPECS.length - 1;
-  const contentW = Math.min(canvasW - HUD_PAD * 2, HUD_MAX_CONTENT_W);
+  const contentW = Math.min(canvasW - HUD_BAR_MARGIN * 2, HUD_MAX_CONTENT_W);
   const usable = contentW - dividerCount;
   const totalMin = PANEL_SPECS.reduce((sum, p) => sum + p.min, 0);
   const totalWeight = PANEL_SPECS.reduce((sum, p) => sum + p.weight, 0);
@@ -138,9 +184,18 @@ export function layoutHud(canvasW: number, canvasH: number): HudLayout {
   const startX = Math.round((canvasW - contentW) / 2);
   const panels = {} as Record<HudPanelKey, HudPanelRect>;
   const dividers: number[] = [];
+  // Widths come from *rounded cumulative edges*, not from rounding each width
+  // on its own. Rounding independently lets eight half-pixels accumulate, and
+  // the total then overshoots the usable width by up to four pixels — which is
+  // how the bar came to exceed HUD_MAX_CONTENT_W by 2px at 2560. Deriving each
+  // width as the gap between two rounded edges makes the widths absorb the
+  // rounding instead, so the sum is exact by construction at every width.
   let x = startX;
+  let ideal = 0;
   PANEL_SPECS.forEach((spec, i) => {
-    const w = Math.max(1, Math.round(spec.min * squeeze + (surplus * spec.weight) / totalWeight));
+    const edge = Math.round(ideal);
+    ideal += spec.min * squeeze + (surplus * spec.weight) / totalWeight;
+    const w = Math.max(1, Math.round(ideal) - edge);
     panels[spec.key] = { x, y: bar.y, w, h: HUD_HEIGHT };
     x += w;
     if (i < dividerCount) {

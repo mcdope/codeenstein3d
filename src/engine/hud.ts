@@ -20,11 +20,13 @@ import {
   layoutHud,
   type HudLayout,
   type HudPanelRect,
+  TOOL_CELL,
+  TOOL_GAP,
 } from "./hudLayout";
 import { faceGlyph, faceKeyFor } from "./hudFace";
 import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
-import { NUMBER_KEY_WEAPONS, TOOLCHAIN_WEAPON_INDEX, WEAPONS, type AmmoType } from "./weapons";
+import { NUMBER_KEY_WEAPONS, WEAPONS, type AmmoType } from "./weapons";
 
 /**
  * How much of `type` the player has left, out of `EngineStats`.
@@ -726,8 +728,6 @@ function drawAmmoTable(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
 }
 
 /** Cell geometry for the TOOLS grid. */
-const TOOL_CELL = 14;
-const TOOL_GAP = 3;
 
 /**
  * DOOM's ARMS panel, keeping this game's word: which dev tools you are
@@ -743,9 +743,17 @@ const TOOL_GAP = 3;
  * non-melee weapon grows the grid for free — which is the same reason
  * `NUMBER_KEY_WEAPONS` is derived rather than hardcoded.
  *
- * The trailing cell is melee, which has no number key at all (it is bound to
- * Space) and is always owned, since the knife is a starting weapon. It shows
- * which melee weapon is current, `K` or `T` once the Toolchain replaces it.
+ * **Number-key weapons only — melee is deliberately absent.** It had a
+ * trailing cell showing `K`, or `T` once the Toolchain replaced the knife.
+ * That was wrong twice over. A letter in a grid of number keys reads as a
+ * keybind, and `K` is not bound to anything — melee is on Space. And the cell
+ * could only ever show one of the three states the grid exists to distinguish:
+ * the knife is a starting weapon, so it is never not-owned, and melee is not
+ * reachable by the number keys this grid depicts, so it is never the equipped
+ * one either. It carried a single bit at the cost of the panel's whole
+ * premise. Which melee weapon you hold is already legible from the AMMO panel,
+ * which shows `MELEE` and an infinity mark whenever one is in your hands, and
+ * from the weapon drawn on screen.
  */
 function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
   drawLabel(ctx, LABEL_TOOLS, rect.x + HUD_PAD, rect.y + LABEL_DY);
@@ -773,9 +781,6 @@ function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
   NUMBER_KEY_WEAPONS.forEach((weaponIndex, slot) => {
     cell(String(slot + 1), owned.has(weaponIndex), stats.weaponIndex === weaponIndex);
   });
-  // Melee sits slightly apart — it is a different input, not a sixth slot.
-  x += TOOL_GAP;
-  cell(owned.has(TOOLCHAIN_WEAPON_INDEX) ? "T" : "K", true, false);
 }
 
 /**
@@ -787,12 +792,14 @@ function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
  * different sprite rather than doing more work — the direction costs nothing.
  */
 function drawFacePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
-  const key = faceKeyFor(stats);
-  drawGlyph(ctx, faceGlyph(key), rect.x + rect.w / 2, rect.y + 2 + FACE_BOX / 2);
+  const glyph = faceGlyph(faceKeyFor(stats));
+  // Centred in the bar's *full* height, not hung from the top. The first
+  // version anchored the sprite two pixels under the accent, which put the
+  // hair line hard against it and left a band of empty bezel underneath — the
+  // face read as falling out of the bar rather than sitting in it. This is the
+  // one panel with no label row to align to, so it centres on its own.
+  drawGlyph(ctx, glyph, rect.x + rect.w / 2, rect.y + rect.h / 2);
 }
-
-/** The face sprite's box, centred in its panel below the accent. */
-const FACE_BOX = 44;
 
 /** Running campaign total. DOOM has no score panel; this keeps ours in the
  * numeral template so it reads as part of the bar rather than as a caption. */
