@@ -11,6 +11,7 @@ import type { EngineStats, PlayerId } from "./engine";
 import {
   HUD_HEIGHT,
   HUD_PAD,
+  LABEL_AMMO,
   LABEL_KEYS,
   LABEL_SCORE,
   LABEL_STABIL,
@@ -595,7 +596,12 @@ function drawAmmoPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   // "9 / 31" split. A weapon with no magazine (Friday Hotfix) keeps the single
   // bare number it always had.
   const value = stats.magazineSize > 0 ? `${stats.magazine} / ${Math.floor(owned - stats.magazine)}` : String(Math.floor(owned));
-  drawLabel(ctx, stats.reloading ? "RELOADING" : meta.label.toUpperCase(), rect.x + HUD_PAD, rect.y + LABEL_DY);
+  // The panel is labelled AMMO, not the pool's name. The pool used to be
+  // spelled out here because nothing else on the bar said which one was being
+  // spent — the table now does, by lighting that pool's row, so repeating it
+  // would say the same thing twice and cost the width DOOM spends on a
+  // four-letter word.
+  drawLabel(ctx, stats.reloading ? "RELOADING" : LABEL_AMMO, rect.x + HUD_PAD, rect.y + LABEL_DY);
   // Dry means "nothing left to fire *and* nothing to reload with", not merely
   // an empty magazine — an empty gun with a full reserve is a one-second
   // problem, and colouring it as critical would cry wolf.

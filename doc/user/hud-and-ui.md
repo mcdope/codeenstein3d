@@ -4,13 +4,17 @@
 
 ## In-game HUD
 
-The bottom status bar shows:
+The bottom status bar is one full-width bezel, laid out like DOOM's — but with this game's words, not DOOM's. Left to right:
 
-- **System Stability** — your health, as a bar and percentage
-- **Swap** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
-- **Ammo** — the current weapon's ammo count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it)
-- **Keys** — one pip per locked room on the level, in that room's own colour: hollow while you still need it, filled once you're holding it. A key is permanent and opens every door of its room, so a held/total count would only tell you how much collecting you had left — which colours you have is what decides whether the door in front of you opens. A level with nothing locked shows a dash
-- **Score** — your running total, updated live
+- **AMMO** — the current weapon's count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it). A weapon with a magazine shows `loaded / reserve`, so `9 / 31` means nine in the gun and thirty-one behind it
+- **STABIL** — System Stability, your health, as a big percentage over a bar
+- **TOOLS** — which dev tools you are carrying, one cell per number key. A dim digit is a weapon you have not found, a bright one is owned, and a filled box is what is in your hands. The cell set slightly apart is your melee weapon, which lives on Space rather than a number: `K` for the knife, `T` once the Toolchain replaces it
+- **the face** — you. It looks worse as your Stability drops, and when something hits you it turns toward whatever hit you, so a bite from off-screen tells you which way to look. Traps and acid have no direction and just hurt
+- **SWAP** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
+- **KEYS** — one pip per locked room on the level, in that room's own colour
+  (hollow while you still need it, filled once you're holding it — a key is permanent and opens every door of its room, so which *colours* you hold is what decides whether the door in front of you opens; a level with nothing locked shows a dash)
+- **SCORE** — your running campaign total, updated live
+- **the ammo table** — every pool at once, on the far right: `BULL`, `SHEL`, `SMG`, `RCKT`, `GAS`. The row for whatever you are holding is lit. There is no second number because there is no ammo cap in this game — what you see is what you have
 
 The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone. Pulling the trigger on an empty weapon shows a fading "Out of ammo!" toast instead of just doing nothing.
 

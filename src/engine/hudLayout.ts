@@ -105,6 +105,21 @@ export const LABEL_SCORE = "SCORE";
  * keyed on width would add an invalidation surface for arithmetic that costs
  * nothing. `canvasH` is read only to place the bar against the bottom edge.
  */
+/**
+ * **The bar is fixed-pixel, deliberately, and does not scale with resolution.**
+ *
+ * Every other overlay is too — the minimap's `maxPixels`, the viewmodel's
+ * fixed travel, the crosshair, the toasts. The "Sharp" preset is exactly 2x
+ * and CSS-scales back to the same display size, so the whole overlay layer is
+ * uniformly half-size there. Scaling only the HUD would hand it twice the
+ * visual weight of the weapon in your hands.
+ *
+ * The defect this module fixes was *horizontal* — panels clustered left with
+ * dead space after them — and that is fixed at every width. Making the overlay
+ * layer scale as a whole is a separate item touching `viewmodel.ts` and
+ * `renderMinimap` as well as this, and it should move all three together or
+ * none.
+ */
 export function layoutHud(canvasW: number, canvasH: number): HudLayout {
   const bar: HudPanelRect = { x: 0, y: canvasH - HUD_HEIGHT, w: canvasW, h: HUD_HEIGHT };
   const dividerCount = PANEL_SPECS.length - 1;
