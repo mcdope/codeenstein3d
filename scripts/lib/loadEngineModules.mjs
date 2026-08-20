@@ -99,6 +99,7 @@ export async function loadEngineModules() {
   const ammoPath = path.join(REPO_ROOT, "src/engine/ammo.ts");
   const difficultyPath = path.join(REPO_ROOT, "src/difficulty.ts");
   const combatConstantsPath = path.join(REPO_ROOT, "src/engine/combatConstants.ts");
+  const hudLayoutPath = path.join(REPO_ROOT, "src/engine/hudLayout.ts");
 
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
@@ -109,6 +110,10 @@ export async function loadEngineModules() {
     `export { lootWeightsFor, REGULAR_KILL_NO_DROP_CHANCE, NORMAL_KILL_WEAPON_DROP_CHANCE, ELITE_BONUS_WEAPON_DROP_CHANCE, BULLETS_DROP_AMOUNT, ROCKETS_DROP_AMOUNT, SMG_DROP_AMOUNT, GAS_DROP_AMOUNT, HEALTH_DROP_AMOUNT, SWAP_DROP_AMOUNT, ELITE_HEALTH_DROP_AMOUNT, ELITE_BULLETS_DROP_AMOUNT, ELITE_ROCKETS_DROP_AMOUNT, ELITE_SMG_DROP_AMOUNT, ELITE_GAS_DROP_AMOUNT, ELITE_SWAP_DROP_AMOUNT, MAX_SWAP } from ${JSON.stringify(lootPath)};`,
     `export { startingAmmo, AMMO_TYPES, AMMO_META } from ${JSON.stringify(ammoPath)};`,
     `export { DIFFICULTY_MULTIPLIERS, DEFAULT_DIFFICULTY } from ${JSON.stringify(difficultyPath)};`,
+    // Pure geometry, no DOM — the doc-screenshot capture derives its HUD crop
+    // from this rather than re-pinning literals that go stale when the bar's
+    // layout moves.
+    `export { layoutHud, HUD_HEIGHT } from ${JSON.stringify(hudLayoutPath)};`,
     `export * as COMBAT from ${JSON.stringify(combatConstantsPath)};`,
   ].join("\n");
 

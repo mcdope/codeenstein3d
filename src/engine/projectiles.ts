@@ -156,7 +156,7 @@ export function updateProjectiles(
    * (`Projectile.srcEid`) and how much it dealt. A callback rather than a
    * richer return type so the summed `Map` every caller already destructures
    * keeps its shape — the same reason `EnemyAiEvents` exists next door. */
-  onHit?: (srcEid: number | undefined, targetId: string, amount: number) => void,
+  onHit?: (srcEid: number | undefined, targetId: string, amount: number, x: number, y: number) => void,
 ): Map<string, number> {
   const damage = new Map<string, number>();
   const targetsById = new Map(targets.map((t) => [t.id, t]));
@@ -171,7 +171,9 @@ export function updateProjectiles(
       const reach = target.player.radius + (p.radius ?? PROJECTILE_RADIUS);
       if (Math.abs(p.x - target.player.posX) < reach && Math.abs(p.y - target.player.posY) < reach) {
         damage.set(target.id, (damage.get(target.id) ?? 0) + p.damage);
-        onHit?.(p.srcEid, target.id, p.damage);
+        // The bolt's position at impact — the status-bar face reads it to look
+        // toward the hit. See `RaycasterEngine.noteHurtFrom`.
+        onHit?.(p.srcEid, target.id, p.damage, p.x, p.y);
         list.splice(i, 1);
         continue;
       }

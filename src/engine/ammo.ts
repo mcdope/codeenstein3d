@@ -54,14 +54,23 @@ export interface AmmoMeta {
    * label itself is `label.toUpperCase()`, which is where those strings
    * already came from. */
   hudColor: string;
+  /** Four-or-fewer-character name for the status bar's per-type ammo table.
+   *
+   * Beside `label` rather than derived from it, and beside it for the same
+   * reason `hudColor` is: the table's rows have to fit a fixed-width column
+   * under a big numeral, exactly as DOOM's `BULL`/`SHEL`/`RCKT`/`CELL` do,
+   * and `label.toUpperCase()` gives "SMG AMMO" — nine characters. Truncating
+   * `label` at draw time would put the naming decision in the renderer, which
+   * is the pairing this block exists to prevent. */
+  short: string;
 }
 
 export const AMMO_META: Record<AmmoType, AmmoMeta> = {
-  bullets: { label: "bullets", logColor: "#3fd0e0", hudColor: "#4cff6a", dropAmount: BULLETS_DROP_AMOUNT, eliteTopUp: ELITE_BULLETS_DROP_AMOUNT },
-  shells: { label: "shells", logColor: "#ffb547", hudColor: "#ffb547", dropAmount: SHELLS_DROP_AMOUNT, eliteTopUp: ELITE_SHELLS_DROP_AMOUNT },
-  rockets: { label: "rockets", logColor: "#ff9d3f", hudColor: "#ff9d3f", dropAmount: ROCKETS_DROP_AMOUNT, eliteTopUp: ELITE_ROCKETS_DROP_AMOUNT },
-  smg: { label: "smg ammo", logColor: "#3fa9ff", hudColor: "#3fa9ff", dropAmount: SMG_DROP_AMOUNT, eliteTopUp: ELITE_SMG_DROP_AMOUNT },
-  gas: { label: "gas", logColor: "#ff5a1a", hudColor: "#ff8a4a", dropAmount: GAS_DROP_AMOUNT, eliteTopUp: ELITE_GAS_DROP_AMOUNT },
+  bullets: { label: "bullets", short: "BULL", logColor: "#3fd0e0", hudColor: "#4cff6a", dropAmount: BULLETS_DROP_AMOUNT, eliteTopUp: ELITE_BULLETS_DROP_AMOUNT },
+  shells: { label: "shells", short: "SHEL", logColor: "#ffb547", hudColor: "#ffb547", dropAmount: SHELLS_DROP_AMOUNT, eliteTopUp: ELITE_SHELLS_DROP_AMOUNT },
+  rockets: { label: "rockets", short: "RCKT", logColor: "#ff9d3f", hudColor: "#ff9d3f", dropAmount: ROCKETS_DROP_AMOUNT, eliteTopUp: ELITE_ROCKETS_DROP_AMOUNT },
+  smg: { label: "smg ammo", short: "SMG", logColor: "#3fa9ff", hudColor: "#3fa9ff", dropAmount: SMG_DROP_AMOUNT, eliteTopUp: ELITE_SMG_DROP_AMOUNT },
+  gas: { label: "gas", short: "GAS", logColor: "#ff5a1a", hudColor: "#ff8a4a", dropAmount: GAS_DROP_AMOUNT, eliteTopUp: ELITE_GAS_DROP_AMOUNT },
 };
 
 /**

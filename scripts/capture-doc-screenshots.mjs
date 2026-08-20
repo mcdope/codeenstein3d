@@ -141,7 +141,7 @@ function say(msg) {
  * the two is detectable instead of silently producing a wrong picture.
  */
 async function generateFixtureMap() {
-  const { parseFile, MapGenerator, UNLOCKABLE_WEAPONS } = await loadEngineModules();
+  const { parseFile, MapGenerator, UNLOCKABLE_WEAPONS, layoutHud, HUD_HEIGHT } = await loadEngineModules();
   const parsed = await parseFile(FIXTURE_NAME, fs.readFileSync(FIXTURE_PATH, "utf8"));
   const map = new MapGenerator().generate(parsed, {
     bonusLevel: false,
@@ -615,10 +615,17 @@ async function main() {
       window.__codeensteinTestHooks.debugSpawnKey({ x: s.x + s.dirX * 0.2, y: s.y + s.dirY * 0.2, gateId: 1 });
     });
     await pump(page, FRAME_MS * 3);
-    // Starts at 370, not 360: the KEYS label is drawn at x=375 and the Swap
-    // readout sits immediately left of it, so a wider crop drags the tail of
-    // someone else's number into the frame.
-    const hudRect = { x: 370, y: 340, w: 120, h: 58 };
+    // Derived from `layoutHud`'s keys panel rather than eyeballed, because the
+    // bar's panel positions are computed now — the previous literals (x=370,
+    // w=120, h=58) were pinned to the old hard-coded x=375 KEYS label and
+    // would have silently cropped a neighbouring panel once the layout moved,
+    // producing a wrong screenshot rather than a failure.
+    const canvasSize = await page.evaluate(() => {
+      const c = document.querySelector("canvas.scene-canvas");
+      return { w: c.width, h: c.height };
+    });
+    const keys = layoutHud(canvasSize.w, canvasSize.h).panels.keys;
+    const hudRect = { x: keys.x - 2, y: keys.y, w: keys.w + 4, h: HUD_HEIGHT };
     await assertNotFlat(page, hudRect, "hud-key-pips", 4);
     writeIfChanged("hud-key-pips.png", await grabCrop(page, { ...hudRect, scale: 4, label: "hud-key-pips" }));
 

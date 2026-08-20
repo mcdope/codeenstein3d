@@ -68,6 +68,7 @@ import {
   drawPauseOverlay,
   drawSpectatingBanner,
 } from "./hud";
+import { HURT_FACE_FRAMES, damageBucket, type HurtDir } from "./hudFace";
 import { drawWeapon } from "./viewmodel";
 import { drawAutomap } from "./automap";
 import {
@@ -688,6 +689,22 @@ interface PlayerState {
   suppressTeleportAt: string | null;
   alarmCountdown: number;
   flashFrames: number;
+  /**
+   * Frames the status-bar face holds its hurt expression, and which way it
+   * looks while it does. Presentation only — nothing in the simulation reads
+   * either, they consume no rng, and they are deliberately absent from the
+   * reconciliation snapshot for the same reason `flashFrames` is: a peer whose
+   * face grimaces on a different frame stays in lockstep regardless.
+   *
+   * `hurtDir` is resolved when the damage lands rather than re-derived at draw
+   * time, because a bearing recomputed each frame would swing as the player
+   * turned — which reads as the attacker circling rather than as a memory of
+   * being hit. It is left stale once `hurtFrames` reaches 0: it is only ever
+   * read behind that check, and clearing it would be a second write for no
+   * observable difference.
+   */
+  hurtFrames: number;
+  hurtDir: HurtDir;
   cheatToastText: string | null;
   cheatToastFrames: number;
   outOfAmmoToastFrames: number;
@@ -752,6 +769,15 @@ export interface EngineStats {
   maxHealth: number;
   /** Swap points, absorbed 1:1 before health on any hit (see `damage()`). */
   swap: number;
+  /** Frames left on the face's hurt expression, and which way it looks — see
+   * `PlayerState.hurtFrames`. Presentation only; no multiplayer message
+   * carries `EngineStats`. */
+  hurtFrames: number;
+  hurtDir: HurtDir;
+  /** Swap capacity (`MAX_SWAP`), so the HUD can draw a capacity strip beside
+   * the number instead of hardcoding a second copy of the constant. Sent for
+   * the same reason `maxHealth` is. */
+  maxSwap: number;
   /** Bullets remaining (echo pistol). */
   bullets: number;
   /** Shells remaining (Regex Shotgun) — its own pool since the shotgun stopped
@@ -1204,6 +1230,9 @@ export class RaycasterEngine {
       if (this.teamTelemetry) recordEnemyAggro(this.teamTelemetry, this.enemyTtkIndex, enemy, this.levelTime);
     },
     onMeleeAttack: (enemy, eid, targetId, amount) => {
+      // Always recorded, unlike the telemetry breakdown below it: the face is
+      // ordinary play, not an opt-in capture.
+      this.noteHurtFrom(targetId, enemy.x, enemy.y);
       if (this.teamTelemetry) recordEnemyMeleeAttack(this.teamTelemetry);
       if (this.eventLog) this.noteDamageSource(targetId, eid, enemy, amount);
     },
@@ -1229,6 +1258,26 @@ export class RaycasterEngine {
    * session allocates nothing here.
    */
   private readonly pendingDamageBy = new Map<PlayerId, Map<number, { arch: EnemyCategory; amt: number }>>();
+
+  /**
+   * Where each player's damage came from this frame, for the status-bar face.
+   *
+   * Per-player rather than a single field because `damage()` is the shared
+   * path: a host applying damage to several players in one frame would
+   * otherwise cross the wires and point everyone's face at the last attacker
+   * anyone saw. Drained by `takeHurtFrom`, mirroring `takeDamageBy`.
+   */
+  private readonly pendingHurtFrom = new Map<PlayerId, { x: number; y: number }>();
+
+  private noteHurtFrom(playerId: PlayerId, x: number, y: number): void {
+    this.pendingHurtFrom.set(playerId, { x, y });
+  }
+
+  private takeHurtFrom(playerId: PlayerId): { x: number; y: number } | undefined {
+    const from = this.pendingHurtFrom.get(playerId);
+    this.pendingHurtFrom.delete(playerId);
+    return from;
+  }
 
   /** Accumulate one attacker's contribution to a player's damage this frame. */
   private noteDamageSource(targetId: PlayerId, eid: number, enemy: Pick<Enemy, "elite" | "edgeCase">, amount: number): void {
@@ -1703,6 +1752,8 @@ export class RaycasterEngine {
       suppressTeleportAt: null,
       alarmCountdown: 0,
       flashFrames: 0,
+      hurtFrames: 0,
+      hurtDir: 0,
       cheatToastText: null,
       cheatToastFrames: 0,
       outOfAmmoToastFrames: 0,
@@ -3732,6 +3783,7 @@ export class RaycasterEngine {
   private tickEffects(): void {
     for (const p of this.players.values()) {
       if (p.flashFrames > 0) p.flashFrames -= 1;
+      if (p.hurtFrames > 0) p.hurtFrames -= 1;
       if (p.muzzleFrames > 0) p.muzzleFrames -= 1;
       if (p.cheatToastFrames > 0) p.cheatToastFrames -= 1;
       if (p.killStreakFrames > 0) p.killStreakFrames -= 1;
@@ -3895,7 +3947,7 @@ export class RaycasterEngine {
       // <= 0 today; kept as a defensive guard against a future change to
       // either invariant.
       /* v8 ignore next -- @preserve */
-      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee", this.takeDamageBy(id));
+      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee", this.takeDamageBy(id), this.takeHurtFrom(id));
     }
 
     if (this.teamTelemetry) {
@@ -3926,13 +3978,20 @@ export class RaycasterEngine {
       dt,
       // A bolt fired by an enemy that has since died still attributes fine:
       // `enemies` is never spliced, so the index stays valid for the level.
-      this.eventLog
-        ? (srcEid, targetId, amount) => {
-            if (srcEid === undefined) return;
-            const shooter = this.enemies[srcEid];
-            if (shooter) this.noteDamageSource(targetId, srcEid, shooter, amount);
-          }
-        : undefined,
+      // Always present now, because the face needs the impact point in ordinary
+      // play. The *telemetry* half stays behind `eventLog` — without that inner
+      // guard `pendingDamageBy` would start allocating a Map per hit in every
+      // session and `takeDamageBy` would stop returning undefined, quietly
+      // adding a `by` breakdown to logs that never asked for one.
+      (srcEid, targetId, amount, x, y) => {
+        // The bolt's own impact point, not the shooter's position: it survives
+        // the shooter dying or walking away, and it is where the hit actually
+        // came from.
+        this.noteHurtFrom(targetId, x, y);
+        if (!this.eventLog || srcEid === undefined) return;
+        const shooter = this.enemies[srcEid];
+        if (shooter) this.noteDamageSource(targetId, srcEid, shooter, amount);
+      },
     );
     for (const [id, dmg] of damageByPlayer) {
       const victim = this.players.get(id)!;
@@ -3943,7 +4002,7 @@ export class RaycasterEngine {
       // from `updateProjectiles()`'s own per-player return value instead of
       // threading a new id through a dedicated callback.
       if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
-      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged", this.takeDamageBy(id));
+      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged", this.takeDamageBy(id), this.takeHurtFrom(id));
     }
   }
 
@@ -3979,7 +4038,7 @@ export class RaycasterEngine {
       // teammates but not the firer" reduces to exactly this one condition.
       const shooter = this.players.get(blast.firedBy)!;
       const firerDmg = rocketDamageAt(blast, shooter.player.posX, shooter.player.posY);
-      if (firerDmg > 0) this.damage(blast.firedBy, firerDmg, "selfRocket");
+      if (firerDmg > 0) this.damage(blast.firedBy, firerDmg, "selfRocket", undefined, { x: blast.x, y: blast.y });
 
       // Splash is the one damage source with no per-target trace anywhere else
       // in the log: a rocket never reaches `resolveShot`, so it emits no `hit`
@@ -4422,12 +4481,26 @@ export class RaycasterEngine {
      * it never affects how much damage lands. Traps, hazards and rocket
      * splash have no attacker and pass nothing. */
     by?: { eid: number; arch: EnemyCategory; amt: number }[],
+    /** Where the damage came from, in world tiles, when there *is* somewhere —
+     * enemy melee, an enemy bolt's impact point, a rocket's blast centre.
+     * Drives the status-bar face and nothing else.
+     *
+     * An explicit parameter rather than a "last attacker" field the engine
+     * keeps: an implicit one goes stale and shows "hit from the left" for a
+     * spike trap, which is exactly the class of wrongness this is meant to
+     * avoid. Traps and hazards genuinely have no attacker and pass nothing,
+     * leaving the face's generic pain expression. */
+    from?: { x: number; y: number },
   ): void {
     const p = this.players.get(playerId)!;
     if (p.godMode || amount <= 0 || p.status !== "alive") return;
     if (p.telemetry) recordDamage(p.telemetry, source, amount);
     // Kick the red screen flash back to full strength on any damage taken.
     p.flashFrames = DAMAGE_FLASH_FRAMES;
+    p.hurtFrames = HURT_FACE_FRAMES;
+    // Multiple attackers in one frame: last writer wins. DOOM does the same,
+    // and a face cannot express "from two sides at once" anyway.
+    p.hurtDir = from ? damageBucket(p.player.posX, p.player.posY, p.player.dirX, p.player.dirY, from.x, from.y) : 0;
     if (playerId === this.currentlyWatchedPlayerId(this.localPlayerId)) audio.playDamage();
     let remaining = amount;
     if (p.swap > 0) {
@@ -5793,6 +5866,9 @@ export class RaycasterEngine {
       health: Math.ceil(local.health),
       maxHealth: MAX_HEALTH,
       swap: Math.ceil(local.swap),
+      maxSwap: MAX_SWAP,
+      hurtFrames: local.hurtFrames,
+      hurtDir: local.hurtDir,
       bullets: statsAmmo.bullets,
       shells: statsAmmo.shells,
       rockets: statsAmmo.rockets,

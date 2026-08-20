@@ -16,6 +16,7 @@ import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationCons
 import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
 import { COUNTDOWN_TICKS } from "./transitionConstants";
+import { HURT_FACE_FRAMES } from "./hudFace";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
@@ -5838,6 +5839,50 @@ describe("RaycasterEngine — lag-compensated hit resolution (multiplayer only)"
     engine.advance(0.016);
 
     expect(enemy.hp).toBeLessThan(30);
+  });
+});
+
+describe("the status-bar face's hurt direction", () => {
+  it("points at an enemy that melees from the player's right", () => {
+    // Player faces +x, so +y is its right (the right-vector is (-dirY, dirX),
+    // matching dodgeStrafeKey). An enemy placed there and allowed to bite must
+    // leave the face looking that way.
+    const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 6.2, aggroed: true })] });
+    const { engine, handlers } = makeEngine(map, makeHandlers());
+    for (let i = 0; i < 120; i++) engine.advance(0.016);
+    const stats = lastStats(handlers);
+    expect(stats.hurtFrames, "the enemy has to have actually landed a hit").toBeGreaterThan(0);
+    expect(stats.hurtDir).toBe(1);
+  });
+
+  it("leaves the direction neutral for damage with no attacker", () => {
+    // A spike trap has nowhere to point at. Showing "hit from the left" for
+    // one is the exact wrongness the explicit `from` parameter exists to
+    // prevent — an implicit last-attacker field would have gone stale and done
+    // just that.
+    const map = fakeMap({ spikeTraps: [{ x: 5, y: 5, period: 1, phase: 0 }] });
+    const { engine, handlers } = makeEngine(map, makeHandlers());
+    for (let i = 0; i < 200; i++) engine.advance(0.016);
+    const stats = lastStats(handlers);
+    expect(stats.hurtDir).toBe(0);
+  });
+
+  it("decays to zero, and deliberately does not clear the direction with it", () => {
+    const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 6.2, aggroed: true })] });
+    const { engine, handlers } = makeEngine(map, makeHandlers());
+    for (let i = 0; i < 120; i++) engine.advance(0.016);
+    expect(lastStats(handlers).hurtFrames).toBeGreaterThan(0);
+
+    // Move far away and let the timer run out.
+    const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, (...a: unknown[]) => unknown> }).__codeensteinTestHooks;
+    void hooks;
+    map.enemies[0].alive = false;
+    for (let i = 0; i < HURT_FACE_FRAMES + 10; i++) engine.advance(0.016);
+    const after = lastStats(handlers);
+    expect(after.hurtFrames).toBe(0);
+    // Stale on purpose: it is only ever read behind `hurtFrames > 0`, so
+    // clearing it would be a second write for no observable difference.
+    expect(after.hurtDir).toBe(1);
   });
 });
 
