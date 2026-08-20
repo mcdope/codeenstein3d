@@ -20,7 +20,8 @@ import {
   type HudLayout,
   type HudPanelRect,
 } from "./hudLayout";
-import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
+import { faceGlyph, faceKeyFor } from "./hudFace";
+import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
 import { NUMBER_KEY_WEAPONS, TOOLCHAIN_WEAPON_INDEX, WEAPONS, type AmmoType } from "./weapons";
 
@@ -529,6 +530,7 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawSwapPanel(ctx, L.panels.swap, stats);
   drawKeysPanel(ctx, L.panels.keys, stats);
   drawToolsPanel(ctx, L.panels.tools, stats);
+  drawFacePanel(ctx, L.panels.face, stats);
   drawScorePanel(ctx, L.panels.score, stats);
   drawAmmoTable(ctx, L.panels.table, stats);
 
@@ -769,6 +771,22 @@ function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
   x += TOOL_GAP;
   cell(owned.has(TOOLCHAIN_WEAPON_INDEX) ? "T" : "K", true, false);
 }
+
+/**
+ * The face — DOOM's `STFACE`, reacting to health, to a kill streak, and to the
+ * direction the last hit came from.
+ *
+ * One `drawImage` per frame. Every expression is a pre-rendered glyph built on
+ * first use (`hudFace.ts`), so which way the face is looking selects a
+ * different sprite rather than doing more work — the direction costs nothing.
+ */
+function drawFacePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
+  const key = faceKeyFor(stats);
+  drawGlyph(ctx, faceGlyph(key), rect.x + rect.w / 2, rect.y + 2 + FACE_BOX / 2);
+}
+
+/** The face sprite's box, centred in its panel below the accent. */
+const FACE_BOX = 44;
 
 /** Running campaign total. DOOM has no score panel; this keeps ours in the
  * numeral template so it reads as part of the bar rather than as a caption. */

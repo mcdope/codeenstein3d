@@ -52,6 +52,8 @@ type Renderers = {
   renderMinimap: typeof import("./raycaster").renderMinimap;
   drawCompass: typeof import("./hud").drawCompass;
   drawHud: typeof import("./hud").drawHud;
+  faceGlyph: typeof import("./hudFace").faceGlyph;
+  allFaceKeys: typeof import("./hudFace").allFaceKeys;
   drawCrosshair: typeof import("./hud").drawCrosshair;
   drawCheatToast: typeof import("./hud").drawCheatToast;
   drawOutOfAmmoToast: typeof import("./hud").drawOutOfAmmoToast;
@@ -107,8 +109,9 @@ beforeAll(async () => {
     import("./viewmodel"), import("./raycaster"), import("./hud"), import("./automap"),
     import("./effects"), import("./sprites"), import("./pathSprites"), import("./player"), import("./textures"),
   ]);
+  const hudFace = await import("./hudFace");
   R = {
-    ...viewmodel, ...raycaster, ...hud, ...automap, ...effects, ...sprites,
+    ...viewmodel, ...raycaster, ...hud, ...automap, ...effects, ...sprites, ...hudFace,
     offscreenSpritesAvailable: pathSprites.offscreenSpritesAvailable,
     PlayerCtor: player.Player,
     textures: textures.textures,
@@ -236,6 +239,19 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
       godMode: false, noClip: false, showFps: false, status: "alive", spectateTargetId: null,
     } as never);
     expectNoRasterisingCalls(c, "drawHud + drawCrosshair");
+  });
+
+  it("every face sprite, not just the one the default stats pick", () => {
+    // The face is by far the likeliest thing here to reintroduce a path fill,
+    // and `drawGlyph` falls back to running a glyph's own `draw` against *this*
+    // context when no offscreen surface exists — so a path-based face would
+    // issue real fill() calls on the scene canvas in that environment. Loop
+    // every key the selector can emit rather than trusting one sample.
+    for (const key of R.allFaceKeys()) {
+      const c = sceneCtx();
+      R.faceGlyph(key).draw(asCtx(c), 40, 40);
+      expectNoRasterisingCalls(c, `faceGlyph(${key})`);
+    }
   });
 
   it("the transient toasts and standing banners", () => {

@@ -52,6 +52,8 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     maxHealth: 100,
     swap: 0,
     maxSwap: 100,
+    hurtFrames: 0,
+    hurtDir: 0,
     bullets: 10,
     shells: 4,
     magazine: 9,
