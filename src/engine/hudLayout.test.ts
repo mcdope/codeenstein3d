@@ -141,3 +141,18 @@ describe("layoutHud minimums", () => {
     expect(gridRight + HUD_PAD, `grid overflows TOOLS at ${w}px`).toBeLessThanOrEqual(tools.w);
   });
 });
+
+describe("layoutHud rounding", () => {
+  it.each(WIDTHS)("at %ipx: panels plus dividers exactly fill the usable width", (w) => {
+    // The invariant the per-panel rounding broke. Eight independently rounded
+    // widths can each gain half a pixel, so the bar overshot its own content
+    // cap by 2px at 2560 — visible as the right edge sitting past where the
+    // centring said it should. Asserting the sum is what pins it; asserting
+    // each panel individually never could.
+    const { panels, dividers } = layoutHud(w, 400);
+    const contentW = Math.min(w - 4 * 2, HUD_MAX_CONTENT_W);
+    const spanned = panels.table.x + panels.table.w - panels.ammo.x;
+    expect(spanned, `bar span at ${w}px`).toBe(contentW);
+    expect(dividers).toHaveLength(KEYS.length - 1);
+  });
+});

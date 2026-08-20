@@ -112,11 +112,14 @@ export const HUD_MAX_CONTENT_W = 1280;
  */
 export const PANEL_SPECS: readonly { key: HudPanelKey; min: number; weight: number }[] = [
   { key: "ammo", min: 100, weight: 1.0 },
-  { key: "stabil", min: 120, weight: 1.2 },
+  // "STABIL" is 33px and "100%" 53px, so 112 is still generous — it is sized
+  // for the bar strip beneath them, not the text, and the face needed the 8px
+  // more than the strip did.
+  { key: "stabil", min: 112, weight: 1.2 },
   { key: "tools", min: TOOLS_MIN, weight: 0.8 },
-  // The glyph is 39px wide and has no label row to clear, so it needs the
+  // The glyph is 44px wide and has no label row to clear, so it needs the
   // sprite plus a hair of bezel and nothing else.
-  { key: "face", min: 44, weight: 0.3 },
+  { key: "face", min: 48, weight: 0.3 },
   { key: "swap", min: 60, weight: 0.8 },
   // "KEYS" is 22px; four pips at 10px with gaps is 40px. 56 clears both.
   { key: "keys", min: 56, weight: 0.8 },
@@ -181,9 +184,18 @@ export function layoutHud(canvasW: number, canvasH: number): HudLayout {
   const startX = Math.round((canvasW - contentW) / 2);
   const panels = {} as Record<HudPanelKey, HudPanelRect>;
   const dividers: number[] = [];
+  // Widths come from *rounded cumulative edges*, not from rounding each width
+  // on its own. Rounding independently lets eight half-pixels accumulate, and
+  // the total then overshoots the usable width by up to four pixels — which is
+  // how the bar came to exceed HUD_MAX_CONTENT_W by 2px at 2560. Deriving each
+  // width as the gap between two rounded edges makes the widths absorb the
+  // rounding instead, so the sum is exact by construction at every width.
   let x = startX;
+  let ideal = 0;
   PANEL_SPECS.forEach((spec, i) => {
-    const w = Math.max(1, Math.round(spec.min * squeeze + (surplus * spec.weight) / totalWeight));
+    const edge = Math.round(ideal);
+    ideal += spec.min * squeeze + (surplus * spec.weight) / totalWeight;
+    const w = Math.max(1, Math.round(ideal) - edge);
     panels[spec.key] = { x, y: bar.y, w, h: HUD_HEIGHT };
     x += w;
     if (i < dividerCount) {

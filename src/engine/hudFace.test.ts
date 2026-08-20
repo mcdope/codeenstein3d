@@ -102,7 +102,7 @@ describe("the face matrices", () => {
       }
     }
     // A hurt face must actually show blood, or the tiers are indistinguishable.
-    expect(Object.keys(seen)).toContain("#c03028");
+    expect(Object.keys(seen)).toContain("#8c1a14");
   });
 });
 
@@ -146,5 +146,56 @@ describe("damageBucket", () => {
     // A point-blank rocket: atan2(0,0) is degenerate, and the dot-product form
     // lands on front rather than producing NaN.
     expect(at(0, 0)).toBe(0);
+  });
+});
+
+describe("damage shows on the face at low health, not only on the hit", () => {
+  const BLOOD = ["#8c1a14", "#c62828"];
+
+  /** How many cells of blood a face key paints. */
+  function bloodCells(key: string): number {
+    let n = 0;
+    let current = "";
+    faceGlyph(key).draw(
+      {
+        set fillStyle(v: string) {
+          current = v;
+        },
+        get fillStyle() {
+          return current;
+        },
+        fillRect: () => {
+          if (BLOOD.includes(current)) n += 1;
+        },
+      } as unknown as CanvasRenderingContext2D,
+      0,
+      0,
+    );
+    return n;
+  }
+
+  it("leaves a full-health face unmarked", () => {
+    expect(bloodCells("idle4")).toBe(0);
+  });
+
+  it("keeps a nearly-dead face bloodied with no recent hit", () => {
+    // The defect: wounds were only stamped while `hurtFrames` was live, so a
+    // player on 8 health looked untouched one second after the blow that
+    // nearly killed them — at exactly the moment the face is meant to be the
+    // loudest thing on the bar. `idle0` is the resting face at that health.
+    expect(bloodCells("idle0")).toBeGreaterThan(0);
+  });
+
+  it("gets steadily worse as health drops", () => {
+    const walk = [4, 3, 2, 1, 0].map((t) => bloodCells(`idle${t}`));
+    for (let i = 1; i < walk.length; i++) {
+      expect(walk[i], `idle${5 - i - 1} vs the tier above`).toBeGreaterThanOrEqual(walk[i - 1]);
+    }
+    // And it must actually move, not merely fail to decrease.
+    expect(walk[walk.length - 1]).toBeGreaterThan(walk[0]);
+  });
+
+  it("marks a hit harder than resting at the same health", () => {
+    expect(bloodCells("hurt2_0")).toBeGreaterThan(bloodCells("idle2"));
   });
 });
