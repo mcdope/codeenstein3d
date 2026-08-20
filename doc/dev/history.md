@@ -12,6 +12,34 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The density change is real, but not where it was predicted — and the shells A/B died before it ran (2026-08-20).** Three-arm capture, 360 attempts, 8h20m across 4 local + 4 SSH lanes. This is the follow-up the DPS-neutral discipline of the previous two changes existed to make possible.
+
+  **Design.** `COMPLEXITY_PER_EXTRA_ENEMY` 10 (arm A) against 5 (arm B), plus **arm C, byte-identical to B**, on one shared 15-level staging of curl. Gamer profile, `normal` and `hard`, 60 attempts per combo per arm. Arms were branches differing by exactly one line rather than a runtime flag: both measure the same long-standing metrics, so the usual objection to a baseline branch — it cannot emit a metric newer than itself — did not apply.
+
+  Running two difficulties was a hedge that paid: they wall at **different levels** (hard at L10, normal at L12), and a single-difficulty run that picked `normal` would have had an 8% endpoint instead of a 46% one.
+
+  **The manipulation was much larger here than on an average repo.** Total normals across the 15 staged levels: **378 -> 539, +42.6%**, against the +15.7% measured on the corpus average — because `stage-campaign` selects files spanning the repo's difficulty range, so far more of them clear complexity 5. Anything read off this capture describes a +42.6% change, not what a typical repo sees.
+
+  **The pre-registered endpoint was null.** Reaching L10 on hard: A 46.7% [34.6, 59.1], B 43.3% [31.6, 55.9], C 40.0% [28.6, 52.6]. B-A is **-3.3pp against a B-C null gap of +3.3pp** — the treatment effect and the noise are the same size. Density does **not** move the L10 wall; whatever that wall is, it is not enemy count.
+
+  **The effect is at the deep end, and it replicates.** Conditioning on reaching L10 (an attempt that died at L9 is neither outcome), the share that pushed on to L12:
+
+  | | divisor 10 | divisor 5 | null control | treatment | noise |
+  |---|---|---|---|---|---|
+  | hard | 12/28 = 42.9% | 5/26 = 19.2% | 6/24 = 25.0% | **-23.6pp** (p=0.062) | -5.8pp (p=0.62) |
+  | normal | 5/55 = 9.1% | 1/54 = 1.9% | 1/55 = 1.8% | **-7.2pp** (p=0.098) | 0.0pp (p=0.99) |
+  | **pooled** | **17/83 = 20.5%** | **13/159 = 8.2%** | — | **-12.3pp, p=0.0058** | — |
+
+  So a +42.6% roster cuts deep runs by about **60% relative** while leaving the main wall untouched.
+
+  **Stated as a weakness, not buried: L12 is a secondary endpoint, found after looking.** Fifteen levels x two difficulties is thirty comparisons, and picking the best one is how noise becomes a finding. Three things argue it is real anyway — it replicates independently on both difficulties, the null control is clean at both (0.0pp and -5.8pp), and it is mechanistically coherent: L12 is where the roster change is *largest* (99 -> 149 normals, the biggest absolute jump of any level). A confirmatory run would pre-register L12-conditional-on-L10 as the primary endpoint.
+
+  **The null control is what makes any of this readable**, and it is the arm that would have been cut first for time. Without it, "-3.3pp at L10" and "-23.6pp at L12" are two numbers with no scale. With it, the first is noise and the second is four times the noise.
+
+  **The shells/reload A/B was refuted before it ran, from the same capture's event logs.** `notes` proposed answering "is the bot starving on shells" first. Across 2,609 level-starts: mean shells at level start **13.9** — above the starting 12, so the pool accumulates — p50 10, p90 27; **1.6%** of level-starts at zero; **0.91%** of shotgun shots empty the pool; and the shotgun is **2.9% of all shots**. The constraint does not bind, so tuning it would move nothing. Roughly 8 hours of fleet time not spent, and the same availability-before-efficacy shape as the ghidra result three days earlier.
+
+  **Two process notes.** Throughput estimates were wrong twice: ~2.2h quoted, then a panicked "16.6h" that came from counting result *files* as attempts, against an actual 8h20m. Count the thing, not a proxy for it. And the first launch aborted instantly on all three arms — the guard asserted `git ls-remote <url>` matched HEAD while the capture checks `git rev-list --count HEAD --not --remotes`; pushing via a one-off URL never updates `refs/remotes/origin/*`. A guard that does not run the checked command is not a guard.
+
 - [x] **Enemy density was nearly inert, and "diversity" turned out to need a fourth archetype (2026-08-20).** Half-closes the enemy-diversity backlog item. Read the second half before proposing another fact-driven archetype rule — the ceiling is structural, not a missing idea.
 
   **Density: `COMPLEXITY_PER_EXTRA_ENEMY` 10 -> 5.** The constant had never been tuned, and measuring it first is what changed the plan. With the real parser over **8,143 callable entities** (laravel, curl, ripgrep, serilog, django), `complexityScore` runs p25=1, **p50=1**, p75=3, p90=6, p99=19 — so at one extra enemy per 10 points, **95.5% of entity rooms spawned exactly one enemy** (p99=2, max=4). The pack curve existed mostly on paper.
