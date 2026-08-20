@@ -14,6 +14,7 @@ import {
   LABEL_KEYS,
   LABEL_SCORE,
   LABEL_STABIL,
+  LABEL_TOOLS,
   LABEL_SWAP,
   layoutHud,
   type HudLayout,
@@ -21,7 +22,7 @@ import {
 } from "./hudLayout";
 import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
-import { WEAPONS, type AmmoType } from "./weapons";
+import { NUMBER_KEY_WEAPONS, TOOLCHAIN_WEAPON_INDEX, WEAPONS, type AmmoType } from "./weapons";
 
 /**
  * How much of `type` the player has left, out of `EngineStats`.
@@ -527,7 +528,9 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawStabilPanel(ctx, L.panels.stabil, stats);
   drawSwapPanel(ctx, L.panels.swap, stats);
   drawKeysPanel(ctx, L.panels.keys, stats);
+  drawToolsPanel(ctx, L.panels.tools, stats);
   drawScorePanel(ctx, L.panels.score, stats);
+  drawAmmoTable(ctx, L.panels.table, stats);
 
   if (stats.cheatsUsed) drawCheatedRunBadge(ctx, L.bar.y);
 }
@@ -664,6 +667,109 @@ function drawKeysPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   });
 }
 
+/**
+ * Display order for the ammo table's rows.
+ *
+ * **Deliberately not `AMMO_TYPES`.** That array's order is a replay
+ * determinism constant (`ammo.ts`) — it decides the sequence a disconnecting
+ * player's inventory converts to drops, which is why new pools are appended
+ * and never inserted. Reordering it to suit a table would be a determinism
+ * change dressed as a UI tidy-up. This is the renderer's own order, and a test
+ * pins it so that swap can never happen silently.
+ */
+const HUD_AMMO_ROW_ORDER: readonly AmmoType[] = ["bullets", "shells", "smg", "rockets", "gas"];
+
+/** Row pitch and first baseline for the ammo table, the pair `HUD_HEIGHT` was
+ * derived from — see `hudLayout.ts`. */
+const TABLE_ROW_PITCH = 12;
+const TABLE_FIRST_BASELINE = 16;
+
+/**
+ * Every pool at once, DOOM's far-right column.
+ *
+ * **One number per row, no denominator.** DOOM prints `current / max` because
+ * DOOM has per-type maxima that a backpack raises. This game has no cap
+ * anywhere — nothing in `ammo.ts` or `lootApply.ts` clamps a pool, and the
+ * only ceiling in the codebase is the `IDKFA` cheat's. Printing an invented
+ * maximum would assert a mechanic that does not exist, and adding a real one
+ * would change scores (`computeScore` measures leftover ammo), which changes
+ * the shipped highscore board and every recorded replay. A balance change is
+ * not a HUD change.
+ *
+ * The equipped weapon's row is lit in its own `hudColor` while the rest stay
+ * dim, so the eye connects this column to the AMMO panel. Those two readouts
+ * are consistent by construction rather than by coincidence: AMMO shows
+ * `loaded / reserve` and this shows the pooled total, and loaded + reserve is
+ * that total.
+ */
+function drawAmmoTable(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
+  const equipped = WEAPONS[stats.weaponIndex].ammoType;
+  HUD_AMMO_ROW_ORDER.forEach((type, row) => {
+    const meta = AMMO_META[type];
+    const y = rect.y + TABLE_FIRST_BASELINE + row * TABLE_ROW_PITCH;
+    const lit = type === equipped;
+    drawLabel(ctx, meta.short, rect.x + HUD_PAD, y, lit ? meta.hudColor : "#3f6b46");
+    ctx.textAlign = "right";
+    // Floored: gas is fractional (Friday Hotfix spends 2.5 a shot). A no-op
+    // for the four integral pools.
+    drawValue(ctx, String(Math.floor(ammoRemaining(stats, type))), rect.x + rect.w - HUD_PAD, y, lit ? meta.hudColor : "#5a6a8a", 11);
+    ctx.textAlign = "left";
+  });
+}
+
+/** Cell geometry for the TOOLS grid. */
+const TOOL_CELL = 14;
+const TOOL_GAP = 3;
+
+/**
+ * DOOM's ARMS panel, keeping this game's word: which dev tools you are
+ * carrying, and which one is in your hands.
+ *
+ * **Bound to `NUMBER_KEY_WEAPONS`, never to `WEAPONS` order.** They diverge for
+ * everything past the knife — `WEAPONS[3]` is gdb but its number key is `3`,
+ * not `4` — and a `WEAPONS`-indexed grid would light the wrong cell for three
+ * of the five weapons. That exact off-by-one already shipped once in the bot's
+ * key dispatch; `numberKeyCodeFor`'s doc comment records it.
+ *
+ * The cell count is the list's length rather than a literal 5, so a future
+ * non-melee weapon grows the grid for free — which is the same reason
+ * `NUMBER_KEY_WEAPONS` is derived rather than hardcoded.
+ *
+ * The trailing cell is melee, which has no number key at all (it is bound to
+ * Space) and is always owned, since the knife is a starting weapon. It shows
+ * which melee weapon is current, `K` or `T` once the Toolchain replaces it.
+ */
+function drawToolsPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
+  drawLabel(ctx, LABEL_TOOLS, rect.x + HUD_PAD, rect.y + LABEL_DY);
+  const owned = new Set(stats.ownedWeapons);
+  const y = rect.y + STRIP_DY;
+  let x = rect.x + HUD_PAD;
+
+  const cell = (text: string, isOwned: boolean, isEquipped: boolean): void => {
+    if (isEquipped) {
+      ctx.fillStyle = "#1c5c24";
+      ctx.fillRect(x, y, TOOL_CELL, TOOL_CELL);
+    } else if (isOwned) {
+      ctx.strokeStyle = "#5aa869";
+      ctx.lineWidth = 1;
+      outlineRect(ctx, x + 0.5, y + 0.5, TOOL_CELL - 1, TOOL_CELL - 1);
+    }
+    // Two channels carry the state, not one: a box *and* the digit's tone, so
+    // neither has to be read on its own at 9px.
+    ctx.textAlign = "center";
+    drawValue(ctx, text, x + TOOL_CELL / 2, y + TOOL_CELL - 3, isEquipped ? "#8effa0" : isOwned ? "#5aa869" : "#2f4a33", 10);
+    ctx.textAlign = "left";
+    x += TOOL_CELL + TOOL_GAP;
+  };
+
+  NUMBER_KEY_WEAPONS.forEach((weaponIndex, slot) => {
+    cell(String(slot + 1), owned.has(weaponIndex), stats.weaponIndex === weaponIndex);
+  });
+  // Melee sits slightly apart — it is a different input, not a sixth slot.
+  x += TOOL_GAP;
+  cell(owned.has(TOOLCHAIN_WEAPON_INDEX) ? "T" : "K", true, false);
+}
+
 /** Running campaign total. DOOM has no score panel; this keeps ours in the
  * numeral template so it reads as part of the bar rather than as a caption. */
 function drawScorePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
@@ -709,9 +815,9 @@ function drawCheatedRunBadge(ctx: CanvasRenderingContext2D, y0: number): void {
 }
 
 /** Small uppercase caption; honors the current `textAlign`. */
-function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: number): void {
+function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color = "#5aa869"): void {
   ctx.font = "9px ui-monospace, monospace";
-  ctx.fillStyle = "#5aa869";
+  ctx.fillStyle = color;
   ctx.fillText(text, x, y);
 }
 

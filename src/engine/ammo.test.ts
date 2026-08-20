@@ -50,9 +50,24 @@ describe("AMMO_TYPES", () => {
 });
 
 describe("AMMO_META", () => {
+  it("gives every pool a short name that fits the status bar's fixed column", () => {
+    // The table's rows sit under a big numeral in a fixed-width panel, exactly
+    // as DOOM's BULL/SHEL/RCKT/CELL do. `label.toUpperCase()` cannot serve —
+    // "smg ammo" is nine characters — which is why `short` is stored beside
+    // `label` rather than derived from it at draw time.
+    for (const type of AMMO_TYPES) {
+      expect(AMMO_META[type].short.length, type).toBeLessThanOrEqual(4);
+      expect(AMMO_META[type].short, type).toBe(AMMO_META[type].short.toUpperCase());
+    }
+    // Distinct, or two rows would read identically.
+    const shorts = AMMO_TYPES.map((t) => AMMO_META[t].short);
+    expect(new Set(shorts).size).toBe(shorts.length);
+  });
+
   it("has metadata for every pool, matching loot.ts's real drop constants", () => {
     expect(AMMO_META.bullets).toEqual({
       label: "bullets",
+      short: "BULL",
       logColor: "#3fd0e0",
       hudColor: "#4cff6a",
       dropAmount: BULLETS_DROP_AMOUNT,
@@ -60,6 +75,7 @@ describe("AMMO_META", () => {
     });
     expect(AMMO_META.shells).toEqual({
       label: "shells",
+      short: "SHEL",
       logColor: "#ffb547",
       hudColor: "#ffb547",
       dropAmount: SHELLS_DROP_AMOUNT,
@@ -67,6 +83,7 @@ describe("AMMO_META", () => {
     });
     expect(AMMO_META.rockets).toEqual({
       label: "rockets",
+      short: "RCKT",
       logColor: "#ff9d3f",
       hudColor: "#ff9d3f",
       dropAmount: ROCKETS_DROP_AMOUNT,
@@ -74,6 +91,7 @@ describe("AMMO_META", () => {
     });
     expect(AMMO_META.smg).toEqual({
       label: "smg ammo",
+      short: "SMG",
       logColor: "#3fa9ff",
       hudColor: "#3fa9ff",
       dropAmount: SMG_DROP_AMOUNT,
@@ -81,6 +99,7 @@ describe("AMMO_META", () => {
     });
     expect(AMMO_META.gas).toEqual({
       label: "gas",
+      short: "GAS",
       logColor: "#ff5a1a",
       hudColor: "#ff8a4a",
       dropAmount: GAS_DROP_AMOUNT,

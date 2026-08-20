@@ -4,7 +4,9 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { EngineStats } from "./engine";
+import { HUD_PAD, layoutHud } from "./hudLayout";
 import { emptyPlayerFacingStats } from "./playerStats";
+import { NUMBER_KEY_WEAPONS, TOOLCHAIN_WEAPON_INDEX } from "./weapons";
 import { zeroScoreBreakdown } from "./scoring";
 import {
   drawAcidOverflowToast,
@@ -28,6 +30,20 @@ function ctx(width = 800, height = 600): MockCanvasContext {
 
 function asCtx(c: MockCanvasContext): CanvasRenderingContext2D {
   return c as unknown as CanvasRenderingContext2D;
+}
+
+/** The same trick for text: `[drawnString, fillStyleAtThatMoment]` per call.
+ *
+ * Needed because the bar now draws eight panels, so asserting the context's
+ * *final* `fillStyle` says nothing about the panel under test — it reports
+ * whatever the last panel happened to set. That is how the dry-ammo colour
+ * assertion below became vacuous when the bar grew. */
+function fillTextStylesLog(c: MockCanvasContext): [string, string][] {
+  const log: [string, string][] = [];
+  c.fillText.mockImplementation((text: unknown) => {
+    log.push([String(text), c.fillStyle as string]);
+  });
+  return log;
 }
 
 function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
@@ -402,19 +418,6 @@ describe("drawHud", () => {
     return log;
   }
 
-  /** The same trick for text: `[drawnString, fillStyleAtThatMoment]` per call.
-   *
-   * Needed because the bar now draws eight panels, so asserting the context's
-   * *final* `fillStyle` says nothing about the panel under test — it reports
-   * whatever the last panel happened to set. That is how the dry-ammo colour
-   * assertion below became vacuous when the bar grew. */
-  function fillTextStylesLog(c: MockCanvasContext): [string, string][] {
-    const log: [string, string][] = [];
-    c.fillText.mockImplementation((text: unknown) => {
-      log.push([String(text), c.fillStyle as string]);
-    });
-    return log;
-  }
 
   it("draws the cheated-run badge only once a cheat has fired", () => {
     const clean = ctx();
@@ -570,11 +573,114 @@ describe("drawHud", () => {
     expect(c.textAlign).toBe("left"); // reset after the right-aligned score
   });
 
+  it("keeps the pips inside their own panel, at every gate count the generator can emit", () => {
+    // MAX_GATE_ROOMS is 4, so four pips at a 16px pitch is the worst case. The
+    // panel's minimum width has to cover it — the backlog's "keys need a count
+    // or a scroll" worry predates that cap and does not apply.
+    const keys = layoutHud(800, 600).panels.keys;
+    const widest = HUD_PAD + 4 * 16;
+    expect(widest).toBeLessThanOrEqual(keys.w);
+
+    const c = ctx();
+    const rects: number[] = [];
+    c.fillRect.mockImplementation((x: unknown) => rects.push(Number(x)));
+    drawHud(asCtx(c), fakeStats({ heldGates: [0, 1, 2, 3], gateColors: [0, 1, 2, 3] }));
+    const pipXs = rects.filter((x) => x >= keys.x && x < keys.x + keys.w);
+    expect(pipXs.length).toBeGreaterThanOrEqual(4);
+    for (const x of pipXs) expect(x + 12).toBeLessThanOrEqual(keys.x + keys.w);
+  });
+
   it("shows a dash instead of pips on a level with no gates at all", () => {
     // Most levels: C sources produce no private/protected members, so no gates.
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ heldGates: [], gateColors: [] }));
     expect(c.fillText).toHaveBeenCalledWith("—", expect.any(Number), expect.any(Number));
+  });
+});
+
+describe("the ammo table", () => {
+  it("draws every pool, in the renderer's own display order", () => {
+    // Pinned independently of AMMO_TYPES, whose order is a replay-determinism
+    // constant. If someone ever "tidies" that array to match this, or this to
+    // match that, one of these two facts breaks loudly instead of silently
+    // changing the disconnect-drop sequence.
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats());
+    const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
+    const rows = drawn.filter((t) => ["BULL", "SHEL", "SMG", "RCKT", "GAS"].includes(t));
+    expect(rows).toEqual(["BULL", "SHEL", "SMG", "RCKT", "GAS"]);
+  });
+
+  it("shows the pooled total per row, with no invented maximum", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ bullets: 40, shells: 12, smg: 40, rockets: 4, gas: 40 }));
+    const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
+    for (const v of ["40", "12", "4"]) expect(drawn).toContain(v);
+    // No "x / y" anywhere in the table — that is the AMMO panel's form, and
+    // there is no cap in the game to be the denominator.
+    expect(drawn.filter((t) => t.includes(" / "))).toHaveLength(1);
+  });
+
+  it("floors the one fractional pool", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ gas: 37.5 }));
+    expect(c.fillText.mock.calls.map((call) => String(call[0]))).toContain("37");
+  });
+
+  it("agrees with the AMMO panel by construction: loaded + reserve is the pooled total", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
+    const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
+    expect(drawn).toContain("9 / 31"); // AMMO panel
+    expect(drawn).toContain("40"); // table row — and 9 + 31 = 40
+  });
+
+  it("lights only the equipped weapon's row", () => {
+    const c = ctx();
+    const log = fillTextStylesLog(c);
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0 })); // pistol -> bullets
+    expect(log.find(([t]) => t === "BULL")?.[1]).toBe("#4cff6a");
+    expect(log.find(([t]) => t === "GAS")?.[1]).not.toBe("#ff8a4a");
+  });
+});
+
+describe("the TOOLS grid", () => {
+  it("lights the cell for the number key that equips the weapon, not its array index", () => {
+    // The trap: WEAPONS[3] is gdb but its number key is 3, not 4. A grid keyed
+    // by WEAPONS index lights the wrong cell for everything past the knife —
+    // the same off-by-one that once made the bot's Digit3 equip ghidra.
+    const c = ctx();
+    const log = fillTextStylesLog(c);
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 3, ownedWeapons: [0, 1, 2, 3] }));
+    expect(log.find(([t]) => t === "3")?.[1]).toBe("#8effa0"); // gdb = slot 3, lit
+    expect(log.find(([t]) => t === "4")?.[1]).toBe("#2f4a33"); // ghidra unowned
+  });
+
+  it("draws one cell per number-key weapon, not a hardcoded five", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats());
+    const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
+    const digits = NUMBER_KEY_WEAPONS.map((_, i) => String(i + 1));
+    for (const d of digits) expect(drawn).toContain(d);
+  });
+
+  it("distinguishes owned from unowned", () => {
+    const c = ctx();
+    const log = fillTextStylesLog(c);
+    drawHud(asCtx(c), fakeStats({ weaponIndex: 0, ownedWeapons: [0, 1, 2] }));
+    expect(log.find(([t]) => t === "1")?.[1]).toBe("#8effa0"); // equipped
+    expect(log.find(([t]) => t === "2")?.[1]).toBe("#5aa869"); // owned
+    expect(log.find(([t]) => t === "5")?.[1]).toBe("#2f4a33"); // not owned
+  });
+
+  it("shows which melee weapon is current, which has no number key at all", () => {
+    const knife = ctx();
+    drawHud(asCtx(knife), fakeStats({ ownedWeapons: [0, 1, 2] }));
+    expect(knife.fillText.mock.calls.map((c2) => String(c2[0]))).toContain("K");
+
+    const chainsaw = ctx();
+    drawHud(asCtx(chainsaw), fakeStats({ ownedWeapons: [0, 1, 2, TOOLCHAIN_WEAPON_INDEX] }));
+    expect(chainsaw.fillText.mock.calls.map((c2) => String(c2[0]))).toContain("T");
   });
 });
 
