@@ -25,6 +25,91 @@ Entries are newest-first, in the format the `notes` backlog uses. Nothing here i
   Schema 2 -> 3 in both the engine and the `scripts/lib/eventLog.mjs` mirror, with a test pinning them equal. Additive — a schema-2 reader skips an unknown event type — but a consumer can now distinguish a log that can answer these questions from one that structurally cannot.
 
   **What it does not do: it does not make the existing archive readable.** Every capture on disk predates it, so the ghidra half of the cluster fast-path stays unguided until a *new* capture runs. The event removes the blocker; it does not retroactively answer anything.
+- [x] **The cluster fast-path's premise is right, its close-range handoff is not (2026-08-20, offline).** Follow-up to the finding that the fast-path — not `scoreRangedWeapon` — picks the shotgun and ghidra. The open question was whether handing clusters to a spread weapon is even justified in this engine. It is, for the shotgun.
+
+  **`resolveShot` resolves a target per pellet**, not per shot: `findTargetInProjections(...)` runs inside the pellet loop, so pellets can land on different enemies. Measured over 187k shots, the share hitting **two or more distinct enemies**:
+
+  | weapon | shots | 2 enemies | 3+ | mean pellets connecting |
+  |---|---|---|---|---|
+  | **shotgun** | 6,238 | **23.8%** | 1.4% | 3.26 of 7 |
+  | Friday Hotfix | 18,795 | 3.2% | 0.1% | 3.73 of 6 |
+  | pistol | 42,112 | **0.0%** | 0.0% | 1 of 1 |
+  | gdb | 120,134 | **0.0%** | 0.0% | 1 of 1 |
+
+  So the shotgun really is the only weapon in the arsenal that hits more than one enemy, a quarter of the time. **A geometric estimate said it would barely spread at 3 tiles and was wrong** — enemies bunch laterally while chasing, and pellets also catch targets at different depths down the same column. Measured, not reasoned.
+
+  **This also explains why the fast-path has to exist.** `scoreRangedWeapon` computes a single-target time-to-kill; it structurally cannot express "this shot also hits the enemy next to it". The fast-path is covering a real blind spot in the economics rather than overriding them arbitrarily — which is a coherent design and worth stating, because the previous entry's tone could be read as calling the fast-path a wart.
+
+  **The defect is the close-range handoff.** The fast-path gives clusters inside `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` (2.5) to Friday Hotfix and everything beyond to the shotgun. Multi-hit rate by firing distance:
+
+  | | 0-1.5 | 1.5-2.5 | 2.5-3.5 | 3.5-5 | 5-8 |
+  |---|---|---|---|---|---|
+  | shotgun | 8.2% | **17.5%** | 27.3% | **34.0%** | 27.7% |
+  | Friday Hotfix | 9.0% | **8.3%** | 0.3% | 0.1% | 0.0% |
+
+  **In Friday's own band the shotgun spreads 2.1x better (17.5% against 8.3%)**, and past 2.5 tiles Friday stops spreading altogether (0.3%, then 0.1%, then 0.0%) despite firing six pellets. Its 45px spread lands entirely inside one enemy's silhouette once that enemy is close enough to fill the screen, which is exactly the range it is given.
+
+  **Stated fairly: this does not make Friday's priority wrong.** It is the fastest killer in the game and the fast-path's own comment says so. The claim here is narrower and it is what was not known before — **Friday is not a spread weapon in practice**, so if its close-cluster priority is meant to be about hitting several enemies, it is not doing that. If it is about raw DPS, it is fine and the comment should say that instead.
+
+  **The shotgun's own numbers are internally coherent**: as range grows its multi-hit rate rises (8.2% -> 34.0%) while its mean connecting pellets falls (3.86 -> 1.73). The cone scatters pellets across more enemies and fewer of them land. Its best band, 3.5-5 tiles, is one it already gets.
+
+  **What stays unmeasurable.** Ghidra's 2.6-tile splash is the other AoE in the game and is invisible here, because rockets emit no `hit` events at all (0 of 3.2M) — the same telemetry blind spot recorded on 2026-08-19. So nothing in this data says whether ghidra or the shotgun is the better answer to a distant cluster, and any change to that half of the fast-path is unguided until rockets emit a detonation event.
+
+- [x] **Neither the shotgun nor ghidra is chosen by the weapon scorer — a cluster fast-path picks both, and it explains three separate open questions (2026-08-20, offline).** No machine time: the whole answer is in `combatPolicy.mjs` and the shot distribution the density capture already wrote.
+
+  **The question.** The shotgun is a *starting* weapon, so unlike ghidra it is always owned — yet it is **2.9% of all shots** (5,854 of 212,210). Availability cannot explain it, so it looked like a `scoreRangedWeapon` problem.
+
+  **It is not.** `pickRangedWeapon` opens with a cluster fast-path that never reaches the scorer. On `clusterCount >= 2` it hands out Friday Hotfix inside `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` (2.5), then ghidra beyond `ROCKET_CLUSTER_MIN_DIST` (5) if the threat is not an Edge Case, and then **falls through to the shotgun unconditionally — no distance test, no HP test, no archetype test.**
+
+  **The observed distances land on those constants to within a tile**, which is what turns this from a code reading into a measurement:
+
+  | weapon | shots | dist p10/p50/p90 | the gate it sits against |
+  |---|---|---|---|
+  | Friday Hotfix | 17,314 | 1.7 / **2.8** / 4.0 | `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` 2.5 |
+  | shotgun | 5,854 | 1.8 / **3.0** / 5.3 | just past where Friday stops claiming |
+  | ghidra | 614 | **5.1** / 5.9 / 7.1 | `ROCKET_CLUSTER_MIN_DIST` 5 |
+
+  Ghidra's p10 of 5.1 against a gate of 5.0 says **essentially every rocket the bot has ever fired came through that one branch.**
+
+  **What the scorer would do, for contrast.** Sweeping target HP 15-300 against distance 0.5-6, `scoreRangedWeapon` picks the shotgun in **exactly one cell**: HP ~150 *and* distance <=1.5. It wins nowhere else at any HP. Against the real shots: only **2.5%** were inside 1.5 tiles and **9%** at HP 135-180. The scorer explains almost none of the shotgun's use.
+
+  **Why the scorer refuses it.** The pistol fires at 0.16s against the shotgun's 0.85s, so an 8x damage advantage (175 vs 22) loses to a 5.3x cadence disadvantage as soon as `Math.ceil` demands a second shell — and `magazineSize: 2` then charges a full 1.2s reload for it. At 2 tiles the shotgun scores 3.70s against the pistol's 1.54s. Its entire viable window is "one shell is exactly enough", HP roughly 135-175 at point-blank.
+
+  **The reload term is deliberate and worth its own line.** Its comment says charging it stops the scorer "preferring the shotgun and ghidra by roughly a reload each". Charging only the reloads needed *before* the killing shot leaves the shotgun still losing (2.50 vs 1.54) — but **flips ghidra outright: 2.95s -> 1.35s against the pistol's 1.54s.** For a 1-round magazine the shipped model charges a reload on every single-rocket kill, for a reload that happens after the target is already dead. Not called a bug here: it is a defensible amortisation of the next engagement's cost, and its author said so. But it is the single term that decides ghidra, and that was not previously known.
+
+  **The asymmetry to look at first.** In the cluster path ghidra is barred whenever the threat is an Edge Case; the shotgun is barred by nothing. Edge Cases are **62% of all spawns**, so the shotgun inherits every cluster ghidra is refused. `eventMetrics.mjs` had recorded exactly this as a suspicion — *"the cluster fast-path refuses a rocket whenever the threat is an Edge Case, and Edge Cases are 62-78% of the roster"* — and it is now confirmed from the constants and the shot distribution rather than guessed.
+
+  **Three open questions collapse into one.** Why the shotgun is 2.9% of shots; why the bot declines ghidra while owning it on 40.9% of level-visits; and why two ~55-minute ghidra A/Bs came back null. All the same answer: **weapon selection for these two is structural, not economic**, so retuning `scoreRangedWeapon` moves neither. The lever is the fast-path's shape. The two null A/Bs were designed off a synthetic `pickRangedWeapon` probe and were never going to show anything.
+
+  **What this does not settle.** Whether the fast-path is *wrong*. Handing clusters to a spread weapon may well be right, and nothing here measures whether shotgun pellets actually spread damage across a cluster in this engine's `resolveShot`. That is the next thing to check, and it is also offline.
+
+- [x] **The density change is real, but not where it was predicted — and the shells A/B died before it ran (2026-08-20).** Three-arm capture, 360 attempts, 8h20m across 4 local + 4 SSH lanes. This is the follow-up the DPS-neutral discipline of the previous two changes existed to make possible.
+
+  **Design.** `COMPLEXITY_PER_EXTRA_ENEMY` 10 (arm A) against 5 (arm B), plus **arm C, byte-identical to B**, on one shared 15-level staging of curl. Gamer profile, `normal` and `hard`, 60 attempts per combo per arm. Arms were branches differing by exactly one line rather than a runtime flag: both measure the same long-standing metrics, so the usual objection to a baseline branch — it cannot emit a metric newer than itself — did not apply.
+
+  Running two difficulties was a hedge that paid: they wall at **different levels** (hard at L10, normal at L12), and a single-difficulty run that picked `normal` would have had an 8% endpoint instead of a 46% one.
+
+  **The manipulation was much larger here than on an average repo.** Total normals across the 15 staged levels: **378 -> 539, +42.6%**, against the +15.7% measured on the corpus average — because `stage-campaign` selects files spanning the repo's difficulty range, so far more of them clear complexity 5. Anything read off this capture describes a +42.6% change, not what a typical repo sees.
+
+  **The pre-registered endpoint was null.** Reaching L10 on hard: A 46.7% [34.6, 59.1], B 43.3% [31.6, 55.9], C 40.0% [28.6, 52.6]. B-A is **-3.3pp against a B-C null gap of +3.3pp** — the treatment effect and the noise are the same size. Density does **not** move the L10 wall; whatever that wall is, it is not enemy count.
+
+  **The effect is at the deep end, and it replicates.** Conditioning on reaching L10 (an attempt that died at L9 is neither outcome), the share that pushed on to L12:
+
+  | | divisor 10 | divisor 5 | null control | treatment | noise |
+  |---|---|---|---|---|---|
+  | hard | 12/28 = 42.9% | 5/26 = 19.2% | 6/24 = 25.0% | **-23.6pp** (p=0.062) | -5.8pp (p=0.62) |
+  | normal | 5/55 = 9.1% | 1/54 = 1.9% | 1/55 = 1.8% | **-7.2pp** (p=0.098) | 0.0pp (p=0.99) |
+  | **pooled** | **17/83 = 20.5%** | **13/159 = 8.2%** | — | **-12.3pp, p=0.0058** | — |
+
+  So a +42.6% roster cuts deep runs by about **60% relative** while leaving the main wall untouched.
+
+  **Stated as a weakness, not buried: L12 is a secondary endpoint, found after looking.** Fifteen levels x two difficulties is thirty comparisons, and picking the best one is how noise becomes a finding. Three things argue it is real anyway — it replicates independently on both difficulties, the null control is clean at both (0.0pp and -5.8pp), and it is mechanistically coherent: L12 is where the roster change is *largest* (99 -> 149 normals, the biggest absolute jump of any level). A confirmatory run would pre-register L12-conditional-on-L10 as the primary endpoint.
+
+  **The null control is what makes any of this readable**, and it is the arm that would have been cut first for time. Without it, "-3.3pp at L10" and "-23.6pp at L12" are two numbers with no scale. With it, the first is noise and the second is four times the noise.
+
+  **The shells/reload A/B was refuted before it ran, from the same capture's event logs.** `notes` proposed answering "is the bot starving on shells" first. Across 2,609 level-starts: mean shells at level start **13.9** — above the starting 12, so the pool accumulates — p50 10, p90 27; **1.6%** of level-starts at zero; **0.91%** of shotgun shots empty the pool; and the shotgun is **2.9% of all shots**. The constraint does not bind, so tuning it would move nothing. Roughly 8 hours of fleet time not spent, and the same availability-before-efficacy shape as the ghidra result three days earlier.
+
+  **Two process notes.** Throughput estimates were wrong twice: ~2.2h quoted, then a panicked "16.6h" that came from counting result *files* as attempts, against an actual 8h20m. Count the thing, not a proxy for it. And the first launch aborted instantly on all three arms — the guard asserted `git ls-remote <url>` matched HEAD while the capture checks `git rev-list --count HEAD --not --remotes`; pushing via a one-off URL never updates `refs/remotes/origin/*`. A guard that does not run the checked command is not a guard.
 
 - [x] **Enemy density was nearly inert, and "diversity" turned out to need a fourth archetype (2026-08-20).** Half-closes the enemy-diversity backlog item. Read the second half before proposing another fact-driven archetype rule — the ceiling is structural, not a missing idea.
 
