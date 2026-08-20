@@ -8,7 +8,7 @@ The bottom status bar is one full-width bezel, laid out like DOOM's — but with
 
 - **AMMO** — the current weapon's count (or ∞ for a melee weapon — the knife, or Toolchain once it replaces it). A weapon with a magazine shows `loaded / reserve`, so `9 / 31` means nine in the gun and thirty-one behind it
 - **STABIL** — System Stability, your health, as a big percentage over a bar
-- **TOOLS** — which dev tools you are carrying, one cell per number key. A dim digit is a weapon you have not found, a bright one is owned, and a filled box is what is in your hands. The cell set slightly apart is your melee weapon, which lives on Space rather than a number: `K` for the knife, `T` once the Toolchain replaces it
+- **TOOLS** — which dev tools you are carrying, one cell per number key. A dim digit is a weapon you have not found, a bright one is owned, and a filled box is what is in your hands. Your melee weapon is not shown here, because it has no number key — it is always on Space, and the AMMO panel reads `MELEE` whenever it is in your hands
 - **the face** — you. It looks worse as your Stability drops, and when something hits you it turns toward whatever hit you, so a bite from off-screen tells you which way to look. Traps and acid have no direction and just hurt
 - **SWAP** — your armor-like buffer, absorbs damage 1:1 before health, capped at 100
 - **KEYS** — one pip per locked room on the level, in that room's own colour

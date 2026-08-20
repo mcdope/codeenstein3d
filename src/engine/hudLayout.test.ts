@@ -11,7 +11,16 @@
  * literal-substituting rewrite would have re-created it one preset later.
  */
 import { describe, expect, it } from "vitest";
-import { HUD_HEIGHT, HUD_MAX_CONTENT_W, HUD_PAD, layoutHud } from "./hudLayout";
+import {
+  HUD_HEIGHT,
+  HUD_MAX_CONTENT_W,
+  HUD_PAD,
+  PANEL_MIN_WIDTHS,
+  TOOL_CELL,
+  TOOL_GAP,
+  TOOL_SLOTS,
+  layoutHud,
+} from "./hudLayout";
 
 const KEYS = ["ammo", "stabil", "tools", "face", "swap", "keys", "score", "table"] as const;
 /** Every shipped preset, plus the `?renderRes` extremes it clamps to. */
@@ -93,5 +102,42 @@ describe("HUD_HEIGHT", () => {
     const FIRST_BASELINE = 16;
     const BOTTOM_MARGIN = 8;
     expect(HUD_HEIGHT).toBeGreaterThanOrEqual(FIRST_BASELINE + (ROWS - 1) * PITCH + BOTTOM_MARGIN);
+  });
+});
+
+/** The presets the game actually ships; 160/320 are `?renderRes` extremes that
+ * are *expected* to fall through to the uniform squeeze. */
+const SHIPPED_WIDTHS = [640, 800, 1280, 2560];
+
+describe("layoutHud minimums", () => {
+  // The bug this pins: the minimums were guessed, summed to 634, and the
+  // usable width at 640x400 is 617 — so the squeeze branch ran at the game's
+  // own default preset while the doc comment claimed it was unreachable. The
+  // existing dead-space test could not catch it, because a squeezed layout
+  // fills the width exactly and so reports zero slack.
+  it.each(SHIPPED_WIDTHS)("at %ipx: every panel gets at least its minimum", (w) => {
+    const { panels } = layoutHud(w, 400);
+    for (const key of KEYS) {
+      expect(panels[key].w, `${key} at ${w}px`).toBeGreaterThanOrEqual(PANEL_MIN_WIDTHS[key]);
+    }
+  });
+
+  it("640x400 — the default preset — has room to spare, not exactly enough", () => {
+    // Guards the direction of the fix: shaving the shortfall to precisely zero
+    // would pass the test above while leaving no margin for a one-pixel change
+    // anywhere else in the bar.
+    const { panels } = layoutHud(640, 400);
+    const surplus = KEYS.reduce((sum, k) => sum + panels[k].w - PANEL_MIN_WIDTHS[k], 0);
+    expect(surplus).toBeGreaterThan(0);
+  });
+
+  it.each(SHIPPED_WIDTHS)("at %ipx: the TOOLS grid fits inside the TOOLS panel", (w) => {
+    // The bug the player saw: the grid was laid out in `hud.ts` while its
+    // panel's width was declared in this module, and the two disagreed by
+    // 20px. The overflowing cell landed in the face panel, which is drawn
+    // afterwards, so a letter appeared to poke out from behind the head.
+    const { tools } = layoutHud(w, 400).panels;
+    const gridRight = HUD_PAD + TOOL_SLOTS * TOOL_CELL + (TOOL_SLOTS - 1) * TOOL_GAP;
+    expect(gridRight + HUD_PAD, `grid overflows TOOLS at ${w}px`).toBeLessThanOrEqual(tools.w);
   });
 });
