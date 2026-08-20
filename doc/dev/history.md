@@ -12,6 +12,32 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **The four proposed AST facts do not work as an archetype lever — measured before building any of them (2026-08-20, offline).** Does not close the backlog item, but removes its stated purpose. Read this before anyone reaches for `vocabulary.ts` on the strength of the "Tier 1, nearly free" line.
+
+  **Why measure first.** The item's cost is fixed and non-trivial regardless of value: any new `CodeEntity` field changes every `astHash`, so all four facts must land together plus a `defaultHighscore.ts` regeneration, and Tier 3 needs cross-file name resolution. Meanwhile the previous archetype attempt had just been capped by exactly this — the existing facts turned out rare and language-bound. So the same check was run on the *proposed* facts, over **7,101 callable entities** across 8 repos in 8 languages.
+
+  | fact | prevalence | for scale, the existing facts |
+  |---|---|---|
+  | recursion (same-name call) | **10.2%** | private/protected 33.8% |
+  | async / concurrency marker | **1.5%** | `nestingDepth >= 2` 14.9% |
+  | deprecation marker | **0.2%** | `switchBranches > 0` 4.7% |
+
+  **Async and deprecation are worse than the worst fact already available**, and they are the two the item calls "Tier 1, nearly free". The cost ranking is inverted against the value: the cheap tier is worthless and the valuable tier is the expensive one.
+
+  **The one that looked transformative is invalid, and that is the real finding.** The item proposes a workspace-wide identifier-occurrence count as a cheap substitute for real fan-in. It reads **50.2%** of entities at >=10 occurrences — the only candidate reaching a majority. But it is measuring **name commonality, not call-graph position**:
+
+  - mean name length **7.8 chars** in the high-fan-in group against **14.8** in the low
+  - corr(name length, occurrence count) = **-0.370**
+  - the top "hub functions" are `args` and `path` — `path` appearing seven times over, because every `path` *variable* in ripgrep counts toward it
+
+  **Restricting the count to call sites (`name(`) does not rescue it**: correlation stays **-0.300**, name length 8.2 against 14.0, and the by-language spread runs **12.5% (django) to 72.3% (serilog)** — the same language-marker failure `private`/`protected` has. So the cheap substitute is out, and the expensive version is the item's own "not a vocabulary entry and not a small change".
+
+  **The number that decides it.** Of the **51.2%** of entities carrying no existing fact at all, recursion + async + deprecation together reach **12.3%** of them. Building all three would move the factless share from 51.2% to about 44.9%. That does not unblock a fourth archetype; it barely moves.
+
+  **Caveat, stated so the verdict is re-testable.** These are text probes over each entity's source span, not the AST extraction the real change would do. They are deliberately close to the *proposed* implementations though — the item itself specifies same-name matching for recursion and an identifier count for fan-in, which is exactly what was probed — and deprecation at 0.2% would survive a 5x undercount without changing the answer. Async is the one most likely understated, since a marker list cannot cover 15 languages' concurrency idioms; even so it would have to be understated by 20x to reach `private`/`protected`.
+
+  **The conclusion is about the approach, not these four facts.** Enemy archetype variety cannot be driven by per-entity AST facts, because every candidate is rare, language-bound, or not cheaply resolvable. **The facts with full coverage and no language skew are the two already extracted** — `complexityScore` and the line span. A fourth archetype's assignment rule should key off those, or off room role and position in the level, rather than off new parsing. That is a cheaper change than this item *and* a better one.
+
 - [x] **Rockets emit a detonation event — the last weapon invisible to the balance log (2026-08-20).** Closes the "any future ghidra measurement has to come off a new event emitted at detonation" line, and unblocks the half of the cluster fast-path that had no data behind it.
 
   **The gap.** `fire()` returns at `if (w.isRocket)` before `resolveShot` runs, so a rocket emits no shot-time `hit` events — **0 of 3,248,140 across the whole archive**. Every rocket question was therefore simulated or dropped: `report:damage-model`'s ghidra rows read 100% miss on every capture on disk, and the finding that the shotgun is the only weapon hitting 2+ enemies (23.8% of shots, against 0.0% for pistol and gdb) could not be evaluated for rockets at all, because splash leaves no per-target trace.
