@@ -30,7 +30,7 @@ import path from "node:path";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { loadWorkspaceModule } from "./lib/loadWorkspaceModule.mjs";
-import { DEFAULT_KILL_RATE, solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
+import { DEFAULT_KILL_RATE, dropAmountsFrom, solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
 
 const DIFFICULTIES = ["easy", "normal", "hard"];
 
@@ -270,17 +270,7 @@ async function main() {
   const constants = {
     ...modules,
     profiles,
-    dropAmounts: {
-      bullets: modules.BULLETS_DROP_AMOUNT,
-      rockets: modules.ROCKETS_DROP_AMOUNT,
-      smg: modules.SMG_DROP_AMOUNT,
-      gas: modules.GAS_DROP_AMOUNT,
-      health: modules.HEALTH_DROP_AMOUNT,
-      swap: modules.SWAP_DROP_AMOUNT,
-      eliteHealth: modules.ELITE_HEALTH_DROP_AMOUNT,
-      eliteBullets: modules.ELITE_BULLETS_DROP_AMOUNT,
-      eliteSwap: modules.ELITE_SWAP_DROP_AMOUNT,
-    },
+    dropAmounts: dropAmountsFrom(modules),
   };
 
   console.log(`# Balance budget -- ${path.relative(REPO_ROOT, args.dir) || args.dir}`);

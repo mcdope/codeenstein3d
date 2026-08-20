@@ -14,12 +14,21 @@
  * executed by `vitest run`, so this does run in CI — same as
  * `abReport.test.mjs` and `combatPolicy.test.mjs`.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
+
+// The real loot module, imported through Vite's transform the same way
+// `constantMirrors.test.mjs` reads `src/`. Only the `dropAmountsFrom` block at
+// the bottom uses it — everything above stays on injected fixtures.
+import * as REAL_LOOT_MODULE from "../../src/engine/loot";
+import { lootWeightsFor } from "../../src/engine/loot";
 
 import {
   archetypeOf,
-  DEFAULT_KILL_RATE,
   carryForward,
+  DEFAULT_KILL_RATE,
+  dropAmountsFrom,
   dropBudget,
   enemyBudget,
   expectedEliteDrop,
@@ -29,8 +38,9 @@ import {
   incomingDps,
   poolDamageValues,
   prePlacedBudget,
-  scaleRosterForDifficulty,
+  rollableLootKinds,
   scaledAmount,
+  scaleRosterForDifficulty,
   selfSustainByArchetype,
   solveCampaign,
   solveLevel,
@@ -507,5 +517,52 @@ describe("dropBudget", () => {
     const budget = dropBudget({ roster, constants, ownedWeapons: [0, 1, 2, 3], bonusLevel: false, difficulty: "normal" });
     expect(budget.damage).toBe(budget.perRegularKill.damage);
     expect(budget.health).toBe(budget.perRegularKill.health + budget.perEliteKill.health);
+  });
+});
+
+
+describe("dropAmountsFrom — the map both entry points used to hand-type", () => {
+  // Deliberately the *real* `loot.ts`, against this file's own rule that the
+  // solver's arithmetic is tested with injected fixtures. The rule holds for
+  // values; this checks *coverage of kinds*, which is a different question and
+  // the one that actually broke. It stays green through any balance retune and
+  // goes red exactly when a loot kind is added or removed — which is when
+  // somebody needs to look.
+  it("prices every loot kind the real weight tables can roll", () => {
+    const kinds = rollableLootKinds(lootWeightsFor);
+    const amounts = dropAmountsFrom(REAL_LOOT_MODULE);
+    for (const kind of kinds) {
+      expect(typeof amounts[kind], `no drop amount for loot kind "${kind}" — the budget goes NaN and the clearable guard stops firing`).toBe("number");
+    }
+    // Both directions: a kind priced here that the tables can never roll is
+    // dead weight and probably a rename nobody finished.
+    const priced = Object.keys(amounts).filter((k) => !k.startsWith("elite"));
+    expect(priced.sort()).toEqual(kinds.sort());
+  });
+
+  it("throws instead of returning a map with a hole in it", () => {
+    // The whole point of the rewrite. `undefined` here used to propagate as
+    // NaN through the drop budget into `clearRatio.combined`, and `NaN < 1` is
+    // `false`, so nothing downstream could notice.
+    const missingShells = { ...REAL_LOOT_MODULE, SHELLS_DROP_AMOUNT: undefined };
+    expect(() => dropAmountsFrom(missingShells)).toThrow(/SHELLS_DROP_AMOUNT/);
+  });
+
+  it("is reachable through loadEngineModules' re-export list", () => {
+    // The actual root cause, and the half no import-based test can see: the
+    // harness stub re-exports `loot.ts` by *name*, as a hand-maintained string,
+    // so a constant missing from that list is `undefined` in every script that
+    // loads engine modules the real way.
+    const stub = readFileSync(new URL("./loadEngineModules.mjs", import.meta.url), "utf8");
+    for (const kind of rollableLootKinds(lootWeightsFor)) {
+      const name = `${kind.toUpperCase()}_DROP_AMOUNT`;
+      // Word-bounded, not `includes`. `ELITE_SHELLS_DROP_AMOUNT` contains
+      // `SHELLS_DROP_AMOUNT` as a substring, so a plain `includes` reports the
+      // elite constant as if it were the regular one — which is how the first
+      // version of this test passed while the bug it was written for was
+      // reintroduced. `_` is a word character, so `\b` does not match inside
+      // `ELITE_SHELLS`.
+      expect(new RegExp(`\\b${name}\\b`).test(stub), `loadEngineModules.mjs never re-exports ${name}`).toBe(true);
+    }
   });
 });

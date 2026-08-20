@@ -49,7 +49,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
-import { solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
+import { dropAmountsFrom, solveCampaign, weaponProfiles } from "./lib/levelSolver.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const DEFAULT_SLOTS = 15;
@@ -356,17 +356,7 @@ async function resolveStagedOrder(picked, repoDir, difficulty) {
   const constants = {
     ...modules,
     profiles,
-    dropAmounts: {
-      bullets: modules.BULLETS_DROP_AMOUNT,
-      rockets: modules.ROCKETS_DROP_AMOUNT,
-      smg: modules.SMG_DROP_AMOUNT,
-      gas: modules.GAS_DROP_AMOUNT,
-      health: modules.HEALTH_DROP_AMOUNT,
-      swap: modules.SWAP_DROP_AMOUNT,
-      eliteHealth: modules.ELITE_HEALTH_DROP_AMOUNT,
-      eliteBullets: modules.ELITE_BULLETS_DROP_AMOUNT,
-      eliteSwap: modules.ELITE_SWAP_DROP_AMOUNT,
-    },
+    dropAmounts: dropAmountsFrom(modules),
   };
   return solveCampaign({ levels, constants, difficulty });
 }

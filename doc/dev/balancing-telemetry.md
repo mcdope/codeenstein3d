@@ -1409,6 +1409,51 @@ last, after every other simulation change has landed — the existing rule from 
 every simulation change first, then generate once"* above, which the 2026-08-02 layout
 rework already paid for learning.
 
+### 4.2a The rule broke once, and it broke silently (2026-08-15 → 2026-08-21)
+
+Worth reading before trusting any solver output from that window, and before
+adding a sixth ammo pool.
+
+`report-level-budget.mjs` and `stage-campaign.mjs` each built their own literal
+`dropAmounts` map. When the shotgun got its own `shells` pool, neither gained a
+`shells` key and `loadEngineModules.mjs` — whose `loot.ts` re-export is a
+hand-maintained *string of names* — never re-exported `SHELLS_DROP_AMOUNT`
+either. Three copies of the same list, none of them linked to the source.
+
+**Nothing failed.** `dropAmounts.shells` was `undefined`, `scaledAmount` returned
+`NaN`, the drop budget went `NaN`, and `clearRatio.combined` went with it. Two
+consequences, the second worse than the first:
+
+- The solver's own guard is `combined < 1.0`, and **`NaN < 1` is `false`**, so
+  the "NOT clearable" line became unreachable on every repo. Its closing verdict
+  — *"OK: every enemy is killable with the damage obtainable on its level"* — was
+  vacuous for six days, which is the exact failure mode of a check that cannot
+  fail.
+- Carryover is computed from the same budget, so `carry` stopped accumulating
+  across levels — sinatra read `2716, 2677, 2815, …, 0, 0, 600` where it now
+  reads `2716 … 31436`. The campaign running balance, which §1.2 says the solver
+  *must* model or every level after the first reads as poorer than it plays, was
+  modelling nothing.
+- `stage-campaign.mjs` picks the level a staged campaign must include with
+  `reduce((a, b) => ratio(b) < ratio(a) ? b : a)`. Under `NaN` that comparison is
+  always false, so it keeps the first element: **"include the tightest level"
+  degraded to "include whichever level came first".** Any campaign staged in that
+  window was not the level set it reports being.
+
+`dropAmountsFrom()` (`levelSolver.mjs`) is now the single builder both entry
+points call, and it **throws** on a loot kind it cannot price rather than
+returning a map with a hole in it. `levelSolver.test.mjs` pins its coverage
+against the real weight tables and asserts the re-export list carries each
+constant — word-bounded, because the first version of that check used
+`includes()` and `ELITE_SHELLS_DROP_AMOUNT` contains `SHELLS_DROP_AMOUNT`, so it
+passed while the bug was reintroduced under it. Mutation-tested both ways.
+
+**What this invalidates.** Nothing from a bot capture: the harness never reads
+these constants, and the 2026-08-20 density A/B ran on `demo-campaign` with no
+staging involved. What it invalidates is any *solver* output between those dates
+— every `balancing:budget` report, and the level selection of any staged
+campaign. Re-run rather than re-read.
+
 ### 4.3 What it computes
 
 Per level, from the generated `GameMap` plus the constants:
