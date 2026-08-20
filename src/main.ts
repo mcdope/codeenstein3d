@@ -10,7 +10,8 @@ import {
   readFileText,
   type TreeNode,
 } from "./fs/workspace";
-import { fetchGithubTree, parseGithubRepoInput } from "./fs/github";
+import { detectRemoteHost, remoteHostById } from "./fs/remoteHosts";
+import { formatRepoRef, parseRemoteRepoPath, type RemoteHostId } from "./fs/remoteHost";
 import { DEMO_CAMPAIGN_NAME, demoFileText, loadDemoCampaignTree } from "./fs/demoCampaign";
 import { renderFileTree } from "./ui/fileTree";
 import { initConsoleSidebar } from "./ui/consoleSidebar";
@@ -234,21 +235,21 @@ const RENDER_QUALITY_KEY = "codeenstein-render-quality";
 
 const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
-const tabGithub = requireElement<HTMLButtonElement>("#tab-github");
+const tabRepo = requireElement<HTMLButtonElement>("#tab-repo");
 const tabDemo = requireElement<HTMLButtonElement>("#tab-demo");
 const tabMultiplayer = requireElement<HTMLButtonElement>("#tab-multiplayer");
 const tabSettings = requireElement<HTMLButtonElement>("#tab-settings");
 const tabPanelLocal = requireElement<HTMLElement>("#tab-panel-local");
 const tabPanelContinue = requireElement<HTMLElement>("#tab-panel-continue");
-const tabPanelGithub = requireElement<HTMLElement>("#tab-panel-github");
+const tabPanelRepo = requireElement<HTMLElement>("#tab-panel-repo");
 const tabPanelDemo = requireElement<HTMLElement>("#tab-panel-demo");
 const tabPanelMultiplayer = requireElement<HTMLElement>("#tab-panel-multiplayer");
 const tabPanelSettings = requireElement<HTMLElement>("#tab-panel-settings");
 const selectButton = requireElement<HTMLButtonElement>("#select-workspace");
 const continueButton = requireElement<HTMLButtonElement>("#continue-run");
-const githubRepoInput = requireElement<HTMLInputElement>("#github-repo-input");
-const loadGithubRepoButton = requireElement<HTMLButtonElement>("#load-github-repo");
-const githubStatus = requireElement<HTMLParagraphElement>("#github-status");
+const repoInput = requireElement<HTMLInputElement>("#repo-input");
+const loadRepoButton = requireElement<HTMLButtonElement>("#load-repo");
+const repoStatus = requireElement<HTMLParagraphElement>("#repo-status");
 const githubSuggestionButtons = document.querySelectorAll<HTMLButtonElement>(".suggestion-btn");
 const launchDemoCampaignButton = requireElement<HTMLButtonElement>("#launch-demo-campaign");
 const workspaceName = requireElement<HTMLParagraphElement>("#workspace-name");
@@ -324,7 +325,7 @@ type LaunchTab = "local" | "continue" | "github" | "demo" | "multiplayer" | "set
 const launchTabs: Record<LaunchTab, { button: HTMLButtonElement; panel: HTMLElement }> = {
   local: { button: tabLocal, panel: tabPanelLocal },
   continue: { button: tabContinue, panel: tabPanelContinue },
-  github: { button: tabGithub, panel: tabPanelGithub },
+  github: { button: tabRepo, panel: tabPanelRepo },
   demo: { button: tabDemo, panel: tabPanelDemo },
   multiplayer: { button: tabMultiplayer, panel: tabPanelMultiplayer },
   settings: { button: tabSettings, panel: tabPanelSettings },
@@ -900,6 +901,9 @@ let workspaceRootName: string | null = null;
  * `pickWorkspace()` and has no way to re-fetch a remote repo, so saving would
  * just leave a dead "Continue Run" button pointing nowhere. */
 let workspaceIsRemote = false;
+/** The forge the current workspace came from, or null when it is local or the
+ * bundled demo. Written only by `commitWorkspaceSlot`, like its neighbours. */
+let workspaceRemoteHostId: RemoteHostId | null = null;
 /** True once the active workspace is the bundled demo campaign rather than a
  * real GitHub repo — `workspaceIsRemote` is also set alongside this (a
  * bundled tree can't be re-picked locally either, so autosave/"Continue Run"
@@ -1053,10 +1057,20 @@ let loadedWorkspaceSlot: WorkspaceSlotKey | null = null;
 
 /** Everything a load hands to `commitWorkspaceSlot` — the same block of values
  * all four loading entry points used to assign to the globals one by one. */
+/** Whether a recorded run came from a forge rather than local disk or the
+ * bundled demo. A type guard, so the branch that follows can hand
+ * `entry.source` straight to `remoteHostById` without re-widening it. */
+function isRemoteSource(source: HighscoreEntry["source"]): source is RemoteHostId {
+  return source === "github" || source === "gitlab" || source === "codeberg";
+}
+
 interface LoadedWorkspaceInit {
   tree: TreeNode;
   rootName: string;
   isRemote: boolean;
+  /** Which forge it came from, when `isRemote`. Recorded on the run so
+   * "Continue" re-fetches from the same one. */
+  remoteHostId?: RemoteHostId;
   isDemo: boolean;
   launchTab: LaunchTab;
 }
@@ -1074,6 +1088,7 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
   workspaceTree = init.tree;
   workspaceRootName = init.rootName;
   workspaceIsRemote = init.isRemote;
+  workspaceRemoteHostId = init.remoteHostId ?? null;
   workspaceIsDemo = init.isDemo;
   workspaceLaunchTab = init.launchTab;
   codebaseStatsPromise = startCodebaseStats(init.tree, init.isRemote, init.rootName);
@@ -1248,14 +1263,18 @@ selectButton.addEventListener("click", async () => {
   }
 });
 
-/** Fetches and launches whatever repo reference is currently in
- * `githubRepoInput`, shared by the "Load from GitHub" button and the
- * "Suggested repos" quick-pick buttons below it. Both callers guarantee a
- * parseable value before this ever runs: the button is disabled whenever
- * `githubRepoInput` doesn't parse (`updateLoadGithubRepoButtonEnabled`), and
- * every suggestion button's `data-repo` is a hardcoded valid "owner/repo". */
-async function loadGithubRepoFromInput(): Promise<void> {
-  const ref = parseGithubRepoInput(githubRepoInput.value)!;
+/** Fetches and launches whatever repo reference is currently in `repoInput`,
+ * shared by the "Load repository" button and the "Suggested repos" quick-pick
+ * buttons below it. Both callers guarantee a parseable value before this ever
+ * runs: the button is disabled whenever `repoInput` doesn't parse
+ * (`updateLoadRepoButtonEnabled`), and every suggestion button's `data-repo`
+ * is a hardcoded valid "owner/repo".
+ *
+ * Which forge to ask is taken from the input itself — a pasted URL names its
+ * own host, and a bare "owner/repo" still means GitHub, so nothing a player
+ * already types changes meaning. */
+async function loadRepoFromInput(): Promise<void> {
+  const { host, ref } = detectRemoteHost(repoInput.value)!;
 
   activateLaunchTab("github");
   const gen = beginWorkspaceLoad();
@@ -1263,17 +1282,17 @@ async function loadGithubRepoFromInput(): Promise<void> {
   activeGithubLoadAbort = controller;
 
   try {
-    loadGithubRepoButton.disabled = true;
+    loadRepoButton.disabled = true;
     githubSuggestionButtons.forEach((btn) => (btn.disabled = true));
-    githubStatus.classList.remove("error");
-    githubStatus.textContent = `Fetching "${ref.owner}/${ref.repo}"…`;
+    repoStatus.classList.remove("error");
+    repoStatus.textContent = `Fetching "${ref.owner}/${ref.repo}"…`;
     setSlotStatus("github", "Reading workspace…");
-    showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
+    showLoadingScreen(`Fetching "${formatRepoRef(ref)}" from ${host.label}…`);
 
-    const tree = await fetchGithubTree(
+    const tree = await host.fetchTree(
       ref,
       (bytesReceived) => {
-        setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
+        setLoadingStatus(`Fetching "${formatRepoRef(ref)}" from ${host.label}… (${formatByteCount(bytesReceived)} received)`);
       },
       controller.signal,
     );
@@ -1281,14 +1300,15 @@ async function loadGithubRepoFromInput(): Promise<void> {
     clearCampaignSave(); // a stale local-workspace save shouldn't dangle a "Continue Run" button while a remote repo is loaded
     commitWorkspaceSlot("github", {
       tree,
-      rootName: `${ref.owner}/${ref.repo}`,
+      rootName: formatRepoRef(ref),
       isRemote: true,
+      remoteHostId: host.id,
       isDemo: false,
       launchTab: "github",
     });
 
     console.info(`[github] Loaded "${workspaceRootName}"`, tree);
-    githubStatus.textContent = "";
+    repoStatus.textContent = "";
     await autoLaunchInitialLevel(tree);
   } catch (err) {
     // A superseding load aborts this fetch itself (see `beginWorkspaceLoad`),
@@ -1297,33 +1317,36 @@ async function loadGithubRepoFromInput(): Promise<void> {
     if (gen !== workspaceLoadGeneration) return;
     console.error("[github] Failed to load repository:", err);
     const message = err instanceof Error ? err.message : "Failed to load repository.";
-    githubStatus.textContent = message;
-    githubStatus.classList.add("error");
+    repoStatus.textContent = message;
+    repoStatus.classList.add("error");
     setSlotStatus("github", message, true);
     showFileTreePlaceholder();
   } finally {
     if (activeGithubLoadAbort === controller) activeGithubLoadAbort = null;
-    updateLoadGithubRepoButtonEnabled();
+    updateLoadRepoButtonEnabled();
     githubSuggestionButtons.forEach((btn) => (btn.disabled = false));
   }
 }
 
-loadGithubRepoButton.addEventListener("click", () => {
-  void loadGithubRepoFromInput();
+loadRepoButton.addEventListener("click", () => {
+  void loadRepoFromInput();
 });
 
-// Disabled until the input actually parses as a loadable "owner/repo" or
-// github.com URL (see `parseGithubRepoInput`) — `loadGithubRepoFromInput`
-// relies on this as its only validation. A `title` tooltip explains the
-// disabled state, since a greyed-out button alone doesn't say why.
-const LOAD_GITHUB_REPO_DISABLED_TITLE = 'Enter a repo as "owner/repo" or a github.com URL first';
-function updateLoadGithubRepoButtonEnabled(): void {
-  const disabled = parseGithubRepoInput(githubRepoInput.value) === null;
-  loadGithubRepoButton.disabled = disabled;
-  loadGithubRepoButton.title = disabled ? LOAD_GITHUB_REPO_DISABLED_TITLE : "";
+// Disabled until the input parses as a loadable repo on *some* host (see
+// `detectRemoteHost`) — `loadRepoFromInput` relies on this as its only
+// validation. A `title` tooltip explains the disabled state, since a
+// greyed-out button alone doesn't say why. When it does parse, the label
+// names the host that was detected, so the player can see which forge the
+// URL they pasted was understood as before committing to a download.
+const LOAD_REPO_DISABLED_TITLE = 'Enter a repo as "owner/repo", or paste a GitHub, GitLab or Codeberg URL';
+function updateLoadRepoButtonEnabled(): void {
+  const detected = detectRemoteHost(repoInput.value);
+  loadRepoButton.disabled = detected === null;
+  loadRepoButton.title = detected ? "" : LOAD_REPO_DISABLED_TITLE;
+  loadRepoButton.textContent = detected ? `Load from ${detected.host.label}` : "Load repository";
 }
-updateLoadGithubRepoButtonEnabled();
-githubRepoInput.addEventListener("input", updateLoadGithubRepoButtonEnabled);
+updateLoadRepoButtonEnabled();
+repoInput.addEventListener("input", updateLoadRepoButtonEnabled);
 
 // "Suggested repos" quick-picks: same load path as typing a repo in by hand,
 // just pre-filling the input first so the status/error messaging stays in
@@ -1332,13 +1355,13 @@ githubSuggestionButtons.forEach((button) => {
   button.addEventListener("click", () => {
     const repo = button.dataset.repo;
     if (!repo) return;
-    githubRepoInput.value = repo;
-    void loadGithubRepoFromInput();
+    repoInput.value = repo;
+    void loadRepoFromInput();
   });
 });
 
 /** Launches the bundled `demo-campaign/` showcase — same shape as
- * `loadGithubRepoFromInput`, but the tree is built synchronously from the
+ * `loadRepoFromInput`, but the tree is built synchronously from the
  * app's own bundle (`loadDemoCampaignTree`) instead of a network fetch, so
  * there's no progress callback and nothing to await before it's ready. */
 async function loadDemoCampaign(): Promise<void> {
@@ -1485,7 +1508,7 @@ const MULTIPLAYER_HOST_SUBTAB_DISABLED_TITLE = "Hosting requires a GitHub-loaded
 const MULTIPLAYER_SERVER_CONFIGURED = Boolean(import.meta.env.VITE_MULTIPLAYER_SERVER_URL);
 /** Called from `adoptWorkspaceSlot` right after `workspaceIsRemote`/
  * `workspaceIsDemo` change — same "call at every assignment site" discipline
- * as `updateLoadGithubRepoButtonEnabled`, and now a single site. The
+ * as `updateLoadRepoButtonEnabled`, and now a single site. The
  * outer tab itself is enabled whenever a signaling server is configured,
  * full stop — Join works with no workspace loaded at all, so only the Host
  * sub-tab is workspace-gated (`updateMultiplayerHostSubtabEnabled`, called at
@@ -4186,7 +4209,7 @@ async function recordRunHighscore(
       // every real win/death test drives at least one frame first.
       /* v8 ignore next -- @preserve */
       replay: (await recorder?.finish()) ?? undefined,
-      source: workspaceIsDemo ? "demo" : workspaceIsRemote ? "github" : undefined,
+      source: workspaceIsDemo ? "demo" : (workspaceRemoteHostId ?? undefined),
       codebaseLinesOfCode: codebaseStats?.linesOfCode,
       codebaseComplexity: codebaseStats?.complexity,
     });
@@ -4311,18 +4334,22 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
 
   try {
     let tree: TreeNode;
-    if (entry.source === "github") {
+    if (isRemoteSource(entry.source)) {
       // This run's workspace was fetched from GitHub, not picked off local
       // disk — re-fetch the same repo instead of prompting a local folder
       // picker, which would never match `entry.campaignName`'s recorded
       // `owner/repo` paths at all.
-      const ref = parseGithubRepoInput(entry.campaignName);
+      const ref = parseRemoteRepoPath(entry.campaignName);
       if (!ref) return; // campaign name doesn't parse back to a repo ref — nothing sane to fetch
-      showLoadingScreen(`Fetching "${ref.owner}/${ref.repo}" from GitHub…`);
-      tree = await fetchGithubTree(
+      // `entry.remoteHostId` is absent on runs saved before multi-host support,
+      // and every one of those came from GitHub — which is exactly what the
+      // default resolves to, so old saves keep resuming against the right forge.
+      const host = remoteHostById(entry.source);
+      showLoadingScreen(`Fetching "${formatRepoRef(ref)}" from ${host.label}…`);
+      tree = await host.fetchTree(
         ref,
         (bytesReceived) => {
-          setLoadingStatus(`Fetching "${ref.owner}/${ref.repo}" from GitHub… (${formatByteCount(bytesReceived)} received)`);
+          setLoadingStatus(`Fetching "${formatRepoRef(ref)}" from ${host.label}… (${formatByteCount(bytesReceived)} received)`);
         },
         controller.signal,
       );

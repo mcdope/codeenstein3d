@@ -36,8 +36,12 @@ function buildTruncatedNotice(): HTMLElement {
   const notice = document.createElement("p");
   notice.className = "tree-notice";
   notice.textContent =
-    "⚠ Partial listing — GitHub truncated the file list for this repo, so some files are " +
-    "missing. Clone it and use the Local tab for the whole thing.";
+    // Host-neutral on purpose: this marker is shown for GitHub's own API-side
+    // truncation *and* for GitLab/Codeberg trees that stopped at the page cap,
+    // and naming one forge in a message the other two can trigger is how a
+    // GitLab user gets told GitHub did something.
+    "⚠ Partial listing — the file list for this repo came back incomplete, so some " +
+    "files are missing. Clone it and use the Local tab for the whole thing.";
   return notice;
 }
 

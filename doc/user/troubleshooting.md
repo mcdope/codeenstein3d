@@ -58,12 +58,15 @@ A file whose parse simply *fails* is also skipped rather than ending the run, wi
 
 ## "A big GitHub repo loaded, but it seems incomplete"
 
-GitHub's API truncates the file listing for very large repositories, and there is nothing
-this app can do about it from the browser. You don't have to guess when it happened: a
-marker sits above that repo's file tree, under the GitHub tab, for as long as it is loaded —
+Very large repositories can come back with an incomplete file listing, and there is nothing
+this app can do about it from the browser. GitHub's API truncates the listing itself; GitLab
+and Codeberg instead hand it over 100 files at a time, and since an unauthenticated caller
+only gets a few hundred requests an hour, the app stops after 40 pages rather than spending
+the whole hour on one repo. You don't have to guess when it happened: a marker sits above
+that repo's file tree, under the Repo tab, for as long as it is loaded —
 
-> ⚠ Partial listing — GitHub truncated the file list for this repo, so some files are
-> missing. Clone it and use the Local tab for the whole thing.
+> ⚠ Partial listing — the file list for this repo came back incomplete, so some files
+> are missing. Clone it and use the Local tab for the whole thing.
 
 — and the console panel says the same thing in more words:
 

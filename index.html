@@ -76,7 +76,7 @@
           <div id="launch-tabs" class="launch-tabs" role="tablist" aria-label="Workspace and settings tabs">
             <button id="tab-local" class="tab-btn" type="button" role="tab" aria-selected="true" aria-controls="tab-panel-local">Local</button>
             <button id="tab-continue" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-continue" style="display: none">Continue</button>
-            <button id="tab-github" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-github">GitHub</button>
+            <button id="tab-repo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-repo">Repo</button>
             <button id="tab-demo" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-demo">Demos</button>
             <button id="tab-multiplayer" class="tab-btn" type="button" role="tab" aria-selected="false" aria-controls="tab-panel-multiplayer" disabled style="display: none">Multiplayer</button>
             <!-- The one tab that doesn't start a run: all persisted settings
@@ -91,19 +91,19 @@
           <div id="tab-panel-continue" class="tab-panel" role="tabpanel" aria-labelledby="tab-continue" hidden>
             <button id="continue-run" type="button">📁 Continue Run</button>
           </div>
-          <div id="tab-panel-github" class="tab-panel" role="tabpanel" aria-labelledby="tab-github" hidden>
-            <label id="github-repo-label" for="github-repo-input" class="settings-label">GitHub repository</label>
+          <div id="tab-panel-repo" class="tab-panel" role="tabpanel" aria-labelledby="tab-repo" hidden>
+            <label id="repo-input-label" for="repo-input" class="settings-label">Repository</label>
             <input
-              id="github-repo-input"
+              id="repo-input"
               type="text"
-              placeholder="owner/repo"
+              placeholder="owner/repo, or any GitHub / GitLab / Codeberg URL"
               autocomplete="off"
               spellcheck="false"
             />
-            <button id="load-github-repo" type="button" disabled title='Enter a repo as "owner/repo" or a github.com URL first'>Load from GitHub</button>
-            <p id="github-status" class="muted"></p>
-            <label id="github-suggestions-label" class="settings-label">Suggested repos</label>
-            <div id="github-suggestions" class="github-suggestions">
+            <button id="load-repo" type="button" disabled title='Enter a repo as "owner/repo", or paste a GitHub, GitLab or Codeberg URL'>Load repository</button>
+            <p id="repo-status" class="muted"></p>
+            <label id="repo-suggestions-label" class="settings-label">Suggested repos</label>
+            <div id="repo-suggestions" class="repo-suggestions">
               <button
                 type="button"
                 class="suggestion-btn"

@@ -7,11 +7,11 @@ Codeenstein 3D runs entirely in your browser. There is no account, no analytics,
 ## Your workspace (the code you point it at)
 
 - **Local folder** — picked via the browser's File System Access API. The folder is read directly by your browser and parsed locally (client-side, via `web-tree-sitter` running as WebAssembly). Its contents never leave your machine.
-- **GitHub repo** (`owner/repo`, via the "Load from GitHub" tab) — this is the one feature that talks to a remote server, and only when you explicitly use it:
-  - The repository's `owner/repo` name is sent to GitHub's REST API (`api.github.com`) to look up its default branch and fetch the full file tree.
-  - Individual file contents are fetched lazily — only once a file is actually opened/parsed — from `raw.githubusercontent.com`, GitHub's raw-content CDN.
-  - These requests are unauthenticated (no login, no token sent), so they're subject to GitHub's normal public rate limits, and are visible to GitHub the same way any plain `fetch()` to their servers would be (your IP address, standard HTTP headers, and the repo/file path you requested — nothing added by this app on top of a normal browser request).
-  - Nothing is ever pushed, written, or reported back to GitHub — these are read-only `GET` requests.
+- **A public repository** (via the **Repo** tab — GitHub, GitLab or Codeberg) — this is the one feature that talks to a remote server, and only when you explicitly use it. Only the host you actually loaded from is contacted; the other two are never called:
+  - The repository's `owner/repo` name is sent to that host's REST API (`api.github.com`, `gitlab.com/api/v4` or `codeberg.org/api/v1`) to look up its default branch and fetch the file tree. GitLab and Codeberg return the tree a page at a time, so a large repo means several such requests.
+  - Individual file contents are fetched lazily — only once a file is actually opened/parsed — from that host's raw-content endpoint (`raw.githubusercontent.com` for GitHub, the project files API for GitLab, the repo raw API for Codeberg).
+  - These requests are unauthenticated (no login, no token sent), so they're subject to that host's normal public rate limits, and are visible to it the same way any plain `fetch()` to their servers would be (your IP address, standard HTTP headers, and the repo/file path you requested — nothing added by this app on top of a normal browser request).
+  - Nothing is ever pushed, written, or reported back — these are read-only `GET` requests.
 - **Demos** (the "Demos" tab's bundled showcase campaign) — makes no network request and reads no local files at all. Every level's source text is baked directly into the app's own bundle at build time, so it works fully offline.
 
 No other feature besides Multiplayer (below) makes any network request. A locally-picked workspace never touches the network at all, including in multiplayer — hosting or joining a session is only available for a GitHub-loaded repo or the Demos campaign, never a local folder.

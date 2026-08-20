@@ -68,8 +68,15 @@ export interface HighscoreEntry {
    * `startReplay` needs this to know whether to re-fetch `campaignName` as an
    * `owner/repo`, rebuild the bundled demo tree, or fall back to
    * `pickWorkspace()`. Undefined (i.e. local) for every entry recorded before
-   * GitHub/demo loading existed, which is the correct default. */
-  source?: "github" | "demo";
+   * GitHub/demo loading existed, which is the correct default.
+   *
+   * For a remote workspace this doubles as **which forge to re-fetch from**,
+   * which is why the forge ids are values here rather than a second field:
+   * one of them has to be stored, and a `source` that says "github" for a
+   * GitLab run would be a name that lies. `"github"` predates the other two
+   * and every entry carrying it really did come from GitHub, so old saves
+   * resume against the right host without a migration. */
+  source?: "github" | "gitlab" | "codeberg" | "demo";
   /** Total `linesOfCode` summed across every parsable file in the whole
    * workspace/repo tree this run was played against — not just the levels
    * the run actually reached (see `computeCodebaseStats` in main.ts).
