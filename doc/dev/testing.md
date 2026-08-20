@@ -111,8 +111,31 @@ Two things about that range are easy to misread as typos. It has **holes**, not 
 | `scripts/lib/laneOrchestrator.test.mjs` | the per-combo invocation cap that bounds campaign cost |
 | `scripts/lib/profiles.test.mjs` | the skill ladder itself — key order, per-knob monotonicity, a complete ranged fallback per tier, and the `PROFILES_HASH` staleness guard on `defaultHighscore.ts` |
 | `scripts/lib/profileSeparation.test.mjs` | the ladder grader, including that it fails on an inverted axis and on a readable-ends/unreadable-middle ladder |
+| `scripts/lib/botDrive.test.mjs` | `Bot`'s drive loops — the layer between the pure decision core and a real browser |
+| `scripts/lib/lootDetour.test.mjs` | `maybeDetourForLoot`, which had none, and was the largest defect the 2026-08-06 sweep found |
+| `scripts/lib/routePlanner.test.mjs`, `planEngineMatch.test.mjs` | route planning, and that a plan still matches the engine's own grid |
+| `scripts/lib/levelSolver.test.mjs` | the offline balance solver, against injected fixture tables rather than the real constants |
+| `scripts/lib/eventLog.test.mjs`, `eventMetrics.test.mjs`, `bankedRuns.test.mjs` | the raw event log's writer, the metrics derived from it, and the banked-run store |
+| `scripts/lib/envNumber.test.mjs` | the env-var parser every harness knob goes through, including what it does with nonsense |
+| `scripts/lib/constantMirrors.test.mjs` | the bot's hand-maintained mirrors of engine constants — weapon table, magazines, pools, hazard radii |
+| `scripts/lib/docPins.test.mjs` | the numbers and enumerations **documentation** mirrors out of `src/` — see below |
 
 Two things make these worth writing rather than relying on the bot harness itself. The decision core is **pure** (see [Balancing Telemetry Bot](balancing-telemetry.md)), so a branch can be asserted directly without a browser, in milliseconds rather than the tens of minutes a telemetry run costs. And a detector that silently stops firing is worse than no detector, because the scan keeps reporting clean — `anomalyDetectors.test.mjs` exists specifically to pin the negative cases.
+
+### Doc pins — `scripts/lib/docPins.test.mjs`
+
+The last two rows are the same mechanism pointed at two different copies of the same defect. `constantMirrors.test.mjs` exists because `ROCKET_TRAVEL_SPEED` sat in `combatPolicy.mjs` as a hand-typed copy of a constant it did not track, and nothing in the build could notice — *a mirror with no link is exactly as correct as whoever last typed it*. **Prose is that same mirror.** The 2026-08-20 docs audit found the identical defect a dozen times: `README.md` said one extra enemy per 10 complexity a day after the constant became 5, `mechanics.md` said four ammo pools with the shotgun on `bullets`, `adding-a-weapon.md` charged the score's `ammoBonus` divisor at 4, and `balancing-telemetry.md`'s balance reference opened with "there are no magazines, no reload" five days after magazines shipped.
+
+`docPins.test.mjs` asserts two kinds of thing, and the second is the one worth having:
+
+- **Value pins** build the sentence *from* the real constant and assert the doc contains it. Retune the constant and the doc no longer matches, and the failure names the file and the exact wording to write. One drifted `magazineSize` lights up three docs at once.
+- **Enumeration pins** require every member of a real collection — ammo pools, gore tiers, `*_ENABLED` feature flags, reloadable weapons — to appear in the doc that claims to list them. These catch the *never-written* half, which no value pin can: three floor-cast feature flags shipped during the 2026-08 frame-budget audit and reached no table, because a missing row looks like nothing.
+
+Two conventions worth knowing before touching it. **A red pin is a doc edit, not a test edit** — change the pin only when the wording around the number changes, never to make the number agree. And a constant the docs quote but `src/` keeps module-private (`MAX_SECRET_ROOMS`, `COMPLEXITY_PER_EXTRA_ENEMY`, the Elite ceiling) is read out of its own definition by `constantFromSource()` rather than exported for the test's benefit or — the thing this file exists to stop — re-typed into it.
+
+It also checks that **every internal link in every `.md` file resolves** — target file exists, and `#anchor` matches a real heading. Same failure shape as a stale number: a link is a claim about another file, nothing checks it, and renaming a heading breaks it in silence. It earned its place immediately, catching two links written the same hour that pointed at an anchor which had never existed. If you touch it, note that GitHub's slugger does *not* collapse runs of spaces — "Credits & Third-Party Licenses" is `credits--third-party-licenses`, doubled hyphen and all.
+
+All four failure modes were mutation-tested when it landed: drifting a source constant, deleting a documented flag's row, adding an undocumented flag, and renaming a linked-to heading each turn it red with an actionable message.
 
 **`vitest.config.ts`'s `?url`-as-path plugin** exists for one reason: `src/parser/runtime.ts`'s `Parser.init({ locateFile })` and the grammar loads in `src/parser/generic/languages.ts`/`cParser.ts`/`phpParser.ts` all import their `.wasm` file via Vite's `?url` suffix, which normally resolves to a browser-shaped dev-server URL — meaningless under plain Node. The plugin (modeled on `scripts/lib/loadEngineModules.mjs`'s `urlImportAsPathPlugin`, the esbuild equivalent used by the Playwright verify scripts) rewrites a `?url` import into a real absolute filesystem path instead, registered with `enforce: "pre"` so it wins the resolution race against Vite's own built-in `vite:asset` plugin. If wasm loading ever starts throwing under Vitest, this is the first place to look.
 
