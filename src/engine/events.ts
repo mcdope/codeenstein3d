@@ -41,14 +41,29 @@
  * field, so a schema-1 reader still finds every key it knew; the bump is so a
  * *consumer* can tell a log that can answer "which archetype killed you" from
  * one that structurally cannot. Every capture before this date, including
- * `balancing_runs_overnight-2026-08-04/`, is schema 1 and cannot. */
-export const BALANCE_EVENT_SCHEMA_VERSION = 2;
+ * `balancing_runs_overnight-2026-08-04/`, is schema 1 and cannot.
+ *
+ * 3 (2026-08-20) — new `rocketDetonated` event. Rockets were the one weapon
+ * invisible to this log: `fire()` returns at `if (w.isRocket)` before
+ * `resolveShot` runs, so a rocket emits no `shot`-time `hit` events at all —
+ * **0 of 3,248,140 across the whole archive**. Every rocket question therefore
+ * had to be answered by simulation or not at all: `report:damage-model`'s
+ * ghidra rows read 100% miss on every capture on disk, and the 2026-08-20
+ * finding that the shotgun is the only weapon hitting 2+ enemies could not say
+ * whether a rocket does, because splash leaves no per-target trace.
+ *
+ * Additive like the last bump — a schema-2 reader sees an event type it does
+ * not know and skips it — but a *consumer* can now tell a log that can answer
+ * "how many enemies did one rocket hit, and did it connect or hit a wall" from
+ * one that structurally cannot. */
+export const BALANCE_EVENT_SCHEMA_VERSION = 3;
 
 export type BalanceEventType =
   | "levelStart"
   | "shot"
   | "hit"
   | "damageDealt"
+  | "rocketDetonated"
   | "kill"
   | "damageTaken"
   | "lootDropped"

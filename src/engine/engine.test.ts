@@ -5875,6 +5875,59 @@ describe("balancing event log", () => {
     });
   });
 
+  it("records a rocketDetonated carrying every enemy one blast hit", () => {
+    // The gap this closes: a rocket never reaches `resolveShot`, so it emits no
+    // `hit` events at all — 0 of 3,248,140 across the whole archive. Splash
+    // damage therefore had no per-target trace anywhere, which is why
+    // `report:damage-model`'s ghidra rows read 100% miss on every capture and
+    // why "does a rocket hit more than one enemy" was unanswerable while the
+    // same question for pellets was a one-liner.
+    withTestHooks((getHooks) => {
+      // Three enemies inside one blast radius (2.6), one outside it.
+      const near = [fakeEnemy({ x: 9.5, y: 5.5 }), fakeEnemy({ x: 9.5, y: 6.2 }), fakeEnemy({ x: 10.2, y: 5.5 })];
+      const far = fakeEnemy({ x: 9.5, y: 14.5 });
+      const carryover = { health: 100, swap: 0, bullets: 50, rockets: 5, smg: 0, gas: 0, weaponIndex: GHIDRA_WEAPON_INDEX, ownedWeapons: [0, 1, 2, 3, GHIDRA_WEAPON_INDEX] };
+      const { engine, input } = makeEngine(fakeMap({ enemies: [...near, far] }), makeHandlers(), { carryover });
+      engine.advance(0);
+      getHooks().drainEvents();
+
+      input.fireQueued = true;
+      // Long enough for the rocket to cross the gap and detonate.
+      for (let i = 0; i < 60; i++) engine.advance(0.016);
+
+      const events = (getHooks().drainEvents() as Drained).events;
+      const blast = events.find((e) => e.e === "rocketDetonated");
+      expect(blast, "firing a rocket into enemies must emit rocketDetonated").toBeDefined();
+      expect(blast).toMatchObject({ w: GHIDRA_WEAPON_INDEX, direct: true });
+      // The whole point: more than one enemy on a single shot, itemised.
+      expect(blast!.enemiesHit).toBeGreaterThan(1);
+      const hits = blast!.hits as { eid: number; arch: string; amt: number }[];
+      expect(hits).toHaveLength(blast!.enemiesHit as number);
+      for (const h of hits) expect(h.amt).toBeGreaterThan(0);
+      // The far enemy is outside the blast and must not appear.
+      expect(hits.some((h) => h.eid === 3)).toBe(false);
+      // dmg is the sum of the itemised hits, so a reader can use either.
+      expect(blast!.dmg).toBeCloseTo(hits.reduce((sum, h) => sum + h.amt, 0), 5);
+      expect(blast!.dist).toBeGreaterThan(0);
+    });
+  });
+
+  it("records a wall detonation as direct: false, which damage alone cannot reveal", () => {
+    withTestHooks((getHooks) => {
+      const carryover = { health: 100, swap: 0, bullets: 50, rockets: 5, smg: 0, gas: 0, weaponIndex: GHIDRA_WEAPON_INDEX, ownedWeapons: [0, 1, 2, 3, GHIDRA_WEAPON_INDEX] };
+      const { engine, input } = makeEngine(fakeMap(), makeHandlers(), { carryover });
+      engine.advance(0);
+      getHooks().drainEvents();
+      input.fireQueued = true;
+      for (let i = 0; i < 90; i++) engine.advance(0.016);
+
+      const blast = (getHooks().drainEvents() as Drained).events.find((e) => e.e === "rocketDetonated");
+      expect(blast, "a rocket into an empty room still detonates on the wall").toBeDefined();
+      expect(blast).toMatchObject({ direct: false, enemiesHit: 0 });
+      expect(blast!.hits).toEqual([]);
+    });
+  });
+
   it("empties the buffer on drain, so a second drain returns nothing", () => {
     withTestHooks((getHooks) => {
       makeEngine(fakeMap());

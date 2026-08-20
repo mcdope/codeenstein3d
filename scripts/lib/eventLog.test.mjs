@@ -37,6 +37,37 @@ describe("appendEvents", () => {
     expect(JSON.parse(lines[0])).toEqual({ v: BALANCE_EVENT_SCHEMA_VERSION, sid: "s1", rid: "r1", lvl: 3, e: "kill", t: 1 });
   });
 
+  it("round-trips a rocketDetonated's nested hits array without flattening it", () => {
+    // The only event whose payload is an array of objects, and the one the
+    // rocket questions depend on: if `hits` does not survive serialisation,
+    // "how many enemies did one rocket hit" is unanswerable again and the
+    // failure is silent — the event is still there, just hollow.
+    const blast = {
+      e: "rocketDetonated",
+      t: 4.5,
+      w: 4,
+      x: 9.5,
+      y: 5.5,
+      direct: true,
+      dist: 6.25,
+      enemiesHit: 2,
+      dmg: 231.5,
+      selfDmg: 0,
+      hits: [
+        { eid: 3, arch: "normal", amt: 150 },
+        { eid: 7, arch: "edgeCase", amt: 81.5 },
+      ],
+    };
+    appendEvents(logPath, { sid: "s1", rid: "r1", lvl: 2 }, { events: [blast], dropped: 0 });
+    const { events, malformed, truncatedTail } = readEventLog(logPath);
+    expect(malformed).toEqual([]);
+    expect(truncatedTail).toBe(false);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ v: BALANCE_EVENT_SCHEMA_VERSION, sid: "s1", rid: "r1", lvl: 2, ...blast });
+    expect(events[0].hits).toEqual(blast.hits);
+    expect(events[0].hits.reduce((sum, h) => sum + h.amt, 0)).toBeCloseTo(events[0].dmg, 5);
+  });
+
   it("creates the parent directory on first write", () => {
     appendEvents(logPath, envelope, { events: [{ e: "shot", t: 0 }], dropped: 0 });
     expect(fs.existsSync(logPath)).toBe(true);

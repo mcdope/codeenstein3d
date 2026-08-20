@@ -3981,6 +3981,17 @@ export class RaycasterEngine {
       const firerDmg = rocketDamageAt(blast, shooter.player.posX, shooter.player.posY);
       if (firerDmg > 0) this.damage(blast.firedBy, firerDmg, "selfRocket");
 
+      // Splash is the one damage source with no per-target trace anywhere else
+      // in the log: a rocket never reaches `resolveShot`, so it emits no `hit`
+      // events (0 of 3,248,140 across the whole archive before this). Collected
+      // here and recorded as one `rocketDetonated` below, which is what lets a
+      // reader ask of a rocket the same question the pellet weapons already
+      // answer — how many enemies did one shot hit, and did it connect.
+      //
+      // Built only when the event log is on (`?eventLog=1`, DEV-gated), so an
+      // ordinary frame allocates nothing for it.
+      const blastHits = this.eventLog ? [] as { eid: number; arch: EnemyCategory; amt: number }[] : null;
+
       // Ascending candidate indices == the old full-array scan order
       // restricted to the blast's neighborhood, so kills (and the seeded
       // loot rolls they draw) happen in exactly the order they always did.
@@ -3999,8 +4010,31 @@ export class RaycasterEngine {
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) {
           if (shooter.telemetry) recordHit(shooter.telemetry, GHIDRA_WEAPON_INDEX);
+          // Archetype is read *before* the damage lands: a killing blow can
+          // flip `alive`, and the question this answers is "what did the
+          // rocket hit", not "what survived it".
+          blastHits?.push({ eid: index, arch: enemyCategory(enemy), amt: dmg });
           this.damageEnemy(enemy, dmg, undefined, undefined, GHIDRA_WEAPON_INDEX, undefined, shooter);
         }
+      }
+
+      if (this.eventLog && blastHits) {
+        recordEvent(this.eventLog, "rocketDetonated", this.levelTime, {
+          w: GHIDRA_WEAPON_INDEX,
+          x: blast.x,
+          y: blast.y,
+          // Whether an enemy stopped the rocket, as opposed to the wall behind
+          // it. Splash lands either way, so damage alone cannot distinguish
+          // them — see `RocketExplosion.hitEnemy`.
+          direct: blast.hitEnemy,
+          // Firer-to-blast distance, so rocket range buckets the same way
+          // `shot.dist` does and the two are directly comparable.
+          dist: Math.hypot(blast.x - shooter.player.posX, blast.y - shooter.player.posY),
+          enemiesHit: blastHits.length,
+          dmg: blastHits.reduce((sum, h) => sum + h.amt, 0),
+          selfDmg: firerDmg,
+          hits: blastHits,
+        });
       }
     }
   }
