@@ -12,6 +12,34 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Neither the shotgun nor ghidra is chosen by the weapon scorer — a cluster fast-path picks both, and it explains three separate open questions (2026-08-20, offline).** No machine time: the whole answer is in `combatPolicy.mjs` and the shot distribution the density capture already wrote.
+
+  **The question.** The shotgun is a *starting* weapon, so unlike ghidra it is always owned — yet it is **2.9% of all shots** (5,854 of 212,210). Availability cannot explain it, so it looked like a `scoreRangedWeapon` problem.
+
+  **It is not.** `pickRangedWeapon` opens with a cluster fast-path that never reaches the scorer. On `clusterCount >= 2` it hands out Friday Hotfix inside `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` (2.5), then ghidra beyond `ROCKET_CLUSTER_MIN_DIST` (5) if the threat is not an Edge Case, and then **falls through to the shotgun unconditionally — no distance test, no HP test, no archetype test.**
+
+  **The observed distances land on those constants to within a tile**, which is what turns this from a code reading into a measurement:
+
+  | weapon | shots | dist p10/p50/p90 | the gate it sits against |
+  |---|---|---|---|
+  | Friday Hotfix | 17,314 | 1.7 / **2.8** / 4.0 | `FRIDAY_HOTFIX_FULL_DAMAGE_RANGE` 2.5 |
+  | shotgun | 5,854 | 1.8 / **3.0** / 5.3 | just past where Friday stops claiming |
+  | ghidra | 614 | **5.1** / 5.9 / 7.1 | `ROCKET_CLUSTER_MIN_DIST` 5 |
+
+  Ghidra's p10 of 5.1 against a gate of 5.0 says **essentially every rocket the bot has ever fired came through that one branch.**
+
+  **What the scorer would do, for contrast.** Sweeping target HP 15-300 against distance 0.5-6, `scoreRangedWeapon` picks the shotgun in **exactly one cell**: HP ~150 *and* distance <=1.5. It wins nowhere else at any HP. Against the real shots: only **2.5%** were inside 1.5 tiles and **9%** at HP 135-180. The scorer explains almost none of the shotgun's use.
+
+  **Why the scorer refuses it.** The pistol fires at 0.16s against the shotgun's 0.85s, so an 8x damage advantage (175 vs 22) loses to a 5.3x cadence disadvantage as soon as `Math.ceil` demands a second shell — and `magazineSize: 2` then charges a full 1.2s reload for it. At 2 tiles the shotgun scores 3.70s against the pistol's 1.54s. Its entire viable window is "one shell is exactly enough", HP roughly 135-175 at point-blank.
+
+  **The reload term is deliberate and worth its own line.** Its comment says charging it stops the scorer "preferring the shotgun and ghidra by roughly a reload each". Charging only the reloads needed *before* the killing shot leaves the shotgun still losing (2.50 vs 1.54) — but **flips ghidra outright: 2.95s -> 1.35s against the pistol's 1.54s.** For a 1-round magazine the shipped model charges a reload on every single-rocket kill, for a reload that happens after the target is already dead. Not called a bug here: it is a defensible amortisation of the next engagement's cost, and its author said so. But it is the single term that decides ghidra, and that was not previously known.
+
+  **The asymmetry to look at first.** In the cluster path ghidra is barred whenever the threat is an Edge Case; the shotgun is barred by nothing. Edge Cases are **62% of all spawns**, so the shotgun inherits every cluster ghidra is refused. `eventMetrics.mjs` had recorded exactly this as a suspicion — *"the cluster fast-path refuses a rocket whenever the threat is an Edge Case, and Edge Cases are 62-78% of the roster"* — and it is now confirmed from the constants and the shot distribution rather than guessed.
+
+  **Three open questions collapse into one.** Why the shotgun is 2.9% of shots; why the bot declines ghidra while owning it on 40.9% of level-visits; and why two ~55-minute ghidra A/Bs came back null. All the same answer: **weapon selection for these two is structural, not economic**, so retuning `scoreRangedWeapon` moves neither. The lever is the fast-path's shape. The two null A/Bs were designed off a synthetic `pickRangedWeapon` probe and were never going to show anything.
+
+  **What this does not settle.** Whether the fast-path is *wrong*. Handing clusters to a spread weapon may well be right, and nothing here measures whether shotgun pellets actually spread damage across a cluster in this engine's `resolveShot`. That is the next thing to check, and it is also offline.
+
 - [x] **The density change is real, but not where it was predicted — and the shells A/B died before it ran (2026-08-20).** Three-arm capture, 360 attempts, 8h20m across 4 local + 4 SSH lanes. This is the follow-up the DPS-neutral discipline of the previous two changes existed to make possible.
 
   **Design.** `COMPLEXITY_PER_EXTRA_ENEMY` 10 (arm A) against 5 (arm B), plus **arm C, byte-identical to B**, on one shared 15-level staging of curl. Gamer profile, `normal` and `hard`, 60 attempts per combo per arm. Arms were branches differing by exactly one line rather than a runtime flag: both measure the same long-standing metrics, so the usual objection to a baseline branch — it cannot emit a metric newer than itself — did not apply.
