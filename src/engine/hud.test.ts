@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { EngineStats } from "./engine";
-import { HUD_PAD, layoutHud, TOOL_SLOTS } from "./hudLayout";
+import { HUD_PAD, KEY_COLS, KEY_ROWS, layoutHud, TOOL_SLOTS } from "./hudLayout";
+import { GATE_COLOR_COUNT } from "../map/types";
 import { emptyPlayerFacingStats } from "./playerStats";
 import { NUMBER_KEY_WEAPONS } from "./weapons";
 import { zeroScoreBreakdown } from "./scoring";
@@ -81,6 +82,16 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     ...overrides,
   };
 }
+
+/** The four gate colours as `drawKeysPanel` writes them. Hardcoded rather
+ * than imported because `HUD_GATE_COLORS` is module-private in `hud.ts` — and
+ * a test that read the same table it is checking would pin nothing. */
+const GATE_HEXES = ["#d63a30", "#3470d6", "#34b25c", "#a848d6"];
+
+/** The presets the game ships. 160/320 are `?renderRes` extremes that fall
+ * through `layoutHud`'s uniform squeeze on purpose, where nothing is legible
+ * and nothing fits — the same restriction `hudLayout.test.ts` makes. */
+const SHIPPED_WIDTHS = [640, 800, 1280, 2560];
 
 describe("drawCrosshair", () => {
   it("draws white when nothing is targeted, with no spread ticks by default", () => {
@@ -600,21 +611,88 @@ describe("drawHud", () => {
     expect(c.textAlign).toBe("left"); // reset after the right-aligned score
   });
 
-  it("keeps the pips inside their own panel, at every gate count the generator can emit", () => {
-    // MAX_GATE_ROOMS is 4, so four pips at a 16px pitch is the worst case. The
-    // panel's minimum width has to cover it — the backlog's "keys need a count
-    // or a scroll" worry predates that cap and does not apply.
-    const keys = layoutHud(800, 600).panels.keys;
-    const widest = HUD_PAD + 4 * 16;
-    expect(widest).toBeLessThanOrEqual(keys.w);
+  /**
+   * The bounding box of every pip `drawHud` drew, one entry per pip.
+   *
+   * Grouped by colour rather than counted as fills, because the two pip states
+   * are different shapes: a held pip is one 12x12 `fillRect`, an unheld one is
+   * the four thin quads `outlineRect` emits instead of stroking (see its doc in
+   * `pathSprites.ts`). Colour is also the only reliable discriminator — the
+   * chrome, the two bars and every TOOLS cell are `fillRect`s too — and gate
+   * colours are distinct within a level, so one colour is one pip.
+   */
+  function pipBoxes(width: number, gateColors: number[], heldGates: number[]) {
+    const c = ctx(width, 400);
+    const byColour = new Map<string, { x: number; y: number; right: number; bottom: number }>();
+    let bandY = -1;
+    c.fillRect.mockImplementation((x: unknown, y: unknown, w: unknown, h: unknown) => {
+      const colour = c.fillStyle as string;
+      // The stability bar's unfilled track, drawn once, is the strip band's own
+      // top edge — the thing a one-row level has to stay level with.
+      if (colour === "#071007") bandY = Number(y);
+      if (!GATE_HEXES.includes(colour)) return;
+      const [px, py, pw, ph] = [Number(x), Number(y), Number(w), Number(h)];
+      const box = byColour.get(colour);
+      if (!box) {
+        byColour.set(colour, { x: px, y: py, right: px + pw, bottom: py + ph });
+        return;
+      }
+      box.x = Math.min(box.x, px);
+      box.y = Math.min(box.y, py);
+      box.right = Math.max(box.right, px + pw);
+      box.bottom = Math.max(box.bottom, py + ph);
+    });
+    drawHud(asCtx(c), fakeStats({ gateColors, heldGates }));
+    return { pips: [...byColour.values()], bandY };
+  }
 
-    const c = ctx();
-    const rects: number[] = [];
-    c.fillRect.mockImplementation((x: unknown) => rects.push(Number(x)));
-    drawHud(asCtx(c), fakeStats({ heldGates: [0, 1, 2, 3], gateColors: [0, 1, 2, 3] }));
-    const pipXs = rects.filter((x) => x >= keys.x && x < keys.x + keys.w);
-    expect(pipXs.length).toBeGreaterThanOrEqual(4);
-    for (const x of pipXs) expect(x + 12).toBeLessThanOrEqual(keys.x + keys.w);
+  /** Every preset x every gate count the generator can emit. The single-width
+   * test this replaces ran at 800 only — where the defect it was meant to catch
+   * does not reproduce — and filtered out-of-panel pips away *before* asserting,
+   * so it could not have failed on one. Both axes are enumerated now. */
+  const PIP_CASES = SHIPPED_WIDTHS.flatMap((w) => [1, 2, 3, 4].map((n) => [w, n] as const));
+
+  it.each(PIP_CASES)("at %ipx with %i gate(s): every pip is inside the KEYS panel", (w, gates) => {
+    const keys = layoutHud(w, 400).panels.keys;
+    const { pips } = pipBoxes(w, [0, 1, 2, 3].slice(0, gates), [0, 2]);
+    // Counted, not filtered: a pip that escaped the panel still has to be here.
+    expect(pips).toHaveLength(gates);
+    for (const b of pips) {
+      expect(b.x, `left edge at ${w}px`).toBeGreaterThanOrEqual(keys.x + HUD_PAD);
+      expect(b.right, `right edge at ${w}px`).toBeLessThanOrEqual(keys.x + keys.w - HUD_PAD);
+      // The label is 9px with no descenders on a +14 baseline, so its em box
+      // ends around +16; the bar's own bottom is the other bound.
+      expect(b.y, `top edge at ${w}px`).toBeGreaterThanOrEqual(keys.y + 17);
+      expect(b.bottom, `bottom edge at ${w}px`).toBeLessThanOrEqual(keys.y + HUD_HEIGHT);
+    }
+  });
+
+  it("has exactly one grid slot per gate colour", () => {
+    // `hudLayout.ts` sizes the panel from KEY_COLS/KEY_ROWS and cannot import
+    // the map types to check the cap itself — the same split that is spelled
+    // out for TOOL_SLOTS. If a fifth key colour is ever added, this is what
+    // says the grid has to grow before it can be drawn.
+    expect(KEY_COLS * KEY_ROWS).toBe(GATE_COLOR_COUNT);
+  });
+
+  it("draws at most a full grid, however many gates it is handed", () => {
+    // The cap is enforced by generation (`MAX_GATE_ROOMS`), so this is not
+    // reachable in a real level — but the panel is 72px tall and a third row
+    // would stack straight through the KEYS label, so the renderer bounds its
+    // own block rather than trusting its caller.
+    const { pips } = pipBoxes(640, [0, 1, 2, 3, 0, 1], []);
+    const keys = layoutHud(640, 400).panels.keys;
+    expect(pips).toHaveLength(KEY_COLS * KEY_ROWS);
+    for (const b of pips) expect(b.y).toBeGreaterThanOrEqual(keys.y + 17);
+  });
+
+  it("keeps a one-row level on the same strip band as the bars beside it", () => {
+    // Two gates is the median level, and the grid grows *upward*, so that case
+    // keeps the row it has always had — level with the stability and swap bars
+    // and the TOOLS cells, not floating above them.
+    const { pips, bandY } = pipBoxes(640, [0, 1], [0]);
+    expect(pips).toHaveLength(2);
+    for (const b of pips) expect(b.y).toBe(bandY);
   });
 
   it("shows a dash instead of pips on a level with no gates at all", () => {

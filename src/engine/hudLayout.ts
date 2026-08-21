@@ -85,6 +85,25 @@ export const TOOL_SLOTS = 5;
 const TOOLS_MIN = HUD_PAD * 2 + TOOL_SLOTS * TOOL_CELL + (TOOL_SLOTS - 1) * TOOL_GAP;
 
 /**
+ * The KEYS grid's pip geometry, here for the same reason the TOOLS cells are:
+ * the panel's minimum is *derived* from it below.
+ *
+ * The pips used to be laid out in `hud.ts` on a single row while this module
+ * declared a width that had never been measured against them — four pips at a
+ * 16px pitch need 68px and the panel was granted 57 at the Classic preset, so
+ * the violet one hung 11px into SCORE. Two columns is what makes the block
+ * bounded by the *grid* rather than by the gate count.
+ */
+export const KEY_PIP = 12;
+export const KEY_PIP_GAP = 4;
+export const KEY_PIP_PITCH = KEY_PIP + KEY_PIP_GAP;
+export const KEY_COLS = 2;
+/** Rows in the grid. Pinned against `GATE_COLOR_COUNT` by a test in
+ * `hud.test.ts`; this module must not import the map types. */
+export const KEY_ROWS = 2;
+const KEYS_MIN = HUD_PAD * 2 + KEY_COLS * KEY_PIP + (KEY_COLS - 1) * KEY_PIP_GAP;
+
+/**
  * The bar's contents stop widening past this, and centre instead.
  *
  * Classic (640) and Sharp (1280) both stretch fully, so every real preset uses
@@ -105,7 +124,8 @@ export const HUD_MAX_CONTENT_W = 1280;
  * at the game's own default preset — every panel 2.7% under its minimum, with
  * the doc comment here asserting the opposite. The numbers now come from
  * `measureText` against the real fonts: 9px labels are 22px for `AMMO` and
- * 33px for the widest, `STABIL`; a key pip is 10px; the face glyph is 39px.
+ * 33px for the widest, `STABIL`; the face glyph is 39px. The KEYS minimum is
+ * the one that was *not* measured — it is derived from the pips now, above.
  *
  * `hudLayout.test.ts` pins the sum against 640 directly, because a comment
  * claiming they fit is exactly what was wrong before.
@@ -121,8 +141,11 @@ export const PANEL_SPECS: readonly { key: HudPanelKey; min: number; weight: numb
   // sprite plus a hair of bezel and nothing else.
   { key: "face", min: 48, weight: 0.3 },
   { key: "swap", min: 60, weight: 0.8 },
-  // "KEYS" is 22px; four pips at 10px with gaps is 40px. 56 clears both.
-  { key: "keys", min: 56, weight: 0.8 },
+  // Derived, not guessed: the 2x2 grid is 28px and "KEYS" is 22px, so the
+  // grid governs. The guessed 56 that stood here was never checked against
+  // the one-row strip it was meant to hold, which is how the fourth pip
+  // escaped the panel at 640.
+  { key: "keys", min: KEYS_MIN, weight: 0.8 },
   { key: "score", min: 76, weight: 0.9 },
   // A row is the 22px `BULL` plus a 20px three-digit count, with a gap.
   { key: "table", min: 64, weight: 0.9 },

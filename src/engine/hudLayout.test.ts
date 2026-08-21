@@ -15,6 +15,9 @@ import {
   HUD_HEIGHT,
   HUD_MAX_CONTENT_W,
   HUD_PAD,
+  KEY_COLS,
+  KEY_PIP,
+  KEY_PIP_GAP,
   PANEL_MIN_WIDTHS,
   TOOL_CELL,
   TOOL_GAP,
@@ -129,6 +132,17 @@ describe("layoutHud minimums", () => {
     const { panels } = layoutHud(640, 400);
     const surplus = KEYS.reduce((sum, k) => sum + panels[k].w - PANEL_MIN_WIDTHS[k], 0);
     expect(surplus).toBeGreaterThan(0);
+  });
+
+  it.each(SHIPPED_WIDTHS)("at %ipx: the KEYS grid fits inside the KEYS panel", (w) => {
+    // The same bug as the TOOLS one below, found later and one panel over: the
+    // pips were laid out in `hud.ts` at a 16px pitch while this module declared
+    // a minimum guessed from a 10px pip, so the fourth pip left the panel at
+    // the Classic preset and sat inside SCORE. `SHIPPED_WIDTHS`, not `WIDTHS` —
+    // below 640 the uniform squeeze runs by design and nothing fits.
+    const { keys } = layoutHud(w, 400).panels;
+    const gridRight = HUD_PAD + KEY_COLS * KEY_PIP + (KEY_COLS - 1) * KEY_PIP_GAP;
+    expect(gridRight + HUD_PAD, `grid overflows KEYS at ${w}px`).toBeLessThanOrEqual(keys.w);
   });
 
   it.each(SHIPPED_WIDTHS)("at %ipx: the TOOLS grid fits inside the TOOLS panel", (w) => {

@@ -11,6 +11,10 @@ import type { EngineStats, PlayerId } from "./engine";
 import {
   HUD_HEIGHT,
   HUD_PAD,
+  KEY_COLS,
+  KEY_PIP,
+  KEY_PIP_PITCH,
+  KEY_ROWS,
   LABEL_AMMO,
   LABEL_KEYS,
   LABEL_SCORE,
@@ -578,7 +582,8 @@ function drawBarChrome(ctx: CanvasRenderingContext2D, L: HudLayout): void {
 const LABEL_DY = 14;
 /** Baseline of a panel's big numeral. */
 const VALUE_DY = 44;
-/** Top of the 14px strip band — stability bar, key pips, TOOLS cells. */
+/** Top of the 14px strip band — stability bar, TOOLS cells, and the *bottom*
+ * row of the KEYS grid, which grows upward out of the band. */
 const STRIP_DY = 50;
 const STRIP_H = 14;
 
@@ -666,16 +671,24 @@ function drawSwapPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   outlineRect(ctx, barX + 0.5, barY + 0.5, barW - 1, STRIP_H - 1);
 }
 
-/** Keys: one pip per gate on the level, filled once held.
+/** Keys: one pip per gate on the level, filled once held, on a 2x2 grid.
  *
  * A held/total count stopped meaning anything when keys became permanent
  * per-gate inventory: it degrades into "collected / collectable", a
  * completionist stat wearing a resource's clothes. Which *colours* you hold is
  * the thing that decides whether the door in front of you opens.
  *
- * Bounded by construction — `MAX_GATE_ROOMS` is 4 and levels measure p50 2 /
- * p90 3 — so a fixed strip is the right idiom and no count or scroll is
- * needed. */
+ * Two columns, not one row. `MAX_GATE_ROOMS` is 4 and levels measure p50 2 /
+ * p90 3, so a fixed block is still the right idiom and no count or scroll is
+ * needed — but four in a row needs 68px and the Classic preset grants this
+ * panel 47, which is how the violet pip came to hang into SCORE. The grid is
+ * bounded by `KEY_COLS * KEY_ROWS` rather than by the gate count, so the width
+ * `hudLayout` reserves is the width this can ever draw.
+ *
+ * It grows *upward*: the bottom row sits on the strip band, level with the
+ * stability and swap bars and the TOOLS cells, so the median two-gate level
+ * keeps the row it has always had and only a third key adds anything above.
+ */
 function drawKeysPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
   drawLabel(ctx, LABEL_KEYS, rect.x + HUD_PAD, rect.y + LABEL_DY);
   if (stats.gateColors.length === 0) {
@@ -683,16 +696,21 @@ function drawKeysPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
     return;
   }
   const held = new Set(stats.heldGates);
-  const y = rect.y + STRIP_DY;
-  stats.gateColors.forEach((colorIndex, gateId) => {
-    const x = rect.x + HUD_PAD + gateId * 16;
+  // Clamped by slicing rather than by a guard: generation caps gates at
+  // `MAX_GATE_ROOMS`, so an `if` here would be a branch no test could reach.
+  // Without it a fifth gate would open a third row straight through the label.
+  const shown = stats.gateColors.slice(0, KEY_COLS * KEY_ROWS);
+  const top = rect.y + STRIP_DY - (Math.ceil(shown.length / KEY_COLS) - 1) * KEY_PIP_PITCH;
+  shown.forEach((colorIndex, gateId) => {
+    const x = rect.x + HUD_PAD + (gateId % KEY_COLS) * KEY_PIP_PITCH;
+    const y = top + Math.floor(gateId / KEY_COLS) * KEY_PIP_PITCH;
     ctx.fillStyle = HUD_GATE_COLORS[colorIndex];
     if (held.has(gateId)) {
-      ctx.fillRect(x, y, 12, 12);
+      ctx.fillRect(x, y, KEY_PIP, KEY_PIP);
     } else {
       ctx.strokeStyle = ctx.fillStyle;
       ctx.lineWidth = 1;
-      outlineRect(ctx, x + 0.5, y + 0.5, 11, 11);
+      outlineRect(ctx, x + 0.5, y + 0.5, KEY_PIP - 1, KEY_PIP - 1);
     }
   });
 }
