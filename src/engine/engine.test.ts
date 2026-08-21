@@ -1724,9 +1724,12 @@ describe("RaycasterEngine — keys and doors", () => {
 describe("RaycasterEngine — locked-door hint", () => {
   type HintState = {
     lockedDoorToastFrames: number;
+    lockedDoorGateId: number;
+    lockedDoorBlockerGateId: number;
     keyPingFrames: number;
     keyPingTarget: { x: number; y: number } | null;
     keyPingBeatFrames: number;
+    heldGates: Set<number>;
   };
 
   function hintPlayers(engine: InstanceType<typeof RaycasterEngine>): Map<string, HintState> {
