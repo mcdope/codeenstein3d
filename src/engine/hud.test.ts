@@ -4,7 +4,8 @@
 import { describe, expect, it } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { EngineStats } from "./engine";
-import { HUD_PAD, layoutHud, TOOL_SLOTS } from "./hudLayout";
+import { HUD_PAD, KEY_COLS, KEY_ROWS, layoutHud, TOOL_SLOTS } from "./hudLayout";
+import { GATE_COLOR_COUNT } from "../map/types";
 import { emptyPlayerFacingStats } from "./playerStats";
 import { NUMBER_KEY_WEAPONS } from "./weapons";
 import { zeroScoreBreakdown } from "./scoring";
@@ -81,6 +82,16 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     ...overrides,
   };
 }
+
+/** The four gate colours as `drawKeysPanel` writes them. Hardcoded rather
+ * than imported because `HUD_GATE_COLORS` is module-private in `hud.ts` — and
+ * a test that read the same table it is checking would pin nothing. */
+const GATE_HEXES = ["#d63a30", "#3470d6", "#34b25c", "#a848d6"];
+
+/** The presets the game ships. 160/320 are `?renderRes` extremes that fall
+ * through `layoutHud`'s uniform squeeze on purpose, where nothing is legible
+ * and nothing fits — the same restriction `hudLayout.test.ts` makes. */
+const SHIPPED_WIDTHS = [640, 800, 1280, 2560];
 
 describe("drawCrosshair", () => {
   it("draws white when nothing is targeted, with no spread ticks by default", () => {
@@ -382,11 +393,22 @@ describe("drawLoreOverlay", () => {
   });
 
   it("word-wraps a long paragraph across multiple lines", () => {
+    // The line *count* is not the property — it moves with the body font and
+    // used to be pinned at 2 only because the canvas mock reported a flat 6px
+    // per character whatever font was set. What has to hold is that the
+    // paragraph breaks at all and that no line it produces is wider than the
+    // box, measured the same way `wrapText` measures it.
     const c = ctx(800, 600);
     const words = Array.from({ length: 5 }, () => "a".repeat(20));
     const result = drawLoreOverlay(asCtx(c), words.join(" "), 0);
     expect(result.maxScrollLines).toBe(0);
-    expect(bodyLines(c)).toHaveLength(2);
+    const lines = bodyLines(c);
+    expect(lines.length).toBeGreaterThan(1);
+    c.font = "13px ui-monospace, monospace";
+    const widest = Math.max(...lines.map((l) => asCtx(c).measureText(l).width));
+    // `drawLoreOverlay`'s own inner width: a 520px box (capped by the canvas)
+    // less 48px of padding.
+    expect(widest).toBeLessThanOrEqual(Math.min(520, 800 - 48) - 48);
   });
 
   it("treats explicit newlines as hard paragraph breaks", () => {
@@ -503,17 +525,17 @@ describe("drawHud", () => {
     // reserve shown beside it is the remaining 31.
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
     expect(c.fillText).toHaveBeenCalledWith("AMMO", expect.any(Number), expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("9 / 31", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("9/31", expect.any(Number), expect.any(Number));
   });
 
   it("shows a part-spent magazine and an empty one without calling either dry", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 3, magazineSize: 9 }));
-    expect(c.fillText).toHaveBeenCalledWith("3 / 37", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("3/37", expect.any(Number), expect.any(Number));
 
     const empty = ctx();
     drawHud(asCtx(empty), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
-    expect(empty.fillText).toHaveBeenCalledWith("0 / 31", expect.any(Number), expect.any(Number));
+    expect(empty.fillText).toHaveBeenCalledWith("0/31", expect.any(Number), expect.any(Number));
   });
 
   it("says RELOADING in place of the pool name while reloading", () => {
@@ -531,26 +553,26 @@ describe("drawHud", () => {
     drawHud(asCtx(notDry), fakeStats({ weaponIndex: 0, bullets: 31, magazine: 0, magazineSize: 9 }));
     // The colour *of the ammo numeral itself*, not whatever style the last
     // panel left behind.
-    expect(notDryLog).toContainEqual(["0 / 31", "#4cff6a"]);
-    expect(notDryLog.find(([text]) => text === "0 / 31")?.[1]).not.toBe("#ff5a4a");
+    expect(notDryLog).toContainEqual(["0/31", "#4cff6a"]);
+    expect(notDryLog.find(([text]) => text === "0/31")?.[1]).not.toBe("#ff5a4a");
 
     const dry = ctx();
     const dryLog = fillTextStylesLog(dry);
     drawHud(asCtx(dry), fakeStats({ weaponIndex: 0, bullets: 0, magazine: 0, magazineSize: 9 }));
-    expect(dryLog).toContainEqual(["0 / 0", "#ff5a4a"]);
+    expect(dryLog).toContainEqual(["0/0", "#ff5a4a"]);
   });
 
   it("shows ROCKETS for a rockets-type weapon", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 3, magazine: 1, magazineSize: 1 }));
     expect(c.fillText).toHaveBeenCalledWith("AMMO", expect.any(Number), expect.any(Number));
-    expect(c.fillText).toHaveBeenCalledWith("1 / 2", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("1/2", expect.any(Number), expect.any(Number));
   });
 
   it("colors rockets red once empty", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 4, rockets: 0, magazine: 0, magazineSize: 1 }));
-    expect(c.fillText).toHaveBeenCalledWith("0 / 0", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("0/0", expect.any(Number), expect.any(Number));
   });
 
   it("shows SMG AMMO for an smg-type weapon", () => {
@@ -562,7 +584,7 @@ describe("drawHud", () => {
   it("colors smg ammo red once empty", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 3, smg: 0, magazine: 0, magazineSize: 45 }));
-    expect(c.fillText).toHaveBeenCalledWith("0 / 0", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("0/0", expect.any(Number), expect.any(Number));
   });
 
   it("shows GAS for a gas-type weapon, floored for a fractional value", () => {
@@ -600,21 +622,159 @@ describe("drawHud", () => {
     expect(c.textAlign).toBe("left"); // reset after the right-aligned score
   });
 
-  it("keeps the pips inside their own panel, at every gate count the generator can emit", () => {
-    // MAX_GATE_ROOMS is 4, so four pips at a 16px pitch is the worst case. The
-    // panel's minimum width has to cover it — the backlog's "keys need a count
-    // or a scroll" worry predates that cap and does not apply.
-    const keys = layoutHud(800, 600).panels.keys;
-    const widest = HUD_PAD + 4 * 16;
-    expect(widest).toBeLessThanOrEqual(keys.w);
+  /**
+   * The bounding box of every pip `drawHud` drew, one entry per pip.
+   *
+   * Grouped by colour rather than counted as fills, because the two pip states
+   * are different shapes: a held pip is one 12x12 `fillRect`, an unheld one is
+   * the four thin quads `outlineRect` emits instead of stroking (see its doc in
+   * `pathSprites.ts`). Colour is also the only reliable discriminator — the
+   * chrome, the two bars and every TOOLS cell are `fillRect`s too — and gate
+   * colours are distinct within a level, so one colour is one pip.
+   */
+  function pipBoxes(width: number, gateColors: number[], heldGates: number[]) {
+    const c = ctx(width, 400);
+    const byColour = new Map<string, { x: number; y: number; right: number; bottom: number }>();
+    let bandY = -1;
+    c.fillRect.mockImplementation((x: unknown, y: unknown, w: unknown, h: unknown) => {
+      const colour = c.fillStyle as string;
+      // The stability bar's unfilled track, drawn once, is the strip band's own
+      // top edge — the thing a one-row level has to stay level with.
+      if (colour === "#071007") bandY = Number(y);
+      if (!GATE_HEXES.includes(colour)) return;
+      const [px, py, pw, ph] = [Number(x), Number(y), Number(w), Number(h)];
+      const box = byColour.get(colour);
+      if (!box) {
+        byColour.set(colour, { x: px, y: py, right: px + pw, bottom: py + ph });
+        return;
+      }
+      box.x = Math.min(box.x, px);
+      box.y = Math.min(box.y, py);
+      box.right = Math.max(box.right, px + pw);
+      box.bottom = Math.max(box.bottom, py + ph);
+    });
+    drawHud(asCtx(c), fakeStats({ gateColors, heldGates }));
+    return { pips: [...byColour.values()], bandY };
+  }
 
-    const c = ctx();
-    const rects: number[] = [];
-    c.fillRect.mockImplementation((x: unknown) => rects.push(Number(x)));
-    drawHud(asCtx(c), fakeStats({ heldGates: [0, 1, 2, 3], gateColors: [0, 1, 2, 3] }));
-    const pipXs = rects.filter((x) => x >= keys.x && x < keys.x + keys.w);
-    expect(pipXs.length).toBeGreaterThanOrEqual(4);
-    for (const x of pipXs) expect(x + 12).toBeLessThanOrEqual(keys.x + keys.w);
+  /** Every preset x every gate count the generator can emit. The single-width
+   * test this replaces ran at 800 only — where the defect it was meant to catch
+   * does not reproduce — and filtered out-of-panel pips away *before* asserting,
+   * so it could not have failed on one. Both axes are enumerated now. */
+  const PIP_CASES = SHIPPED_WIDTHS.flatMap((w) => [1, 2, 3, 4].map((n) => [w, n] as const));
+
+  it.each(PIP_CASES)("at %ipx with %i gate(s): every pip is inside the KEYS panel", (w, gates) => {
+    const keys = layoutHud(w, 400).panels.keys;
+    const { pips } = pipBoxes(w, [0, 1, 2, 3].slice(0, gates), [0, 2]);
+    // Counted, not filtered: a pip that escaped the panel still has to be here.
+    expect(pips).toHaveLength(gates);
+    for (const b of pips) {
+      expect(b.x, `left edge at ${w}px`).toBeGreaterThanOrEqual(keys.x + HUD_PAD);
+      expect(b.right, `right edge at ${w}px`).toBeLessThanOrEqual(keys.x + keys.w - HUD_PAD);
+      // The label is 9px with no descenders on a +14 baseline, so its em box
+      // ends around +16; the bar's own bottom is the other bound.
+      expect(b.y, `top edge at ${w}px`).toBeGreaterThanOrEqual(keys.y + 17);
+      expect(b.bottom, `bottom edge at ${w}px`).toBeLessThanOrEqual(keys.y + HUD_HEIGHT);
+    }
+  });
+
+  it("has exactly one grid slot per gate colour", () => {
+    // `hudLayout.ts` sizes the panel from KEY_COLS/KEY_ROWS and cannot import
+    // the map types to check the cap itself — the same split that is spelled
+    // out for TOOL_SLOTS. If a fifth key colour is ever added, this is what
+    // says the grid has to grow before it can be drawn.
+    expect(KEY_COLS * KEY_ROWS).toBe(GATE_COLOR_COUNT);
+  });
+
+  it("draws at most a full grid, however many gates it is handed", () => {
+    // The cap is enforced by generation (`MAX_GATE_ROOMS`), so this is not
+    // reachable in a real level — but the panel is 72px tall and a third row
+    // would stack straight through the KEYS label, so the renderer bounds its
+    // own block rather than trusting its caller.
+    const { pips } = pipBoxes(640, [0, 1, 2, 3, 0, 1], []);
+    const keys = layoutHud(640, 400).panels.keys;
+    expect(pips).toHaveLength(KEY_COLS * KEY_ROWS);
+    for (const b of pips) expect(b.y).toBeGreaterThanOrEqual(keys.y + 17);
+  });
+
+  it("keeps a one-row level on the same strip band as the bars beside it", () => {
+    // Two gates is the median level, and the grid grows *upward*, so that case
+    // keeps the row it has always had — level with the stability and swap bars
+    // and the TOOLS cells, not floating above them.
+    const { pips, bandY } = pipBoxes(640, [0, 1], [0]);
+    expect(pips).toHaveLength(2);
+    for (const b of pips) expect(b.y).toBe(bandY);
+  });
+
+  /**
+   * Every right-aligned string `drawHud` drew, with the box it occupies.
+   *
+   * Right-aligned is the interesting set: a numeral is anchored at its panel's
+   * right pad and grows *leftward*, so an overlong one runs into the panel
+   * before it rather than the one after. That is why the AMMO readout appeared
+   * clipped at the canvas edge — it is the leftmost panel, so there was no
+   * neighbour left to run into.
+   */
+  function rightAlignedBoxes(width: number, stats: EngineStats) {
+    const c = ctx(width, 400);
+    const drawn: { text: string; font: string; right: number }[] = [];
+    c.fillText.mockImplementation((text: unknown, x: unknown) => {
+      if (c.textAlign !== "right") return;
+      drawn.push({ text: String(text), font: c.font as string, right: Number(x) });
+    });
+    drawHud(asCtx(c), stats);
+    return drawn.map((d) => {
+      c.font = d.font;
+      return { ...d, left: d.right - asCtx(c).measureText(d.text).width };
+    });
+  }
+
+  /** Values the game can really produce, at the top of their range.
+   *
+   * Not invented: the ammo pools have no cap anywhere in this game, and the
+   * campaign score is a running total whose *mean* final value across
+   * `balancing_runs_overnight-2026-08-04` is 47,175 — so a six-digit SCORE is
+   * an ordinary end state and a five-digit reserve is an ordinary mid-game
+   * one. The seven-digit score is the deliberate overshoot. */
+  const WIDE_VALUES: [string, Partial<EngineStats>][] = [
+    ["a four-digit reserve — the reported case", { weaponIndex: 0, bullets: 1262, magazine: 9, magazineSize: 9, score: 1450 }],
+    ["a five-digit reserve", { weaponIndex: 0, bullets: 11250, magazine: 9, magazineSize: 9 }],
+    ["a full SMG magazine over a five-digit reserve", { weaponIndex: 3, smg: 11286, magazine: 45, magazineSize: 45 }],
+    ["a six-digit campaign score", { score: 471750 }],
+    ["a seven-digit campaign score", { score: 1234567 }],
+    ["every pool five digits at once", { bullets: 11241, shells: 10500, smg: 12345, rockets: 99999, gas: 54321, score: 987654 }],
+    ["the values a fresh run starts on", {}],
+  ];
+
+  const WIDE_CASES = SHIPPED_WIDTHS.flatMap((w) => WIDE_VALUES.map(([name, over]) => [w, name, over] as const));
+
+  it.each(WIDE_CASES)("at %ipx with %s: no readout is drawn outside its own panel", (w, _name, over) => {
+    const { panels } = layoutHud(w, 400);
+    const rects = Object.values(panels);
+    const boxes = rightAlignedBoxes(w, fakeStats(over));
+    // The bar always has readouts; a mock that silently drew none would pass
+    // every containment assertion below.
+    expect(boxes.length).toBeGreaterThan(0);
+    for (const box of boxes) {
+      const panel = rects.find((r) => box.right > r.x && box.right <= r.x + r.w);
+      expect(panel, `"${box.text}" is anchored outside every panel at ${w}px`).toBeDefined();
+      expect(box.left, `"${box.text}" overflows its panel at ${w}px`).toBeGreaterThanOrEqual(panel!.x + HUD_PAD);
+    }
+  });
+
+  it("keeps the full-size numeral whenever it fits, and only steps down when it cannot", () => {
+    // The point of the ladder is that a normal bar is untouched. STABIL's
+    // widest possible reading is `100%` and SWAP's is `100`, so neither can
+    // ever shrink; a four-digit score at the Classic preset still cannot.
+    const normal = rightAlignedBoxes(640, fakeStats({ score: 1450, weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
+    for (const box of normal) {
+      if (box.font.includes("9px") || box.font.includes("11px")) continue; // labels and table rows
+      expect(box.font, `"${box.text}" shrank when it did not have to`).toContain("22px");
+    }
+    // And a six-digit score at the same preset does step down.
+    const wide = rightAlignedBoxes(640, fakeStats({ score: 471750 }));
+    const scoreBox = wide.find((b) => b.text === "471750");
+    expect(scoreBox?.font).not.toContain("22px");
   });
 
   it("shows a dash instead of pips on a level with no gates at all", () => {
@@ -643,9 +803,9 @@ describe("the ammo table", () => {
     drawHud(asCtx(c), fakeStats({ bullets: 40, shells: 12, smg: 40, rockets: 4, gas: 40 }));
     const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
     for (const v of ["40", "12", "4"]) expect(drawn).toContain(v);
-    // No "x / y" anywhere in the table — that is the AMMO panel's form, and
+    // No "x/y" anywhere in the table — that is the AMMO panel's form, and
     // there is no cap in the game to be the denominator.
-    expect(drawn.filter((t) => t.includes(" / "))).toHaveLength(1);
+    expect(drawn.filter((t) => t.includes("/"))).toHaveLength(1);
   });
 
   it("floors the one fractional pool", () => {
@@ -658,7 +818,7 @@ describe("the ammo table", () => {
     const c = ctx();
     drawHud(asCtx(c), fakeStats({ weaponIndex: 0, bullets: 40, magazine: 9, magazineSize: 9 }));
     const drawn = c.fillText.mock.calls.map((call) => String(call[0]));
-    expect(drawn).toContain("9 / 31"); // AMMO panel
+    expect(drawn).toContain("9/31"); // AMMO panel
     expect(drawn).toContain("40"); // table row — and 9 + 31 = 40
   });
 
