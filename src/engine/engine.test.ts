@@ -3199,6 +3199,32 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     expect(regular).toBe(20);
   });
 
+  it("scales an ammo drop by what died, the same way the heal is scaled", () => {
+    // `AMMO_SCALE_REFERENCE_HP`'s rule. Same seed for both runs, so `rollLoot`
+    // draws the identical kind and only the amount can differ — which is what
+    // isolates the scaling from the roll.
+    const ammoFrom = (maxHp: number) => {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp });
+      const { engine, input, handlers } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), {
+        carryover: { health: 50, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 10,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const s0 = lastStats(handlers);
+      const before = s0.bullets + s0.rockets + s0.smg + s0.gas + (s0.shells ?? 0);
+      engine.advance(0.016); // collectLoot runs a frame after the kill
+      const s1 = lastStats(handlers);
+      return s1.bullets + s1.rockets + s1.smg + s1.gas + (s1.shells ?? 0) - before;
+    };
+    const trash = ammoFrom(30);
+    const beefy = ammoFrom(176);
+    expect(beefy).toBeGreaterThan(trash);
+    // 176 is exactly 2x the reference, so it doubles the base amount while the
+    // 30 HP body floors at 1 — a spread of at least 4x on any kind that rolls.
+    expect(beefy).toBeGreaterThanOrEqual(trash * 4);
+  });
+
   it("grants a bonus unlockable weapon on a lucky regular-kill roll", () => {
     // Gameplay seed 26 was brute-forced to roll a hit on rollBonusWeaponDrop
     // for this exact kill (independent of, and after, the new

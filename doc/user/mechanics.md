@@ -58,6 +58,8 @@ Every gun also has its own **cadence**, and clicking faster can't beat it. The R
 
 This section is about what drops and how often. For what a drop *looks like* — every pickup in the game is the same two-square shape, so colour is the only thing telling them apart — see [Colours & Pickups](colors-and-pickups.md#what-a-dropped-item-looks-like).
 
+Both the ammo a kill drops and the health it gives back scale with that enemy's maximum health — a tough enemy pays out properly, corridor trash pays out a trickle — so a level's own supply tracks the fight it puts in front of you.
+
 Any regular kill tops up your health if you're not already at full stability — unconditional, not a roll, since running low on health is the one thing that can actually end a run. **How much depends on what you killed**: the heal is proportional to that enemy's maximum health, so a corridor Edge Case gives back a few points while a genuinely tough enemy gives a real chunk. Clearing trash no longer keeps you topped up for free. Separately, the same kill rolls for bullets, shotgun shells, SMG ammo, rockets, gas, or swap — but that roll doesn't always land: roughly 1 in 5 regular kills drop no ammo/swap at all. A few more rules apply on top:
 - No SMG ammo is rolled until you own gdb; no rockets are rolled until you own ghidra; no gas is rolled until you own Friday Hotfix.
 - Elite kills always drop either a large health pack or (if you're already full) a bigger bullets/swap drop, plus a separate 60% chance to *additionally* drop a still-locked weapon (two items on the ground once one's missing, not a choice between them). From campaign level 4 on, this can include the Toolchain chainsaw.

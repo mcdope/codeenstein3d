@@ -128,9 +128,11 @@ import {
   currentMeleeWeapon,
   pelletOffsets,
   rangeDamageScale,
+  type AmmoType,
   type Weapon,
 } from "./weapons";
 import {
+  AMMO_SCALE_REFERENCE_HP,
   HEALTH_DROP_AMOUNT,
   HEALTH_SCALE_REFERENCE_HP,
   MAX_SWAP,
@@ -5621,10 +5623,7 @@ export class RaycasterEngine {
       const lootRollHit = this.rng() >= REGULAR_KILL_NO_DROP_CHANCE;
       if (shooter.telemetry) recordRegularKillLootRoll(shooter.telemetry, !lootRollHit);
       if (lootRollHit) {
-        this.pushLootDrop({
-          x: enemy.x,
-          y: enemy.y,
-          kind: rollLoot(
+        const lootKind = rollLoot(
             this.map.bonusLevel,
             this.difficultyLevel,
             this.rng,
@@ -5633,8 +5632,15 @@ export class RaycasterEngine {
             shooter.health >= MAX_HEALTH,
             shooter.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
             true, // healthHandledSeparately — see above
-          ),
-        }, enemy);
+        );
+        // Ammo scales with what died — see `AMMO_SCALE_REFERENCE_HP`. `swap` is
+        // deliberately left flat (it was priced that way), and a weapon drop
+        // carries no amount at all. Floored at 1 so a rocket drop, whose base
+        // is already 1, never rounds away to nothing on a small enemy.
+        const ammoAmount = AMMO_TYPES.includes(lootKind as AmmoType)
+          ? Math.max(1, Math.round((AMMO_META[lootKind as AmmoType].dropAmount * enemy.maxHp) / AMMO_SCALE_REFERENCE_HP))
+          : undefined;
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: lootKind, ...(ammoAmount === undefined ? {} : { amount: ammoAmount }) }, enemy);
       } else if (rollMissChanceToolchain(shooter.lootCtx)) {
         // A kill that drops nothing isn't quite a dead end — a small
         // independent chance turns the miss into a shot at the Toolchain
