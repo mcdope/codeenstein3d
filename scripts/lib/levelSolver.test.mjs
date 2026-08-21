@@ -14,12 +14,21 @@
  * executed by `vitest run`, so this does run in CI — same as
  * `abReport.test.mjs` and `combatPolicy.test.mjs`.
  */
+import { readFileSync } from "node:fs";
+
 import { describe, expect, it } from "vitest";
+
+// The real loot module, imported through Vite's transform the same way
+// `constantMirrors.test.mjs` reads `src/`. Only the `dropAmountsFrom` block at
+// the bottom uses it — everything above stays on injected fixtures.
+import * as REAL_LOOT_MODULE from "../../src/engine/loot";
+import { lootWeightsFor } from "../../src/engine/loot";
 
 import {
   archetypeOf,
-  DEFAULT_KILL_RATE,
   carryForward,
+  DEFAULT_KILL_RATE,
+  dropAmountsFrom,
   dropBudget,
   enemyBudget,
   expectedEliteDrop,
@@ -29,8 +38,9 @@ import {
   incomingDps,
   poolDamageValues,
   prePlacedBudget,
-  scaleRosterForDifficulty,
+  rollableLootKinds,
   scaledAmount,
+  scaleRosterForDifficulty,
   selfSustainByArchetype,
   solveCampaign,
   solveLevel,
@@ -49,6 +59,11 @@ const WEAPONS = [
   { name: "scattergun", pellets: 5, damagePerPellet: 10, ammoPerShot: 2, ammoType: "bullets", fireIntervalSec: 1 },
   { name: "shiv", pellets: 1, damagePerPellet: 25, ammoPerShot: 0, meleeRange: 1.5 },
   { name: "boomstick", pellets: 1, damagePerPellet: 100, ammoPerShot: 1, ammoType: "rockets", fireIntervalSec: 2, isRocket: true },
+  // Two magazine shapes, deliberately mirroring the two the real table has:
+  // a one-round launcher that reloads after *every* shot, with a reload longer
+  // than its cadence, and a short magazine whose reload is shorter than it.
+  { name: "single-loader", pellets: 1, damagePerPellet: 50, ammoPerShot: 1, ammoType: "rockets", fireIntervalSec: 1, magazineSize: 1, reloadSec: 3 },
+  { name: "double-barrel", pellets: 1, damagePerPellet: 50, ammoPerShot: 1, ammoType: "bullets", fireIntervalSec: 2, magazineSize: 2, reloadSec: 1 },
 ];
 
 const DIFFICULTY_MULTIPLIERS = {
@@ -147,17 +162,52 @@ describe("weaponProfile", () => {
 describe("timeToKill", () => {
   it("counts the gaps between shots, not the shots -- a one-shot kill is instant", () => {
     const boom = weaponProfile(WEAPONS[3], 3);
-    expect(timeToKill(boom, 100)).toEqual({ shots: 1, seconds: 0, ammo: 1 });
+    expect(timeToKill(boom, 100)).toEqual({ shots: 1, seconds: 0, reloads: 0, ammo: 1 });
   });
 
   it("charges N-1 intervals for N shots", () => {
     const pea = weaponProfile(WEAPONS[0], 0);
     // 35 HP needs 4 shots of 10, so 3 gaps of 0.2s.
-    expect(timeToKill(pea, 35)).toEqual({ shots: 4, seconds: expect.closeTo(0.6, 10), ammo: 4 });
+    expect(timeToKill(pea, 35)).toEqual({ shots: 4, seconds: expect.closeTo(0.6, 10), reloads: 0, ammo: 4 });
   });
 
   it("charges no ammo for melee", () => {
     expect(timeToKill(weaponProfile(WEAPONS[2], 2), 100).ammo).toBe(0);
+  });
+
+  it("charges nothing extra for a weapon with no magazine", () => {
+    // The flamethrower's shape. `shotsPerMagazine` is null, so the reload
+    // branch has to be skipped rather than dividing by it.
+    expect(timeToKill(weaponProfile(WEAPONS[0], 0), 100).reloads).toBe(0);
+  });
+
+  it("charges a reload per magazine boundary crossed, not per shot", () => {
+    const single = weaponProfile(WEAPONS[4], 4); // 1 round, 3s reload, 1s cadence
+    // 150 HP is 3 shots. Two boundaries, so two reloads, and each reload
+    // *replaces* the 1s cadence rather than adding to it: 2 x max(1, 3) = 6.
+    expect(timeToKill(single, 150)).toEqual({ shots: 3, seconds: 6, reloads: 2, ammo: 3 });
+    // One shot crosses no boundary at all.
+    expect(timeToKill(single, 50)).toEqual({ shots: 1, seconds: 0, reloads: 0, ammo: 1 });
+  });
+
+  it("takes the cadence, not the reload, when the cadence is longer", () => {
+    // `engine.ts` ticks `weaponCooldown` above the reload gate, so the two run
+    // concurrently — a reload shorter than the pump is free. Summing them here
+    // would double-charge every shotgun kill.
+    const double = weaponProfile(WEAPONS[5], 5); // 2 rounds, 1s reload, 2s cadence
+    // 150 HP is 3 shots: one boundary after shot 2, and max(2, 1) === 2.
+    expect(timeToKill(double, 150)).toEqual({ shots: 3, seconds: 4, reloads: 1, ammo: 3 });
+    // Exactly one magazine's worth crosses nothing.
+    expect(timeToKill(double, 100)).toEqual({ shots: 2, seconds: 2, reloads: 0, ammo: 2 });
+  });
+
+  it("counts shots per magazine in shots, not in ammo units", () => {
+    // The trap `Weapon.magazineSize`'s own doc warns about: the field counts
+    // the same units as `ammoPerShot`, so a 2-ammo-per-shot weapon with a
+    // 2-round magazine gets *one* shot before reloading, not two.
+    const twoPerShot = weaponProfile({ ...WEAPONS[5], ammoPerShot: 2 }, 5);
+    expect(twoPerShot.shotsPerMagazine).toBe(1);
+    expect(timeToKill(twoPerShot, 150).reloads).toBe(2);
   });
 });
 
@@ -507,5 +557,52 @@ describe("dropBudget", () => {
     const budget = dropBudget({ roster, constants, ownedWeapons: [0, 1, 2, 3], bonusLevel: false, difficulty: "normal" });
     expect(budget.damage).toBe(budget.perRegularKill.damage);
     expect(budget.health).toBe(budget.perRegularKill.health + budget.perEliteKill.health);
+  });
+});
+
+
+describe("dropAmountsFrom — the map both entry points used to hand-type", () => {
+  // Deliberately the *real* `loot.ts`, against this file's own rule that the
+  // solver's arithmetic is tested with injected fixtures. The rule holds for
+  // values; this checks *coverage of kinds*, which is a different question and
+  // the one that actually broke. It stays green through any balance retune and
+  // goes red exactly when a loot kind is added or removed — which is when
+  // somebody needs to look.
+  it("prices every loot kind the real weight tables can roll", () => {
+    const kinds = rollableLootKinds(lootWeightsFor);
+    const amounts = dropAmountsFrom(REAL_LOOT_MODULE);
+    for (const kind of kinds) {
+      expect(typeof amounts[kind], `no drop amount for loot kind "${kind}" — the budget goes NaN and the clearable guard stops firing`).toBe("number");
+    }
+    // Both directions: a kind priced here that the tables can never roll is
+    // dead weight and probably a rename nobody finished.
+    const priced = Object.keys(amounts).filter((k) => !k.startsWith("elite"));
+    expect(priced.sort()).toEqual(kinds.sort());
+  });
+
+  it("throws instead of returning a map with a hole in it", () => {
+    // The whole point of the rewrite. `undefined` here used to propagate as
+    // NaN through the drop budget into `clearRatio.combined`, and `NaN < 1` is
+    // `false`, so nothing downstream could notice.
+    const missingShells = { ...REAL_LOOT_MODULE, SHELLS_DROP_AMOUNT: undefined };
+    expect(() => dropAmountsFrom(missingShells)).toThrow(/SHELLS_DROP_AMOUNT/);
+  });
+
+  it("is reachable through loadEngineModules' re-export list", () => {
+    // The actual root cause, and the half no import-based test can see: the
+    // harness stub re-exports `loot.ts` by *name*, as a hand-maintained string,
+    // so a constant missing from that list is `undefined` in every script that
+    // loads engine modules the real way.
+    const stub = readFileSync(new URL("./loadEngineModules.mjs", import.meta.url), "utf8");
+    for (const kind of rollableLootKinds(lootWeightsFor)) {
+      const name = `${kind.toUpperCase()}_DROP_AMOUNT`;
+      // Word-bounded, not `includes`. `ELITE_SHELLS_DROP_AMOUNT` contains
+      // `SHELLS_DROP_AMOUNT` as a substring, so a plain `includes` reports the
+      // elite constant as if it were the regular one — which is how the first
+      // version of this test passed while the bug it was written for was
+      // reintroduced. `_` is a word character, so `\b` does not match inside
+      // `ELITE_SHELLS`.
+      expect(new RegExp(`\\b${name}\\b`).test(stub), `loadEngineModules.mjs never re-exports ${name}`).toBe(true);
+    }
   });
 });

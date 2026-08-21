@@ -47,6 +47,59 @@ const AMMO_KINDS = ["bullets", "rockets", "smg", "gas", "shells"];
 const HEALTH_KINDS = ["health", "swap"];
 
 /**
+ * The per-kind drop amounts the budget maths needs, built from the real
+ * `loot.ts` constants rather than hand-typed.
+ *
+ * **This exists because hand-typing it failed.** `report-level-budget.mjs` and
+ * `stage-campaign.mjs` each kept their own literal map, and when the shotgun
+ * got its own `shells` pool (2026-08-15) neither gained a `shells` key. The
+ * result was not a crash: `dropAmounts.shells` was `undefined`, so the drop
+ * budget went `NaN`, every `clearRatio.combined` went `NaN` with it, and
+ * because **`NaN < 1` is `false`** the solver's "not clearable" guard silently
+ * stopped being able to fire at all. `stage-campaign.mjs` picks the level a
+ * staged campaign must include with `reduce((a, b) => ratio(b) < ratio(a) …)`,
+ * which under `NaN` always keeps `a` — so "include the tightest level"
+ * degraded to "include whichever level came first" for six days.
+ *
+ * So this throws rather than returning a map with a hole in it. A sixth ammo
+ * pool that nobody wires up here is a loud failure on the next solve instead
+ * of an `inf` that reads like good news. `levelSolver.test.mjs` pins the
+ * coverage against the real weight tables.
+ */
+export function dropAmountsFrom(modules) {
+  const constantFor = { bullets: "BULLETS", shells: "SHELLS", rockets: "ROCKETS", smg: "SMG", gas: "GAS", health: "HEALTH", swap: "SWAP" };
+  const amounts = {};
+  for (const [kind, prefix] of Object.entries(constantFor)) {
+    const value = modules[`${prefix}_DROP_AMOUNT`];
+    if (typeof value !== "number") {
+      throw new Error(`dropAmountsFrom: no ${prefix}_DROP_AMOUNT for loot kind "${kind}" — is it re-exported by loadEngineModules.mjs?`);
+    }
+    amounts[kind] = value;
+  }
+  // The Elite path is a separate branch in `dropEliteLoot`, not a weighted
+  // roll, so it needs only the three constants `expectedEliteDrop` models.
+  for (const [key, name] of [["eliteHealth", "ELITE_HEALTH_DROP_AMOUNT"], ["eliteBullets", "ELITE_BULLETS_DROP_AMOUNT"], ["eliteSwap", "ELITE_SWAP_DROP_AMOUNT"]]) {
+    const value = modules[name];
+    if (typeof value !== "number") throw new Error(`dropAmountsFrom: no ${name}`);
+    amounts[key] = value;
+  }
+  return amounts;
+}
+
+/** Every non-weapon loot kind the weight tables can actually roll, across both
+ * tables and both bonus/normal levels — the set `dropAmountsFrom` must price.
+ * Derived, so a new kind shows up here without anyone remembering to add it. */
+export function rollableLootKinds(lootWeightsFor) {
+  const kinds = new Set();
+  for (const bonus of [false, true]) {
+    for (const difficulty of ["easy", "normal", "hard"]) {
+      for (const { kind } of lootWeightsFor(bonus, difficulty)) kinds.add(kind);
+    }
+  }
+  return [...kinds];
+}
+
+/**
  * Per-weapon derived numbers: what one trigger-pull costs and delivers.
  *
  * `damagePerTrigger` multiplies by `pellets` for hitscan weapons but not for
@@ -72,6 +125,12 @@ export function weaponProfile(weapon, index) {
     damagePerAmmo: weapon.ammoType ? damagePerTrigger / weapon.ammoPerShot : Infinity,
     ammoPerShot: weapon.ammoPerShot,
     maxRange: weapon.maxRange ?? null,
+    // `magazineSize` counts the same units as `ammoPerShot`, so shots-per-
+    // magazine is the ratio, not the size (see `Weapon.magazineSize`). Null
+    // for a weapon with no magazine — the flamethrower and both melee weapons
+    // — which `timeToKill` reads as "never reloads".
+    shotsPerMagazine: weapon.magazineSize === undefined ? null : Math.floor(weapon.magazineSize / weapon.ammoPerShot),
+    reloadSec: weapon.reloadSec ?? null,
   };
 }
 
@@ -113,14 +172,35 @@ export function poolDamageValues(profiles, ownedWeapons) {
  * That matters most for ghidra, whose 1.1s cadence would otherwise dominate
  * every TTK it appears in.
  *
- * There is no reload term because there are no magazines — see the stat
- * catalog's "Deliberately excluded".
+ * **Reloads are charged, and `max` rather than `+` is the whole subtlety.**
+ * Magazines shipped 2026-08-15; until 2026-08-21 this function still carried a
+ * comment saying "there is no reload term because there are no magazines",
+ * which understated ghidra — a 1-round magazine, so *every* shot after the
+ * first costs a reload — by more than a factor of two against a capped Elite.
+ *
+ * `engine.ts` decrements `weaponCooldown` on the line *above* the
+ * `if (p.reloadRemaining > 0) continue` gate, so the fire cadence and the
+ * reload run concurrently, and the shot that empties a magazine starts that
+ * magazine's reload on the same frame. The gap across a magazine boundary is
+ * therefore `max(fireIntervalSec, reloadSec)` — not their sum, which would
+ * double-charge the cadence, and not the cadence alone, which is what this
+ * used to do.
+ *
+ * Assumes the magazine starts **full**, which is what a player who reloads
+ * between fights actually has, and keeps this a lower bound in line with the
+ * perfect-accuracy assumption everywhere else in the solver.
  */
 export function timeToKill(profile, hp) {
   const shots = Math.ceil(hp / profile.damagePerTrigger);
+  const gaps = Math.max(0, shots - 1);
+  const perMag = profile.shotsPerMagazine;
+  const reloads = perMag && perMag > 0 ? Math.ceil(shots / perMag) - 1 : 0;
+  const reloadSec = profile.reloadSec ?? 0;
+  const seconds = (gaps - reloads) * profile.fireIntervalSec + reloads * Math.max(profile.fireIntervalSec, reloadSec);
   return {
     shots,
-    seconds: Math.max(0, shots - 1) * profile.fireIntervalSec,
+    seconds,
+    reloads,
     ammo: profile.melee ? 0 : shots * profile.ammoPerShot,
   };
 }
