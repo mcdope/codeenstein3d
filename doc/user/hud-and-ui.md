@@ -28,7 +28,7 @@ An always-on minimap sits in the corner, showing the full layout of the current 
 
 Every colour on this panel is listed in [Colours & Pickups](colors-and-pickups.md#reading-the-corner-minimap) — including the two that surprise people: acid reads orange here but green in the world, and an uncollected key is gold whichever key it is.
 
-Walking into a key-locked door with no key **pings** a key here for a few seconds: its marker brightens and a sonar ring sweeps outward from it, with a soft ping per beat, so you can tell which of several uncollected keys the game is pointing you at. It picks the nearest one by walking distance, not by straight line — a key behind another locked door isn't a suggestion — and the ring is clipped to the panel, so a key near an edge doesn't sweep out over the view.
+Walking into a key-locked door with no key **pings** a key here for a few seconds: its marker brightens and a sonar ring sweeps outward from it, with a soft ping per beat, so you can tell which of several uncollected keys the game is pointing you at. **It always points at something you can actually get to.** If the key you asked for is behind another locked door — which it often is, because keys come in a chain — it pings the key that unblocks it instead, and the banner names that colour. The ring is clipped to the panel, so a key near an edge doesn't sweep out over the view.
 
 ## Automap
 

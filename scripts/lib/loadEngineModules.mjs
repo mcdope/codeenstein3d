@@ -93,6 +93,7 @@ function urlImportAsPathPlugin() {
 export async function loadEngineModules() {
   const registryPath = path.join(REPO_ROOT, "src/parser/registry.ts");
   const mapGeneratorPath = path.join(REPO_ROOT, "src/map/mapGenerator.ts");
+  const keyRoutePath = path.join(REPO_ROOT, "src/engine/keyRoute.ts");
   const weaponsPath = path.join(REPO_ROOT, "src/engine/weapons.ts");
   const replayCodecPath = path.join(REPO_ROOT, "src/engine/replayCodec.ts");
   const lootPath = path.join(REPO_ROOT, "src/engine/loot.ts");
@@ -104,6 +105,9 @@ export async function loadEngineModules() {
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
     `export { MapGenerator } from ${JSON.stringify(mapGeneratorPath)};`,
+    // The locked-door hint's "where do I go now" search, so the corpus check
+    // that motivated it can be re-run offline without a browser.
+    `export { nextKeyStep } from ${JSON.stringify(keyRoutePath)};`,
     `export { UNLOCKABLE_WEAPONS, STARTING_WEAPONS, WEAPONS, PISTOL_WEAPON_INDEX, SHOTGUN_WEAPON_INDEX, KNIFE_WEAPON_INDEX, GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX, TOOLCHAIN_WEAPON_INDEX, TOOLCHAIN_MIN_LEVEL, FORCED_UNLOCK_LEVELS } from ${JSON.stringify(weaponsPath)};`,
     `export { packBoardForStorage, unpackBoardFromStorage, isBinaryBoard } from ${JSON.stringify(replayCodecPath)};`,
     // The balance solver's constants — see the note above this function.

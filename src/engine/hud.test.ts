@@ -212,6 +212,31 @@ describe("drawLockedDoorToast", () => {
     expect(c2.globalAlpha).toBe(0);
   });
 
+  it("adds a second line naming the blocking key, tinted as that gate", () => {
+    // The lead the player follows when the key they asked for is itself locked
+    // away. Tinted as the *blocker*, since that is the door colour they will be
+    // matching against the world.
+    const c = ctx();
+    drawLockedDoorToast(asCtx(c), 1, 3, 2); // want violet, fetch green first
+    expect(c.fillText).toHaveBeenCalledWith("You need the violet key!", expect.any(Number), expect.any(Number));
+    expect(c.fillText).toHaveBeenCalledWith("→ find the green key first", expect.any(Number), expect.any(Number));
+    expect(c.fillStyle).toBe("#34b25c"); // green — last colour set is the lead's
+  });
+
+  it("stays one line, at its original height, when the asked-for key is reachable", () => {
+    // -1 is the case this toast has always covered; the box must not grow for
+    // it, or every ordinary locked door suddenly gets a taller banner.
+    const one = ctx();
+    drawLockedDoorToast(asCtx(one), 1, 1);
+    const two = ctx();
+    drawLockedDoorToast(asCtx(two), 1, 1, 0);
+    const heightOf = (c: ReturnType<typeof ctx>) => (c.fillRect.mock.calls[0] as number[])[3];
+    expect(heightOf(one)).toBe(24);
+    expect(heightOf(two)).toBeGreaterThan(24);
+    expect(one.fillText).toHaveBeenCalledTimes(1);
+    expect(two.fillText).toHaveBeenCalledTimes(2);
+  });
+
   it("sits below the acid warning, which already sits below the out-of-ammo one", () => {
     // Dry-firing while shoving a locked door is an ordinary thing to do, so
     // this and the out-of-ammo toast genuinely land in the same second — the
