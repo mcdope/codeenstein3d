@@ -12,6 +12,21 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **Enemy HP raised — `HP_PER_COMPLEXITY` 25 -> 35 and Edge Cases 10-15 -> 25-35 — from a playtest report, priced across the corpus, and confirmed by play (2026-08-21).** The one balance change in this sequence that shipped, and the only one validated by the instrument the solver does not have.
+
+  **The report**: *"pretty much every enemy is one-shot-killable in normal difficulty, even with the pistol, esp. with the shotgun."* Both halves were true and they had different causes, which is why no single number fixed it.
+
+  - *The shotgun.* A full blast is 7 x 25 = **175 damage**, and the regular-enemy HP population on normal ran median 74, p90 126, **p99 186** — the gun sat above the 99th percentile of the roster and one-shot **98.4%** of regulars, 94.6% of everything even on hard.
+  - *The pistol.* Edge Cases are **58.4% of every enemy you meet**, and at 10-15 HP a 22-damage pistol round killed **99.9%** of them — against **0.0%** of regulars. The pistol was never strong; most of what you shoot at was free.
+
+  **Nerfing the guns was measured and rejected.** `damagePerPellet` 25 -> 18 moves shotgun one-shots only 99.3% -> 95.9%, because 126 still clears the regular p90 of 126 and every Edge Case. Reverting beta-8's density change is worse than useless: it helps the shotgun slightly (96.8%) and makes the pistol *worse* (63.4%), because fewer entity enemies means Edge Cases are a larger share of what you meet. The enemies were the low number, not the guns the high one.
+
+  **35 rather than 40, because the dial is not smooth.** Levels unclearable even collecting every drop go **0 today, 1 at hp35, 7 at hp40, 35 at hp50**, all on hard — and at 40 one of the seven is the bundled demo campaign's own `stage17_the_monolith.php` (1.93 -> 0.92). Seven times the breakage for about 1.5 points of shotgun one-shots.
+
+  **Confirmed in play, in the user's words: "feels waaaaay better, now there is actual fighting instead of 'Schießbude auf dem Jahrmarkt'."** Worth recording verbatim, because it is the one claim nothing offline can make. Everything measured here is a *resource* model — it can price a one-shot rate and a clear ratio; it cannot say whether a fight is a fight. The loop that worked was: play -> report -> measure the population the report names -> price every candidate lever against it -> pick -> play again. The measurement's job was to stop the obvious fix (nerf the shotgun) from being the shipped one.
+
+  **Not free.** `computeBalanceHash` hashes the roster's `maxHp` directly, so every recorded replay is invalidated — loudly, which is the correct failure — and `defaultHighscore.ts` needs regenerating. No map layout changes, though: pack `count` is independent of the HP rate, so no extra rng is drawn and only `maxHp` values move.
+
 - [x] **Priced HP-scaled ammo drops offline. Budget-neutral, it fixes the unfundable tail 181 → 21; it does nothing for jaggedness, and the naive version is a difficulty change in disguise (2026-08-21).** The lever the previous entry's mechanism implies: loot is per *kill* (`BULLETS_DROP_AMOUNT` 4, flat, whatever died) while cost is per *HP*, so scale a regular kill's ammo drop by `maxHp / ref`. `ref` is the HP at which the drop is unchanged. Elites excluded — `dropEliteLoot` is a separate branch yielding no ammo to a damaged player, so scaling it would model something the engine does not do.
 
   **The metric this must not be judged on, stated before running it.** Self-funding is `(preplaced + drops) / totalHp`, and a drop proportional to HP makes the drop term proportional to `totalHp`, so the ratio goes constant *by construction*. It duly went 181 failures → 0 at `ref` 33, which proves nothing. The falsifiable outcomes are clear ratio, the early game, total loot, and jaggedness.
