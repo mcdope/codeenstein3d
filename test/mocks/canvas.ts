@@ -83,7 +83,16 @@ export function createMockCanvasContext(canvas: HTMLCanvasElement): MockCanvasCo
     putImageData: vi.fn(),
     getImageData: vi.fn((_sx: number, _sy: number, w: number, h: number) => blankImageData(w, h)),
     createImageData: vi.fn((w: number, h: number) => blankImageData(w, h)),
-    measureText: vi.fn((text: string) => ({ width: text.length * 6 }) as TextMetrics),
+    // Font-aware, because HUD panels now *choose* a size from what fits: a
+    // flat 6px per character reported the same width at 22px as at 14px, so a
+    // fit-to-width rule could not be tested through this mock at all. Every
+    // font the engine sets here is `ui-monospace`, whose advance is 0.602em
+    // across sizes (measured in Chromium: 13.25px at 22, 6.62px at 11, 5.42px
+    // at 9), so length x size x 0.602 is the real thing rather than a stand-in.
+    measureText: vi.fn((text: string) => {
+      const px = /(\d+(?:\.\d+)?)px/.exec(ctx.font);
+      return { width: text.length * (px ? Number(px[1]) : 10) * 0.602 } as TextMetrics;
+    }),
     fillStyle: "#000000",
     strokeStyle: "#000000",
     font: "10px sans-serif",

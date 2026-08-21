@@ -587,10 +587,59 @@ const VALUE_DY = 44;
 const STRIP_DY = 50;
 const STRIP_H = 14;
 
+/**
+ * The sizes a panel's big numeral may take, largest first.
+ *
+ * **A ladder rather than one size, because the values are unbounded.** Every
+ * panel here prints a number the game has no ceiling for: there is no ammo cap
+ * in this game at all, and SCORE is a running campaign total — the captures in
+ * `balancing_runs_overnight-2026-08-04` put the *mean* final score at 47,175,
+ * so five and six digits are the ordinary end state rather than an extreme.
+ * A single fixed size cannot serve both: the SCORE panel has 63px at the
+ * Classic preset, which is four digits at 22px and six at 16px, and pinning
+ * everything at 16 would shrink STABIL and SWAP — whose widest values are
+ * `100%` and `100` — permanently, to buy nothing.
+ *
+ * So the numeral keeps its full 22px whenever it fits, which is every reading
+ * on a normal bar, and steps down only for the value that would otherwise be
+ * drawn over the neighbouring panel.
+ */
+const NUMERAL_SIZES = [22, 20, 18, 16, 14] as const;
+
+/** Sizes for a value in the ammo table's rows, which share their line with a
+ * 9px label and so have much less to play with. */
+const TABLE_VALUE_SIZES = [11, 10, 9, 8] as const;
+
+/** Minimum gap between an ammo-table row's label and its value. */
+const TABLE_LABEL_GAP = 4;
+
+/** The label font, here rather than inline because the ammo table has to
+ * *measure* a label to know what is left over for its value. */
+const LABEL_FONT = "9px ui-monospace, monospace";
+
+/**
+ * The largest of `sizes` at which `text` fits `room`, or the smallest if none
+ * do. Leaves `ctx.font` set to whichever it picked.
+ *
+ * `measureText` rather than `length * advance`: the stack is
+ * `ui-monospace, monospace`, which resolves to a different face per platform,
+ * and a hardcoded advance ratio would be the same species of guess as the
+ * panel minimum that let the fourth key pip escape.
+ */
+function fitFontSize(ctx: CanvasRenderingContext2D, text: string, room: number, sizes: readonly number[]): number {
+  for (const size of sizes) {
+    ctx.font = `bold ${size}px ui-monospace, monospace`;
+    if (ctx.measureText(text).width <= room) return size;
+  }
+  return sizes[sizes.length - 1];
+}
+
 /** A big numeral, right-aligned inside `rect` — DOOM's own habit, and what
  * keeps a panel that grew wider looking composed instead of leaving a gap.
- * Restores `textAlign` so the next panel starts from a known state. */
-function drawNumeral(ctx: CanvasRenderingContext2D, text: string, rect: HudPanelRect, color: string, size: number): void {
+ * Sized to what the panel can actually hold, and restores `textAlign` so the
+ * next panel starts from a known state. */
+function drawNumeral(ctx: CanvasRenderingContext2D, text: string, rect: HudPanelRect, color: string): void {
+  const size = fitFontSize(ctx, text, rect.w - HUD_PAD * 2, NUMERAL_SIZES);
   ctx.textAlign = "right";
   drawValue(ctx, text, rect.x + rect.w - HUD_PAD, rect.y + VALUE_DY, color, size);
   ctx.textAlign = "left";
@@ -609,7 +658,7 @@ function drawAmmoPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   const weapon = WEAPONS[stats.weaponIndex];
   if (!weapon.ammoType) {
     drawLabel(ctx, "MELEE", rect.x + HUD_PAD, rect.y + LABEL_DY);
-    drawNumeral(ctx, "\u221e", rect, "#d8dde3", 22);
+    drawNumeral(ctx, "\u221e", rect, "#d8dde3");
     return;
   }
   const meta = AMMO_META[weapon.ammoType];
@@ -622,7 +671,10 @@ function drawAmmoPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   // magazine is that total minus what is already in the gun — the familiar
   // "9 / 31" split. A weapon with no magazine (Friday Hotfix) keeps the single
   // bare number it always had.
-  const value = stats.magazineSize > 0 ? `${stats.magazine} / ${Math.floor(owned - stats.magazine)}` : String(Math.floor(owned));
+  // `9/31`, not `9 / 31`: the spaces cost two glyphs of a panel that has 87px
+  // at the Classic preset, and a four-digit reserve — ordinary by mid-campaign
+  // — spent all of it. Reading it as "loaded over reserve" does not need them.
+  const value = stats.magazineSize > 0 ? `${stats.magazine}/${Math.floor(owned - stats.magazine)}` : String(Math.floor(owned));
   // The panel is labelled AMMO, not the pool's name. The pool used to be
   // spelled out here because nothing else on the bar said which one was being
   // spent — the table now does, by lighting that pool's row, so repeating it
@@ -632,7 +684,7 @@ function drawAmmoPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   // Dry means "nothing left to fire *and* nothing to reload with", not merely
   // an empty magazine — an empty gun with a full reserve is a one-second
   // problem, and colouring it as critical would cry wolf.
-  drawNumeral(ctx, value, rect, owned <= 0 ? "#ff5a4a" : meta.hudColor, 22);
+  drawNumeral(ctx, value, rect, owned <= 0 ? "#ff5a4a" : meta.hudColor);
 }
 
 /** System Stability: label, big percentage, and a bar across the strip band. */
@@ -640,7 +692,7 @@ function drawStabilPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stat
   const pct = Math.max(0, Math.min(100, (stats.health / stats.maxHealth) * 100));
   const low = pct <= 30;
   drawLabel(ctx, LABEL_STABIL, rect.x + HUD_PAD, rect.y + LABEL_DY);
-  drawNumeral(ctx, `${Math.round(stats.health)}%`, rect, low ? "#ff5a4a" : "#4cff6a", 22);
+  drawNumeral(ctx, `${Math.round(stats.health)}%`, rect, low ? "#ff5a4a" : "#4cff6a");
   const barX = rect.x + HUD_PAD;
   const barY = rect.y + STRIP_DY;
   const barW = rect.w - HUD_PAD * 2;
@@ -657,7 +709,7 @@ function drawStabilPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stat
  * stability: a numeral over a capacity strip, so the two read as a pair. */
 function drawSwapPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
   drawLabel(ctx, LABEL_SWAP, rect.x + HUD_PAD, rect.y + LABEL_DY);
-  drawNumeral(ctx, String(stats.swap), rect, stats.swap > 0 ? "#4a7fff" : "#5a6a8a", 22);
+  drawNumeral(ctx, String(stats.swap), rect, stats.swap > 0 ? "#4a7fff" : "#5a6a8a");
   const barX = rect.x + HUD_PAD;
   const barY = rect.y + STRIP_DY;
   const barW = rect.w - HUD_PAD * 2;
@@ -692,7 +744,7 @@ function drawSwapPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
 function drawKeysPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
   drawLabel(ctx, LABEL_KEYS, rect.x + HUD_PAD, rect.y + LABEL_DY);
   if (stats.gateColors.length === 0) {
-    drawNumeral(ctx, "\u2014", rect, "#5a6a8a", 22);
+    drawNumeral(ctx, "\u2014", rect, "#5a6a8a");
     return;
   }
   const held = new Set(stats.heldGates);
@@ -757,10 +809,18 @@ function drawAmmoTable(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
     const y = rect.y + TABLE_FIRST_BASELINE + row * TABLE_ROW_PITCH;
     const lit = type === equipped;
     drawLabel(ctx, meta.short, rect.x + HUD_PAD, y, lit ? meta.hudColor : "#3f6b46");
-    ctx.textAlign = "right";
     // Floored: gas is fractional (Friday Hotfix spends 2.5 a shot). A no-op
     // for the four integral pools.
-    drawValue(ctx, String(Math.floor(ammoRemaining(stats, type))), rect.x + rect.w - HUD_PAD, y, lit ? meta.hudColor : "#5a6a8a", 11);
+    const value = String(Math.floor(ammoRemaining(stats, type)));
+    // The row's two halves share one line, so the value gets whatever the
+    // label leaves rather than the whole panel. At the Classic preset that is
+    // 51px against a 22px label, which is four digits at 11px — and a
+    // five-digit pool used to be drawn straight through `BULL`.
+    ctx.font = LABEL_FONT;
+    const room = rect.w - HUD_PAD * 2 - ctx.measureText(meta.short).width - TABLE_LABEL_GAP;
+    const size = fitFontSize(ctx, value, room, TABLE_VALUE_SIZES);
+    ctx.textAlign = "right";
+    drawValue(ctx, value, rect.x + rect.w - HUD_PAD, y, lit ? meta.hudColor : "#5a6a8a", size);
     ctx.textAlign = "left";
   });
 }
@@ -843,7 +903,7 @@ function drawFacePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
  * numeral template so it reads as part of the bar rather than as a caption. */
 function drawScorePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats: EngineStats): void {
   drawLabel(ctx, LABEL_SCORE, rect.x + HUD_PAD, rect.y + LABEL_DY);
-  drawNumeral(ctx, String(stats.score), rect, "#4cff6a", 22);
+  drawNumeral(ctx, String(stats.score), rect, "#4cff6a");
 }
 
 /**
@@ -885,7 +945,7 @@ function drawCheatedRunBadge(ctx: CanvasRenderingContext2D, y0: number): void {
 
 /** Small uppercase caption; honors the current `textAlign`. */
 function drawLabel(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, color = "#5aa869"): void {
-  ctx.font = "9px ui-monospace, monospace";
+  ctx.font = LABEL_FONT;
   ctx.fillStyle = color;
   ctx.fillText(text, x, y);
 }
