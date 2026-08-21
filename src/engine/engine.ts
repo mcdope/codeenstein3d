@@ -141,7 +141,7 @@ import {
   rollBonusWeaponDrop,
   rollLoot,
 } from "./loot";
-import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import { AMMO_META, AMMO_TYPES, CARRYOVER_CAP_MULTIPLE, startingAmmo, type AmmoPools } from "./ammo";
 import { COMBAT_BALANCE, MAX_HEALTH } from "./combatConstants";
 import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
@@ -1676,12 +1676,19 @@ export class RaycasterEngine {
     const player = new Player(this.map, {}, spawn);
     player.noClip = carryover?.noClip ?? false;
     const startingAmmoRef = startingAmmo(this.map.enemies);
+    // Carried ammo is capped against what *this* level would hand a fresh
+    // player — see `CARRYOVER_CAP_MULTIPLE`. Without it a campaign accumulated
+    // reserve while its opposition did not scale, and the deep levels of a big
+    // repository became unloseable. A ceiling, not a floor: level 1 has no
+    // carryover to clamp, and the early game never reaches it.
+    const carried = (pool: keyof AmmoPools): number =>
+      Math.min(carryover?.[pool] ?? startingAmmoRef[pool], startingAmmoRef[pool] * CARRYOVER_CAP_MULTIPLE);
     const ammo: AmmoPools = {
-      bullets: carryover?.bullets ?? startingAmmoRef.bullets,
-      shells: carryover?.shells ?? startingAmmoRef.shells,
-      rockets: carryover?.rockets ?? startingAmmoRef.rockets,
-      smg: carryover?.smg ?? startingAmmoRef.smg,
-      gas: carryover?.gas ?? startingAmmoRef.gas,
+      bullets: carried("bullets"),
+      shells: carried("shells"),
+      rockets: carried("rockets"),
+      smg: carried("smg"),
+      gas: carried("gas"),
     };
     const ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     const campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;

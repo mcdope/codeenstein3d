@@ -3199,6 +3199,27 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     expect(regular).toBe(20);
   });
 
+  it("caps carried ammo against what this level would hand a fresh player", () => {
+    // `CARRYOVER_CAP_MULTIPLE`. A tiny roster means a small fresh reserve, so a
+    // hoarded 9,999 bullets is clamped hard; the same carryover on a level that
+    // hands out more survives further. Both directions are asserted because a
+    // cap that always clamps to the same number would pass the first alone.
+    const arriveWith = (bullets: number, enemies: number) => {
+      const roster = Array.from({ length: enemies }, (_, i) => fakeEnemy({ x: 20 + i * 0.1, y: 20, hp: 100, maxHp: 100 }));
+      const { engine, handlers } = makeEngine(fakeMap({ enemies: roster }), makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets, rockets: 0, smg: 0, gas: 0 },
+      });
+      engine.advance(0.016); // stats are only emitted on a tick
+      return lastStats(handlers).bullets;
+    };
+    const small = arriveWith(9999, 1);
+    const big = arriveWith(9999, 30);
+    expect(small).toBeLessThan(9999); // clamped, not carried whole
+    expect(big).toBeGreaterThan(small); // a bigger roster funds a bigger ceiling
+    // Under the cap, nothing is clamped: 10 bullets stays 10 on any roster.
+    expect(arriveWith(10, 30)).toBe(10);
+  });
+
   it("scales an ammo drop by what died, the same way the heal is scaled", () => {
     // `AMMO_SCALE_REFERENCE_HP`'s rule. Same seed for both runs, so `rollLoot`
     // draws the identical kind and only the amount can differ — which is what

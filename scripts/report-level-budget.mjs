@@ -41,7 +41,7 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity, hpScaledDropRef: null, hpScaledHealthRef: null };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity, hpScaledDropRef: undefined, hpScaledHealthRef: undefined };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
@@ -336,6 +336,13 @@ async function main() {
     profiles,
     dropAmounts: dropAmountsFrom(modules),
   };
+  // The drop couplings are shipped behaviour as of 2026-08-21, not experiments:
+  // the engine scales a kill's ammo and health by what died. Default to the
+  // real constants so a plain solve models the real game — the flags stay as
+  // overrides for pricing a *change* to them. Modelling the wrong game by
+  // default is exactly how the `shells` drop budget went unnoticed for six days.
+  if (args.hpScaledDropRef === undefined) args.hpScaledDropRef = modules.AMMO_SCALE_REFERENCE_HP;
+  if (args.hpScaledHealthRef === undefined) args.hpScaledHealthRef = modules.HEALTH_SCALE_REFERENCE_HP;
 
   console.log(`# Balance budget -- ${path.relative(REPO_ROOT, args.dir) || args.dir}`);
   console.log(`# ${levels.length} levels, perfect-accuracy lower bound on cost`);
@@ -343,6 +350,7 @@ async function main() {
   // `entrypointIndex`. Printed because a wrong entrypoint silently renumbers
   // every position-based reading in this report.
   console.log(`# level 1 = ${entrypoint ?? "(none)"}${skippedBeforeEntry ? ` — ${skippedBeforeEntry} file(s) ahead of it in tree order are never played` : ""}`);
+  console.log(`# ammo drops x maxHp/${args.hpScaledDropRef}, heal x maxHp/${args.hpScaledHealthRef} (engine defaults)`);
   console.log(`# kill rate ${args.killRate} — the share of each roster assumed fought, which sets both`);
   console.log("# the ammo spent and the drops carried on. Override with --kill-rate.");
   if (Number.isFinite(args.carryoverCap)) {
