@@ -130,7 +130,15 @@ import {
   rangeDamageScale,
   type Weapon,
 } from "./weapons";
-import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
+import {
+  HEALTH_DROP_AMOUNT,
+  HEALTH_SCALE_REFERENCE_HP,
+  MAX_SWAP,
+  REGULAR_KILL_NO_DROP_CHANCE,
+  SWAP_DROP_AMOUNT,
+  rollBonusWeaponDrop,
+  rollLoot,
+} from "./loot";
 import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
 import { COMBAT_BALANCE, MAX_HEALTH } from "./combatConstants";
 import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
@@ -5597,7 +5605,13 @@ export class RaycasterEngine {
       // below is told to exclude "health" from its own weighted roll (via
       // `healthHandledSeparately`) so a kill can't double-drop it.
       if (shooter.health < MAX_HEALTH) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" }, enemy);
+        // Scaled by what died, not flat — see `HEALTH_SCALE_REFERENCE_HP`. The
+        // grant stays guaranteed (the paragraph above is why); what changes is
+        // that a 30 HP corridor Edge Case now refunds ~6 instead of the same 20
+        // a 100 HP regular does. Floored at 1 so a kill never drops a zero-value
+        // pickup, and rounded because health is integral everywhere else.
+        const scaled = Math.max(1, Math.round((HEALTH_DROP_AMOUNT * enemy.maxHp) / HEALTH_SCALE_REFERENCE_HP));
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health", amount: scaled }, enemy);
       }
       // Not every regular kill drops ammo/swap anymore — see
       // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw

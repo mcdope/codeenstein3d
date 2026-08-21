@@ -3155,7 +3155,12 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     // drop to land inside AMMO_PICKUP_RADIUS, not so close it gets a free
     // aggro-bite in before the kill shot (see the melee zBuffer-staleness
     // gotcha's neighbor note above).
-    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+    // `maxHp` matters now, not just `hp`: since 2026-08-21 the guaranteed heal
+    // scales as `HEALTH_DROP_AMOUNT * maxHp / HEALTH_SCALE_REFERENCE_HP`, so
+    // the 1/1 enemy this used to kill would refund the floor of 1 health and
+    // make the assertion below unfalsifiable. A wounded 100 HP regular — 1 hp
+    // left of 100 — dies to the same single shot and refunds the full 20.
+    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100 });
     const map = fakeMap({ enemies: [enemy] });
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
       carryover: { health: 90, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
@@ -3168,6 +3173,30 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     // drop is only picked up on the *next* frame's advance().
     engine.advance(0.016);
     expect(lastStats(handlers).health).toBeGreaterThan(90);
+  });
+
+  it("scales the guaranteed heal by what died, so trash refunds less than a real enemy", () => {
+    // The rule `HEALTH_SCALE_REFERENCE_HP` introduces, pinned directly rather
+    // than left to the incidental coverage of the test above. Same seed and
+    // geometry, one field different: a corridor-Edge-Case-sized 30 HP body
+    // against a 100 HP regular. Both die to the same single shot.
+    const healFrom = (maxHp: number) => {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp });
+      const { engine, input, handlers } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), {
+        carryover: { health: 50, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 10,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const before = lastStats(handlers).health;
+      engine.advance(0.016); // collectLoot runs a frame after the kill
+      return lastStats(handlers).health - before;
+    };
+    const trash = healFrom(30);
+    const regular = healFrom(100);
+    // 20 * 30/100 = 6 against 20 * 100/100 = 20 — the whole point of the change.
+    expect(trash).toBe(6);
+    expect(regular).toBe(20);
   });
 
   it("grants a bonus unlockable weapon on a lucky regular-kill roll", () => {

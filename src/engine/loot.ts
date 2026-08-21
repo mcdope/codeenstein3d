@@ -189,6 +189,40 @@ export const GAS_DROP_AMOUNT = 21;
  * from cumulative melee+ranged+mine damage, not ammo starvation
  * (desperation metrics stayed at 0). Reverted to its original value. */
 export const HEALTH_DROP_AMOUNT = 20;
+/**
+ * HP at which a regular kill's guaranteed heal is worth exactly
+ * `HEALTH_DROP_AMOUNT` — the heal scales as `maxHp / this`.
+ *
+ * **Unproven, wired for playtest on 2026-08-21 and not yet validated by
+ * anything but the solver.** The flat grant made health income a function of
+ * *kill count* rather than of how hard the level hit you, and after the
+ * enemy-HP raise the same day that read badly in play: an Edge Case has 25-35
+ * HP and refunded a flat 20 health — two thirds of its own bar, a fifth of the
+ * player's — so clearing corridor trash kept the player topped up for free.
+ * Solved across 23 corpus repositories, a level refilled the whole 100-point
+ * bar a median **2.3 times over** in its first 20 levels, and **3.4 times** in
+ * the bundled demo campaign, whose levels carry about twice a real level's
+ * enemy HP.
+ *
+ * At 100 the median regular enemy still heals ~21 (unchanged in practice) while
+ * an Edge Case drops to ~6, which is the intended shape: the coupling removes
+ * the free top-up from trash without touching the heals that come from fights
+ * that actually cost something.
+ *
+ * **Read `HEALTH_DROP_AMOUNT`'s own comment before touching this.** Cutting the
+ * flat amount ~30% once collapsed Gamer/Hard qualifying runs from ~48% to 4%,
+ * with deaths from cumulative combat damage rather than ammo starvation, and
+ * was reverted. That was measured at 25 HP per complexity; enemies now carry
+ * 35, so fights last longer and take more off the player — the risk is larger
+ * now, not smaller. This scaling is the deliberately safer shape because it
+ * leaves the big heals alone, but it is the same resource, and the only
+ * instrument that can settle it is play or a bot capture's death rate. The
+ * solver models health *income* and cannot see a death.
+ *
+ * Elites are excluded — `dropEliteLoot` grants `ELITE_HEALTH_DROP_AMOUNT`
+ * through its own branch, which this does not touch.
+ */
+export const HEALTH_SCALE_REFERENCE_HP = 100;
 export const SWAP_DROP_AMOUNT = 11;
 /** Elite kills guarantee a bigger heal than a regular enemy's health drop. */
 export const ELITE_HEALTH_DROP_AMOUNT = 50;
