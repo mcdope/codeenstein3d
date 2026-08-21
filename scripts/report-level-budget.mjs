@@ -41,7 +41,7 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity, hpScaledDropRef: null };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
@@ -53,6 +53,9 @@ function parseArgs(argv) {
     // Experiment knob — see `capCarryover`. Nothing in the game caps carryover;
     // this exists to price a cap offline before anyone books bot time for it.
     else if (arg === "--carryover-cap") args.carryoverCap = Number(argv[++i]);
+    // Experiment knob — see `dropBudget`. Scales a regular kill's ammo drop by
+    // `maxHp / <ref>`; `<ref>` is the HP at which the drop is unchanged.
+    else if (arg === "--hp-scaled-drops") args.hpScaledDropRef = Number(argv[++i]);
     else {
       console.error(`unknown argument: ${arg}`);
       process.exit(2);
@@ -289,7 +292,7 @@ async function main() {
 
   const byDifficulty = new Map();
   for (const difficulty of args.difficulties) {
-    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate, carryoverCapMultiple: args.carryoverCap });
+    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate, carryoverCapMultiple: args.carryoverCap, hpScaledDropRef: args.hpScaledDropRef });
     byDifficulty.set(difficulty, results);
     console.log(`\n\n===== difficulty: ${difficulty} =====\n`);
     printBudgetTable(results);
