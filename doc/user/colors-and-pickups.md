@@ -124,9 +124,9 @@ A keycard: the same two-square shape as a pickup, slightly larger, floating at w
 | Green | the green room |
 | Violet | the violet room |
 
-The HUD carries the same four colours, one pip per locked room. Here three are still out there and the blue one has been picked up:
+The HUD carries the same four colours, one pip per locked room, in a block two wide. Here three are still out there and the blue one has been picked up:
 
-![The KEYS section of the HUD showing four small squares — red, blue, green and violet — with only the blue one filled in](img/hud-key-pips.png)
+![The KEYS section of the HUD showing four small squares in a 2x2 block — red and blue on the top row, green and violet below — with only the blue one filled in](img/hud-key-pips.png)
 
 That's the whole system, and it's deliberately small:
 

@@ -140,8 +140,23 @@ function say(msg) {
  * survived — comes from here rather than from the page, so a mismatch between
  * the two is detectable instead of silently producing a wrong picture.
  */
+/** The engine modules, loaded once.
+ *
+ * `loadEngineModules` runs a fresh esbuild bundle per call, so this memoises
+ * the promise. It is also what fixes the HUD crop below: `layoutHud` and
+ * `HUD_HEIGHT` were destructured inside `generateFixtureMap` and then used at
+ * the top level of `main`, so the key-pip shot threw `layoutHud is not
+ * defined` and every screenshot after it — the two maps and the HUD — has been
+ * unreachable since the status bar started deriving its own crop.
+ */
+let enginePromise = null;
+function engineModules() {
+  enginePromise ??= loadEngineModules();
+  return enginePromise;
+}
+
 async function generateFixtureMap() {
-  const { parseFile, MapGenerator, UNLOCKABLE_WEAPONS, layoutHud, HUD_HEIGHT } = await loadEngineModules();
+  const { parseFile, MapGenerator, UNLOCKABLE_WEAPONS } = await engineModules();
   const parsed = await parseFile(FIXTURE_NAME, fs.readFileSync(FIXTURE_PATH, "utf8"));
   const map = new MapGenerator().generate(parsed, {
     bonusLevel: false,
@@ -624,6 +639,7 @@ async function main() {
       const c = document.querySelector("canvas.scene-canvas");
       return { w: c.width, h: c.height };
     });
+    const { layoutHud, HUD_HEIGHT } = await engineModules();
     const keys = layoutHud(canvasSize.w, canvasSize.h).panels.keys;
     const hudRect = { x: keys.x - 2, y: keys.y, w: keys.w + 4, h: HUD_HEIGHT };
     await assertNotFlat(page, hudRect, "hud-key-pips", 4);
