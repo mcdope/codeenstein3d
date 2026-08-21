@@ -148,6 +148,17 @@ Ordered so the instrument comes before what it measures: the first item is about
 
 Two dependency chains: AST facts unlock the enemy archetypes, and the decoration mechanism (a tile kind plus a texture slot) is shared by the three wall items that follow it.
 
+- [ ] **A key-locked door can ping nothing, and 71% of doors are in that state when you first meet one — user-reported 2026-08-21, diagnosed, not fixed.** Report: on `git`'s `t/unit-tests/clar/clar.c`, walking into a violet door showed the "You need the violet key!" banner and **no minimap ping**, with no way to tell where the key was. Reproduced and diagnosed offline against the real generator; the level is deterministic from its AST, so the numbers below are exact rather than sampled.
+  - **Not a lockout, and not a placement bug.** That level has 4 gates and 4 keys, every one placed and every one obtainable. `assertAllRoomsReachable` is doing its job.
+  - **The keys form a fully serial chain**: red is reachable from spawn, blue is behind red, green behind blue, **violet behind green**. So the violet key genuinely was unreachable at the moment the player asked for it.
+  - **The ping is behaving as documented, which is the problem.** It deliberately skips a key that sits behind another locked door — *"a key behind another locked door isn't a suggestion"* ([hud-and-ui.md](doc/user/hud-and-ui.md#minimap--compass)) — so with every remaining key gated it correctly shows nothing. Placement and ping are each individually right; combined they hand the player a colour name and silence.
+  - **It is not a corner case.** Measured over 47 multi-gate levels across git/curl/flask/django: **46 of 47 are fully serial** (100% of 2- and 4-gate levels, 89% of 3-gate), the median level has exactly **one** key reachable from spawn regardless of how many gates it has, and **116 of 163 doors (71%) have an unreachable key when the player first walks into them**. Zero levels had a genuinely unobtainable key, so this is purely about what the player is told.
+  - **Candidate directions, cheapest first** — none tried:
+    - *Ping the blocker instead of the target.* When the asked-for key is gated, ping the key that opens the path toward it, which is always reachable by construction. Smallest change, keeps the "no wild goose chase" rule, and turns silence into a lead.
+    - *Say so in the banner*: "You need the violet key — try the green door first." Needs the same reachability walk, and puts a spoiler-ish hint in a toast.
+    - *Place keys in parallel rather than serially.* The real fix for the underlying shape, and by far the biggest: it changes generation, so it re-rolls layouts and invalidates replays.
+  - **Repro without playing**: the throwaway diagnostic used is not committed, but it is ~40 lines — generate the level via `loadEngineModules`, flood from spawn treating a locked door as a wall, collect whatever keys the flood reaches, re-flood, and count the rounds. Serial chains show up as one key per round.
+
 - [ ] **Richer per-entity AST facts: recursion, call-graph fan-in, async, deprecation. MEASURED 2026-08-20 and it does NOT work as a route to enemy archetypes — do not build it for that.** Split out 2026-08-19 from the enemy-diversity item, which wants them for archetypes. A prevalence check over **7,101 callable entities** across 8 repos in 8 languages, run before building anything, says three of the four barely fire and the fourth cannot be approximated:
   - **Prevalence, overall**: recursion **10.2%**, async **1.5%**, deprecation **0.2%**. For scale, the existing facts this was meant to improve on are private/protected 33.8%, `nestingDepth>=2` 14.9%, `switchBranches` 4.7%. So async and deprecation are *worse than the worst fact already available*, and the item ranks them "Tier 1, nearly free" — the cost ranking is inverted against the value.
   - **The one that looked transformative is invalid.** The fan-in proxy the item itself proposes ("a workspace-wide identifier-occurrence count") reads 50.2% at >=10 occurrences — but it is measuring **name commonality, not call-graph position**: mean name length 7.8 chars in the high group against 14.8 in the low, corr(name length, count) **-0.370**, and the top "hubs" are `args` and `path`, the latter appearing 7 times because every `path` *variable* in ripgrep counts.
@@ -327,3 +338,7 @@ implemented, already refuted, or impossible as written.
 - [ ] add dedicated deathmatch demo campaign, levels should have fair balanced layout - similar to UT99s levels
 
 - [ ] coop multiplayer should spawn additional boss enemies, requiring actual coop to kill. having a distinct color, roaming the whole map (not limitted to their room) and having more aggro, movement speed like normal enemies, should be visually larger as well. unique abilities like "casting mines" or weapon usage? possible names: "VPN down", "CI failed", "Useless Meeting", "Git down", "CloudFlare", "AWS", "GCP", "Azure"
+
+- [ ] add lifes/continues for singleplayer
+- [ ] remeasure impact of level-end-summary
+
