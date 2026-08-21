@@ -452,15 +452,24 @@ export function prePlacedBudget({ ammoPickups, constants, ownedWeapons, difficul
  * level. Deliberately the *whole* roster, not the shortest path's worth — the
  * question it answers is "if you fought everything, what would the level give
  * back", which is the ceiling the reliance ratio is measured against. */
-export function dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty }) {
+export function dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const regular = expectedRegularDrop({ constants, ownedWeapons, bonusLevel, difficulty });
   const elite = expectedEliteDrop({ constants, ownedWeapons, difficulty });
   let damage = 0;
   let health = 0;
   for (const e of roster) {
-    const value = archetypeOf(e) === "elite" ? elite : regular;
-    damage += value.damage;
-    health += value.health;
+    const elite_ = archetypeOf(e) === "elite";
+    const value = elite_ ? elite : regular;
+    // Experiment knob — see `hpScaledDropRef` on `solveLevel`. Ammo only: the
+    // guaranteed health drop is a survival mechanic and has nothing to do with
+    // what the kill cost.
+    const scale = hpScaledDropRef && !elite_ ? e.maxHp / hpScaledDropRef : 1;
+    damage += value.damage * scale;
+    // The same coupling applied to the guaranteed heal (user's suggestion,
+    // 2026-08-21). Health's cost driver is damage *taken*, which tracks how
+    // long an enemy lives rather than its HP directly — so HP is a proxy here,
+    // not the identity it is for ammo. Priced separately for that reason.
+    health += value.health * (hpScaledHealthRef && !elite_ ? e.maxHp / hpScaledHealthRef : 1);
   }
   return { damage, health, perRegularKill: regular, perEliteKill: elite };
 }
@@ -529,17 +538,18 @@ export function hpOutliers(roster, obtainableDamage) {
  * carryover over the starting formula from level 2 on. Getting that wrong
  * makes every level after the first read as far poorer than it plays.
  */
-export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1 }) {
+export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1, carryoverCapMultiple = Infinity, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const roster = scaleRosterForDifficulty(map.enemies, difficulty, constants.DIFFICULTY_MULTIPLIERS);
   const bonusLevel = Boolean(map.bonusLevel);
   const poolValue = poolDamageValues(constants.profiles, ownedWeapons);
 
-  const startAmmo = carriedAmmo ?? constants.startingAmmo(roster);
+  const freshAmmo = constants.startingAmmo(roster);
+  const startAmmo = carriedAmmo === null ? freshAmmo : capCarryover(carriedAmmo, freshAmmo, carryoverCapMultiple);
   const carriedDamage = AMMO_KINDS.reduce((sum, kind) => sum + (startAmmo[kind] ?? 0) * (poolValue[kind] ?? 0), 0);
 
   const enemies = enemyBudget(roster, constants, difficulty);
   const prePlaced = prePlacedBudget({ ammoPickups: map.ammoPickups, constants, ownedWeapons, difficulty });
-  const drops = dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty });
+  const drops = dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef, hpScaledHealthRef });
 
   const obtainable = carriedDamage + prePlaced.damage + drops.damage;
   const ratio = (damage) => (enemies.totalHp > 0 ? damage / enemies.totalHp : Infinity);
@@ -644,13 +654,13 @@ export function guaranteedLoadout(campaignLevelIndex, constants) {
  * charged for the whole roster (a kill rate of 1) while banking none of the
  * drops (a rate of 0).
  */
-export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE }) {
+export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE, carryoverCapMultiple = Infinity, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const results = [];
   let carried = null;
   for (const [i, level] of levels.entries()) {
     const campaignLevelIndex = i + 1;
     const ownedWeapons = guaranteedLoadout(campaignLevelIndex, constants);
-    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex });
+    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex, carryoverCapMultiple, hpScaledDropRef, hpScaledHealthRef });
     results.push({ ...solved, filename: level.filename });
     carried = carryForward(solved, constants, killRate);
   }
@@ -670,6 +680,66 @@ export function solveCampaign({ levels, constants, difficulty, killRate = DEFAUL
  * what drops gets picked up.
  */
 export const DEFAULT_KILL_RATE = 0.71;
+
+/**
+ * **An experiment knob, not game behaviour.** Clamps what a player arrives with
+ * to `capMultiple x` what a *fresh* player would start this level holding —
+ * i.e. ties carried resources to what the level in front of you contains.
+ *
+ * The engine has no such cap: `engine.ts`'s carryover is
+ * `carryover?.bullets ?? startingAmmoRef.bullets`, unconditional, and
+ * §1.2 records that map dimension is the only repo-size normalisation anywhere
+ * in the generator. Which is exactly what the 2026-08-21 corpus sweep measured
+ * the consequence of — median clear ratio 9.6 at level 1 against 4,548 past
+ * level 200, with the roster flat across the same span.
+ *
+ * This exists so that question can be answered *offline*, before anyone books
+ * bot time for an A/B: run the sweep at a few multiples and see whether the
+ * position slope compresses. Default `Infinity` is the shipped behaviour, so
+ * every existing caller and every stored result is unchanged.
+ *
+ * Deliberately **not** wired into `SIMULATION_BALANCE` or `engine.ts` yet: a
+ * new engine constant folded into the balance hash invalidates every shipped
+ * replay and costs a `defaultHighscore.ts` regeneration, which is not a price
+ * to pay for a measurement that might say the lever does not work.
+ */
+/**
+ * **The second experiment knob, and the one with a trap in its own metric.**
+ *
+ * The 2026-08-21 sweep found that a level's ability to fund itself tracks
+ * **HP per enemy** — 25 where healthy, 162 in the worst band — because loot is
+ * per *kill* (`BULLETS_DROP_AMOUNT` 4, flat, whatever died) while cost is per
+ * *HP*. A file whose complexity sits in a few large functions gets few kills
+ * and cannot pay for its own roster.
+ *
+ * `hpScaledDropRef` prices the obvious answer: scale a regular kill's ammo drop
+ * by `maxHp / ref`, so a kill refunds in proportion to what it cost. `ref` is
+ * the HP at which the drop is unchanged — pass the corpus median HP/enemy and
+ * the median level's economy stays where it is while the tails move.
+ *
+ * **Do not judge this by self-funding.** Self-funding is
+ * `(preplaced + drops) / totalHp`, and a drop proportional to HP makes its drop
+ * term proportional to `totalHp` — so the ratio goes constant *by construction*
+ * and would "prove" the lever works no matter what. Judge it on clear ratio
+ * (which carries the carried-ammo and pre-placed terms too), on the early
+ * levels, where low HP/enemy means this rule *removes* loot, and on how much
+ * total loot it adds — a lever that merely inflates the economy is a difficulty
+ * change wearing a fairness change's clothes.
+ *
+ * Elites are excluded: `dropEliteLoot` is a separate branch that yields no ammo
+ * to a damaged player at all, so scaling it would model something the engine
+ * does not do. The guaranteed health drop is excluded for the same reason in
+ * reverse — it is a survival mechanic, unrelated to what the kill cost.
+ */
+export function capCarryover(carried, fresh, capMultiple) {
+  if (!Number.isFinite(capMultiple)) return carried;
+  const capped = {};
+  for (const kind of Object.keys(carried)) {
+    const ceiling = (fresh[kind] ?? 0) * capMultiple;
+    capped[kind] = Math.min(carried[kind] ?? 0, ceiling);
+  }
+  return capped;
+}
 
 /**
  * Ammo left after a level, at perfect accuracy with the most ammo-efficient

@@ -41,7 +41,7 @@ const RATIO_WARN = 1.2;
 const RATIO_FAIL = 1.0;
 
 function parseArgs(argv) {
-  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE };
+  const args = { dir: path.join(REPO_ROOT, "demo-campaign"), difficulties: ["normal"], json: null, maxLevels: Infinity, killRate: DEFAULT_KILL_RATE, carryoverCap: Infinity, hpScaledDropRef: undefined, hpScaledHealthRef: undefined };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--dir") args.dir = path.resolve(argv[++i]);
@@ -50,6 +50,13 @@ function parseArgs(argv) {
     else if (arg === "--json") args.json = path.resolve(argv[++i]);
     else if (arg === "--max-levels") args.maxLevels = Number(argv[++i]);
     else if (arg === "--kill-rate") args.killRate = Number(argv[++i]);
+    // Experiment knob — see `capCarryover`. Nothing in the game caps carryover;
+    // this exists to price a cap offline before anyone books bot time for it.
+    else if (arg === "--carryover-cap") args.carryoverCap = Number(argv[++i]);
+    // Experiment knob — see `dropBudget`. Scales a regular kill's ammo drop by
+    // `maxHp / <ref>`; `<ref>` is the HP at which the drop is unchanged.
+    else if (arg === "--hp-scaled-drops") args.hpScaledDropRef = Number(argv[++i]);
+    else if (arg === "--hp-scaled-health") args.hpScaledHealthRef = Number(argv[++i]);
     else {
       console.error(`unknown argument: ${arg}`);
       process.exit(2);
@@ -105,6 +112,61 @@ function collectSourceFiles(dir, workspace, relativeTo = dir) {
  * deliberately does) would inflate the pre-placed budget of every early level
  * with ammo a real run cannot use yet.
  */
+/**
+ * `ENTRYPOINT_FILENAMES`, read out of `main.ts` rather than copied.
+ *
+ * A hand-typed copy here would be the same defect this repo has now been bitten
+ * by three times (`ROCKET_TRAVEL_SPEED`, the `shells` drop amount, the docs'
+ * own `x 25`). Reading the literal keeps it linked; a rename fails loudly on
+ * the next run instead of silently selecting a different level 1.
+ */
+function entrypointFilenames() {
+  const src = fs.readFileSync(path.join(REPO_ROOT, "src/main.ts"), "utf8");
+  const block = src.match(/const ENTRYPOINT_FILENAMES = \[([\s\S]*?)\];/);
+  if (!block) throw new Error("ENTRYPOINT_FILENAMES not found in src/main.ts — renamed?");
+  return [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+}
+
+/**
+ * Where the game would actually start, and therefore what "level 1" means.
+ *
+ * **This tool got it wrong until 2026-08-21**: it numbered levels from index 0
+ * of the file tree, while the game starts at `findEntrypoint`'s pick and walks
+ * *forward* from there (`advanceToNextLevel` -> `findNextParsableFile`), never
+ * revisiting anything before it. So files ahead of the entrypoint are not
+ * level 1..N-1 — they are never played at all. Every "by campaign position"
+ * number this tool produced before that date was computed over a different
+ * ordering than a player sees; population statistics (HP distributions, clear
+ * ratios per level, self-funding) were unaffected, since they do not care which
+ * file is first. Surfaced when a playtest report could not be matched to the
+ * levels this tool named.
+ *
+ * Models `findEntrypoint`'s cascade: a conventional filename first, then
+ * `findEntrypointByScanning`'s `bestWithMain ?? bestOverall` — the cheapest
+ * file *containing* a `main`/`Main` function, falling back to cheapest overall,
+ * skipping zero-complexity files. The one branch not modelled is the
+ * primary/secondary test-path split, which is moot here: `collectSourceFiles`
+ * already drops test directories through the real `workspace` predicates
+ * before anything is parsed.
+ *
+ * Remote workspaces take a different path in the game — `findEntrypoint`
+ * returns `null` for them rather than paying for a scan over the network, and
+ * `autoLaunchInitialLevel` falls back to the first parsable file in tree order.
+ * This tool always solves a local directory, so it models the local branch.
+ */
+function entrypointIndex(levels) {
+  const names = entrypointFilenames();
+  for (const candidate of names) {
+    const i = levels.findIndex((l) => path.basename(l.filename).toLowerCase() === candidate);
+    if (i >= 0) return i;
+  }
+  const cx = (l) => l.parsed.entities.reduce((sum, e) => sum + (e.complexityScore ?? 0), 0);
+  const scored = levels.map((l, i) => ({ i, cx: cx(l), hasMain: l.parsed.entities.some((e) => (e.kind === "function" || e.kind === "method") && e.name.toLowerCase() === "main") }))
+    .filter((s) => s.cx > 0)
+    .sort((a, b) => a.cx - b.cx);
+  return (scored.find((s) => s.hasMain) ?? scored[0])?.i ?? 0;
+}
+
 async function generateLevels(dir, modules, workspace, levelCap = Infinity) {
   const { parseFile, extensionOf, MapGenerator, STARTING_WEAPONS, FORCED_UNLOCK_LEVELS, UNLOCKABLE_WEAPONS } = modules;
   const generator = new MapGenerator();
@@ -134,9 +196,11 @@ async function generateLevels(dir, modules, workspace, levelCap = Infinity) {
       hasGas: owned.has(modules.FRIDAY_HOTFIX_WEAPON_INDEX),
       missingWeaponIndices: UNLOCKABLE_WEAPONS.filter((i) => !owned.has(i)),
     });
-    levels.push({ filename: source.relative, map });
+    levels.push({ filename: source.relative, map, parsed });
   }
-  return { levels, skipped };
+  // Trim to what the game would actually play: from the entrypoint forward.
+  const entry = entrypointIndex(levels);
+  return { levels: levels.slice(entry), skipped, entrypoint: levels[entry]?.filename ?? null, skippedBeforeEntry: entry };
 }
 
 function fmt(value, digits = 2) {
@@ -260,7 +324,7 @@ async function main() {
   }
 
   const [modules, workspace] = await Promise.all([loadEngineModules(), loadWorkspaceModule()]);
-  const { levels, skipped } = await generateLevels(args.dir, modules, workspace, args.maxLevels);
+  const { levels, skipped, entrypoint, skippedBeforeEntry } = await generateLevels(args.dir, modules, workspace, args.maxLevels);
   if (levels.length === 0) {
     console.error(`no parsable files in ${args.dir}`);
     process.exit(2);
@@ -272,17 +336,33 @@ async function main() {
     profiles,
     dropAmounts: dropAmountsFrom(modules),
   };
+  // The drop couplings are shipped behaviour as of 2026-08-21, not experiments:
+  // the engine scales a kill's ammo and health by what died. Default to the
+  // real constants so a plain solve models the real game — the flags stay as
+  // overrides for pricing a *change* to them. Modelling the wrong game by
+  // default is exactly how the `shells` drop budget went unnoticed for six days.
+  if (args.hpScaledDropRef === undefined) args.hpScaledDropRef = modules.AMMO_SCALE_REFERENCE_HP;
+  if (args.hpScaledHealthRef === undefined) args.hpScaledHealthRef = modules.HEALTH_SCALE_REFERENCE_HP;
 
   console.log(`# Balance budget -- ${path.relative(REPO_ROOT, args.dir) || args.dir}`);
   console.log(`# ${levels.length} levels, perfect-accuracy lower bound on cost`);
+  // Level 1 is where the game starts, not where the file tree does — see
+  // `entrypointIndex`. Printed because a wrong entrypoint silently renumbers
+  // every position-based reading in this report.
+  console.log(`# level 1 = ${entrypoint ?? "(none)"}${skippedBeforeEntry ? ` — ${skippedBeforeEntry} file(s) ahead of it in tree order are never played` : ""}`);
+  console.log(`# ammo drops x maxHp/${args.hpScaledDropRef}, heal x maxHp/${args.hpScaledHealthRef} (engine defaults)`);
   console.log(`# kill rate ${args.killRate} — the share of each roster assumed fought, which sets both`);
   console.log("# the ammo spent and the drops carried on. Override with --kill-rate.");
+  if (Number.isFinite(args.carryoverCap)) {
+    console.log(`# CARRYOVER CAPPED at ${args.carryoverCap}x this level's fresh starting ammo — an`);
+    console.log("# experiment, not shipped behaviour: the engine caps nothing.");
+  }
   if (skipped.length > 0) console.log(`# skipped, no parser matched (${skipped.length}): ${skipped.slice(0, 8).join(", ")}${skipped.length > 8 ? ", ..." : ""}`);
   printWeaponTable(profiles);
 
   const byDifficulty = new Map();
   for (const difficulty of args.difficulties) {
-    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate });
+    const results = solveCampaign({ levels, constants, difficulty, killRate: args.killRate, carryoverCapMultiple: args.carryoverCap, hpScaledDropRef: args.hpScaledDropRef, hpScaledHealthRef: args.hpScaledHealthRef });
     byDifficulty.set(difficulty, results);
     console.log(`\n\n===== difficulty: ${difficulty} =====\n`);
     printBudgetTable(results);

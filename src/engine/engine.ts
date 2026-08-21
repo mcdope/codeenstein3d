@@ -128,10 +128,20 @@ import {
   currentMeleeWeapon,
   pelletOffsets,
   rangeDamageScale,
+  type AmmoType,
   type Weapon,
 } from "./weapons";
-import { HEALTH_DROP_AMOUNT, MAX_SWAP, REGULAR_KILL_NO_DROP_CHANCE, SWAP_DROP_AMOUNT, rollBonusWeaponDrop, rollLoot } from "./loot";
-import { AMMO_META, AMMO_TYPES, startingAmmo, type AmmoPools } from "./ammo";
+import {
+  AMMO_SCALE_REFERENCE_HP,
+  HEALTH_DROP_AMOUNT,
+  HEALTH_SCALE_REFERENCE_HP,
+  MAX_SWAP,
+  REGULAR_KILL_NO_DROP_CHANCE,
+  SWAP_DROP_AMOUNT,
+  rollBonusWeaponDrop,
+  rollLoot,
+} from "./loot";
+import { AMMO_META, AMMO_TYPES, CARRYOVER_CAP_MULTIPLE, startingAmmo, type AmmoPools } from "./ammo";
 import { COMBAT_BALANCE, MAX_HEALTH } from "./combatConstants";
 import { createEventLog, drainEvents, recordEvent, type EventLogState } from "./events";
 import { applyLootDrop, dropEliteLoot, grantOrTopUpWeapon, rollMissChanceToolchain, type LootContext } from "./lootApply";
@@ -1666,12 +1676,19 @@ export class RaycasterEngine {
     const player = new Player(this.map, {}, spawn);
     player.noClip = carryover?.noClip ?? false;
     const startingAmmoRef = startingAmmo(this.map.enemies);
+    // Carried ammo is capped against what *this* level would hand a fresh
+    // player — see `CARRYOVER_CAP_MULTIPLE`. Without it a campaign accumulated
+    // reserve while its opposition did not scale, and the deep levels of a big
+    // repository became unloseable. A ceiling, not a floor: level 1 has no
+    // carryover to clamp, and the early game never reaches it.
+    const carried = (pool: keyof AmmoPools): number =>
+      Math.min(carryover?.[pool] ?? startingAmmoRef[pool], startingAmmoRef[pool] * CARRYOVER_CAP_MULTIPLE);
     const ammo: AmmoPools = {
-      bullets: carryover?.bullets ?? startingAmmoRef.bullets,
-      shells: carryover?.shells ?? startingAmmoRef.shells,
-      rockets: carryover?.rockets ?? startingAmmoRef.rockets,
-      smg: carryover?.smg ?? startingAmmoRef.smg,
-      gas: carryover?.gas ?? startingAmmoRef.gas,
+      bullets: carried("bullets"),
+      shells: carried("shells"),
+      rockets: carried("rockets"),
+      smg: carried("smg"),
+      gas: carried("gas"),
     };
     const ownedWeapons = new Set(carryover?.ownedWeapons ?? STARTING_WEAPONS);
     const campaignLevelIndex = carryover?.campaignLevelIndex ?? 1;
@@ -5597,7 +5614,13 @@ export class RaycasterEngine {
       // below is told to exclude "health" from its own weighted roll (via
       // `healthHandledSeparately`) so a kill can't double-drop it.
       if (shooter.health < MAX_HEALTH) {
-        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health" }, enemy);
+        // Scaled by what died, not flat — see `HEALTH_SCALE_REFERENCE_HP`. The
+        // grant stays guaranteed (the paragraph above is why); what changes is
+        // that a 30 HP corridor Edge Case now refunds ~6 instead of the same 20
+        // a 100 HP regular does. Floored at 1 so a kill never drops a zero-value
+        // pickup, and rounded because health is integral everywhere else.
+        const scaled = Math.max(1, Math.round((HEALTH_DROP_AMOUNT * enemy.maxHp) / HEALTH_SCALE_REFERENCE_HP));
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: "health", amount: scaled }, enemy);
       }
       // Not every regular kill drops ammo/swap anymore — see
       // REGULAR_KILL_NO_DROP_CHANCE's doc comment. A separate rng() draw
@@ -5607,10 +5630,7 @@ export class RaycasterEngine {
       const lootRollHit = this.rng() >= REGULAR_KILL_NO_DROP_CHANCE;
       if (shooter.telemetry) recordRegularKillLootRoll(shooter.telemetry, !lootRollHit);
       if (lootRollHit) {
-        this.pushLootDrop({
-          x: enemy.x,
-          y: enemy.y,
-          kind: rollLoot(
+        const lootKind = rollLoot(
             this.map.bonusLevel,
             this.difficultyLevel,
             this.rng,
@@ -5619,8 +5639,15 @@ export class RaycasterEngine {
             shooter.health >= MAX_HEALTH,
             shooter.ownedWeapons.has(FRIDAY_HOTFIX_WEAPON_INDEX),
             true, // healthHandledSeparately — see above
-          ),
-        }, enemy);
+        );
+        // Ammo scales with what died — see `AMMO_SCALE_REFERENCE_HP`. `swap` is
+        // deliberately left flat (it was priced that way), and a weapon drop
+        // carries no amount at all. Floored at 1 so a rocket drop, whose base
+        // is already 1, never rounds away to nothing on a small enemy.
+        const ammoAmount = AMMO_TYPES.includes(lootKind as AmmoType)
+          ? Math.max(1, Math.round((AMMO_META[lootKind as AmmoType].dropAmount * enemy.maxHp) / AMMO_SCALE_REFERENCE_HP))
+          : undefined;
+        this.pushLootDrop({ x: enemy.x, y: enemy.y, kind: lootKind, ...(ammoAmount === undefined ? {} : { amount: ammoAmount }) }, enemy);
       } else if (rollMissChanceToolchain(shooter.lootCtx)) {
         // A kill that drops nothing isn't quite a dead end — a small
         // independent chance turns the miss into a shot at the Toolchain

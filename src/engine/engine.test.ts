@@ -3155,7 +3155,12 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     // drop to land inside AMMO_PICKUP_RADIUS, not so close it gets a free
     // aggro-bite in before the kill shot (see the melee zBuffer-staleness
     // gotcha's neighbor note above).
-    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 1 });
+    // `maxHp` matters now, not just `hp`: since 2026-08-21 the guaranteed heal
+    // scales as `HEALTH_DROP_AMOUNT * maxHp / HEALTH_SCALE_REFERENCE_HP`, so
+    // the 1/1 enemy this used to kill would refund the floor of 1 health and
+    // make the assertion below unfalsifiable. A wounded 100 HP regular — 1 hp
+    // left of 100 — dies to the same single shot and refunds the full 20.
+    const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100 });
     const map = fakeMap({ enemies: [enemy] });
     const { engine, input, handlers } = makeEngine(map, makeHandlers(), {
       carryover: { health: 90, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
@@ -3168,6 +3173,77 @@ describe("RaycasterEngine — enemy death, loot, and elites", () => {
     // drop is only picked up on the *next* frame's advance().
     engine.advance(0.016);
     expect(lastStats(handlers).health).toBeGreaterThan(90);
+  });
+
+  it("scales the guaranteed heal by what died, so trash refunds less than a real enemy", () => {
+    // The rule `HEALTH_SCALE_REFERENCE_HP` introduces, pinned directly rather
+    // than left to the incidental coverage of the test above. Same seed and
+    // geometry, one field different: a corridor-Edge-Case-sized 30 HP body
+    // against a 100 HP regular. Both die to the same single shot.
+    const healFrom = (maxHp: number) => {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp });
+      const { engine, input, handlers } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), {
+        carryover: { health: 50, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 10,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const before = lastStats(handlers).health;
+      engine.advance(0.016); // collectLoot runs a frame after the kill
+      return lastStats(handlers).health - before;
+    };
+    const trash = healFrom(30);
+    const regular = healFrom(100);
+    // 20 * 30/100 = 6 against 20 * 100/100 = 20 — the whole point of the change.
+    expect(trash).toBe(6);
+    expect(regular).toBe(20);
+  });
+
+  it("caps carried ammo against what this level would hand a fresh player", () => {
+    // `CARRYOVER_CAP_MULTIPLE`. A tiny roster means a small fresh reserve, so a
+    // hoarded 9,999 bullets is clamped hard; the same carryover on a level that
+    // hands out more survives further. Both directions are asserted because a
+    // cap that always clamps to the same number would pass the first alone.
+    const arriveWith = (bullets: number, enemies: number) => {
+      const roster = Array.from({ length: enemies }, (_, i) => fakeEnemy({ x: 20 + i * 0.1, y: 20, hp: 100, maxHp: 100 }));
+      const { engine, handlers } = makeEngine(fakeMap({ enemies: roster }), makeHandlers(), {
+        carryover: { health: 100, swap: 0, bullets, rockets: 0, smg: 0, gas: 0 },
+      });
+      engine.advance(0.016); // stats are only emitted on a tick
+      return lastStats(handlers).bullets;
+    };
+    const small = arriveWith(9999, 1);
+    const big = arriveWith(9999, 30);
+    expect(small).toBeLessThan(9999); // clamped, not carried whole
+    expect(big).toBeGreaterThan(small); // a bigger roster funds a bigger ceiling
+    // Under the cap, nothing is clamped: 10 bullets stays 10 on any roster.
+    expect(arriveWith(10, 30)).toBe(10);
+  });
+
+  it("scales an ammo drop by what died, the same way the heal is scaled", () => {
+    // `AMMO_SCALE_REFERENCE_HP`'s rule. Same seed for both runs, so `rollLoot`
+    // draws the identical kind and only the amount can differ — which is what
+    // isolates the scaling from the roll.
+    const ammoFrom = (maxHp: number) => {
+      const enemy = fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp });
+      const { engine, input, handlers } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), {
+        carryover: { health: 50, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
+        seed: 10,
+      });
+      input.fireQueued = true;
+      engine.advance(0.016);
+      const s0 = lastStats(handlers);
+      const before = s0.bullets + s0.rockets + s0.smg + s0.gas + (s0.shells ?? 0);
+      engine.advance(0.016); // collectLoot runs a frame after the kill
+      const s1 = lastStats(handlers);
+      return s1.bullets + s1.rockets + s1.smg + s1.gas + (s1.shells ?? 0) - before;
+    };
+    const trash = ammoFrom(30);
+    const beefy = ammoFrom(176);
+    expect(beefy).toBeGreaterThan(trash);
+    // 176 is exactly 2x the reference, so it doubles the base amount while the
+    // 30 HP body floors at 1 — a spread of at least 4x on any kind that rolls.
+    expect(beefy).toBeGreaterThanOrEqual(trash * 4);
   });
 
   it("grants a bonus unlockable weapon on a lucky regular-kill roll", () => {

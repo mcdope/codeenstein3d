@@ -34,7 +34,7 @@ There's a tip hiding in the [`report:level-maps` script](../dev/testing.md) if y
 
 If you'd rather write the file yourself, here's what each construct controls. See [Game Mechanics](mechanics.md#how-code-becomes-a-level) for the full reference table — this is the "which knob do I turn" version.
 
-- **Want a simple grunt?** A short, flat function with low cyclomatic complexity (few branches/loops). HP is complexity × 25.
+- **Want a simple grunt?** A short, flat function with low cyclomatic complexity (few branches/loops). HP is complexity × 35.
 - **Want a boss fight?** One deeply-branching, long function. At complexity ≥ 40 the room doubles its HP budget and spawns an Elite pack — a gold-tinted Elite (more damage, guaranteed good loot) leading several tougher-than-usual enemies.
 - **Want a pack of enemies instead of one tough one?** You always get a pack: a function's HP budget is split across several enemies rather than piled onto one, so no single enemy is ever a damage sponge you can't chew through. More complexity means more of them, not a bigger one.
 - **Want a tougher grunt without touching complexity math?** More than 5 parameters, or nesting more than 3 levels deep, adds bonus HP on top — "code smells" read as tougher fights.

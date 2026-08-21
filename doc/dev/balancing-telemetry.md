@@ -694,8 +694,8 @@ Three archetypes, distinguished by two booleans on `Enemy`, not by a stat table.
 | | Regular | Elite | Edge Case |
 |---|---|---|---|
 | Trigger | function/method entity | same, `complexity ≥ 40` | corridor dressing, and the tail of a `switch`-heavy entity's pack |
-| Pack size | `1 + floor(c/5)` | `ceil(min(c*25*2, 8*350) / 350)`, ≤ 8 | 1 |
-| HP | `max(25, round(c*25/count))`, anchor-weighted in a guarded (private/protected) room | `min(c*25*2, 2800)` split across the pack, each member ≤ 350 | 10–15 uniform |
+| Pack size | `1 + floor(c/5)` | `ceil(min(c*35*2, 8*350) / 350)`, ≤ 8 | 1 |
+| HP | `max(35, round(c*35/count))`, anchor-weighted in a guarded (private/protected) room | `min(c*35*2, 2800)` split across the pack, each member ≤ 350 | 25–35 uniform |
 | Melee dmg | 10 | 20 | 4 |
 | Bolt dmg | 8 | **32** | **1.6** |
 | Bolt speed | 5 | **3.6** | **7.5** |
@@ -852,7 +852,7 @@ The enemy mapping, condensed from `spawnEnemies` (`map/generation/enemies.ts`):
 const complexity = Math.max(1, room.entity.complexityScore);
 const elite = complexity >= ELITE_COMPLEXITY_THRESHOLD;           // 40
 const eliteTotal = Math.min(
-  complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER,           // 25 * 2
+  complexity * HP_PER_COMPLEXITY * ELITE_HP_MULTIPLIER,           // 35 * 2, raised from 25 on 2026-08-21
   ELITE_MAX_MEMBERS * ELITE_MEMBER_HP_CAP,                        // 8 * 350 = 2800
 );
 const count = elite
@@ -1545,7 +1545,7 @@ Elite (c=40),  player at full health      cost 2000 dmg  →  self-sustain 0.10 
 held and sharpened. On the demo campaign (normal): Edge Cases 8.1–13.8×, regular
 enemies **above 1.0 on 11 of 17 levels** peaking at 2.33, Elites 0.00. Across
 ripgrep's first 25 levels the regular figure runs **0.67–6.74** — real repositories
-are full of trivial functions, which floor at `HP_PER_COMPLEXITY` (25 HP) while
+are full of trivial functions, which floor at `HP_PER_COMPLEXITY` (35 HP since 2026-08-21, 25 before) while
 still paying a full-sized drop, so the more ordinary code a repo contains the more
 free ammo it prints. Carried ammo climbs from 10,456 to 53,293 damage over those 25
 levels without ever being spent down.

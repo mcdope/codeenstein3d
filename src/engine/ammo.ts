@@ -111,6 +111,38 @@ const STARTING_GAS_AMMO = 40;
 export const STARTING_SHELLS = 12;
 
 /**
+ * Ceiling on ammo carried into a level, as a multiple of what a *fresh* player
+ * would start that same level holding.
+ *
+ * **The generator has no repo-size normalisation except map dimension**, and
+ * carryover had none at all: `createPlayerState` took the previous level's
+ * reserve unconditionally, so a campaign accumulated ammo while its opposition
+ * did not scale. Solved across 23 repositories on `hard`, the median level's
+ * clear ratio without farming ran **7.1 at levels 1-3 against 882.8 past level
+ * 200** — a campaign trivialising itself, measured at **17.9x** median per-repo
+ * drift (last eight levels over first eight).
+ *
+ * At 3 that drift becomes **1.8x** and the deep levels land at 23.9 rather than
+ * 882.8, while levels 1-3 do not move at all (7.1 either way) — the cap is a
+ * ceiling, and the early game is nowhere near it. The cost is that **410 of
+ * 5,668 levels (7.2%) now need their drops picked up** to clear, against 29
+ * before, which is the intended direction: farming was previously irrelevant.
+ *
+ * **No level becomes unclearable**: 4 on `hard` with the cap and 4 without,
+ * unchanged. That is new — an earlier pricing showed the cap creating
+ * unclearable levels, which turned out to be an artifact of the solver banking
+ * every drop as bullets, harmless only while carryover was unbounded.
+ *
+ * 5 is the gentler setting (drift 2.3x, 291 levels needing farming) and 2 the
+ * harsher (1.3x, 497, and it starts eating the early game at 6.3). The knee is
+ * between 5 and 3; below 3 the returns are small and the cost is not.
+ *
+ * Applied per pool, so a pool the level cannot supply fresh (rockets before
+ * ghidra is owned) is capped against its own flat reserve rather than zero.
+ */
+export const CARRYOVER_CAP_MULTIPLE = 3;
+
+/**
  * Give the player enough bullets to clear the level with the pistol, plus a
  * generous margin, so the fight itself never grinds to a halt for lack of
  * ammo — but scattered ammo pickups are still meant to matter across a real

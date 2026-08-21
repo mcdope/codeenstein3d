@@ -9,8 +9,47 @@ import { isLockableRoom } from "./geometry";
 import { MAZE_THRESHOLD } from "./labyrinth";
 import { neighbors } from "./util";
 
-/** Hit points granted per point of cyclomatic complexity. */
-const HP_PER_COMPLEXITY = 25;
+/**
+ * Hit points granted per point of cyclomatic complexity.
+ *
+ * **Raised 25 -> 35 on 2026-08-21, from a playtest report and the measurement
+ * it prompted**: "pretty much every enemy is one-shot-killable on normal, even
+ * with the pistol, especially with the shotgun." Both halves were true, and
+ * they had different causes — see `EDGE_CASE_HP_MIN` for the pistol half.
+ *
+ * The shotgun half is this constant. A full blast is 7 pellets x 25 = **175
+ * damage**, and solved across 23 corpus repositories the regular-enemy HP
+ * population on normal ran median 74, p90 126, **p99 186** — so one blast
+ * one-shot **98.4% of regular enemies and 99.3% of everything**, and 94.6% of
+ * everything even on hard. The gun sat above the 99th percentile of the roster.
+ *
+ * **Nerfing the shotgun was measured first and rejected**: dropping
+ * `damagePerPellet` 25 -> 18 (its pre-2026-07 value) moves one-shots only
+ * 99.3% -> 95.9%, because 126 damage still clears the regular p90 of 126 and
+ * every Edge Case. The enemies were the low number, not the gun the high one.
+ *
+ * At 35 the regular median goes 74 -> 104 on normal and shotgun one-shots fall
+ * to 97.7% (84.0% on hard). **The economy absorbs it**: p10 clear ratio over
+ * the first 20 levels goes 6.8 -> 4.4 on normal, and the surplus this eats into
+ * was itself the subject of the "campaigns trivialise themselves" finding.
+ *
+ * **35 rather than 40, and the reason is a cliff.** Solved across the corpus,
+ * levels that fall below a combined clear ratio of 1.0 — unclearable even
+ * collecting every drop — go **0 today, 1 at 35, 7 at 40, and 35 at 50**, all on
+ * `hard`. At 40 one of the seven is the bundled demo campaign's own
+ * `stage17_the_monolith.php` (1.93 -> 0.92), which is a shipped level; at 35 the
+ * demo campaign is untouched and the single casualty is a deep `vim` file. The
+ * step from 35 to 40 costs seven times the breakage for about a point and a half
+ * of shotgun one-shots, so it is not a smooth dial — re-read this before moving
+ * it again.
+ *
+ * Unlike `COMPLEXITY_PER_EXTRA_ENEMY`, this draws no extra rng: pack `count` is
+ * independent of it, so **no map layout changes** — only `maxHp` values. It
+ * still moves `computeBalanceHash`, which hashes the roster's `maxHp` directly,
+ * so every recorded replay is invalidated *loudly* and `defaultHighscore.ts`
+ * needs regenerating.
+ */
+const HP_PER_COMPLEXITY = 35;
 
 /**
  * Extra enemies spawned per this many complexity points, beyond the first.
@@ -154,10 +193,33 @@ const EXIT_CLEARANCE_TILES = 2;
 /** Enemies spawned per breakup room, range [min, max]. */
 const EDGE_CASE_MIN_PER_ROOM = 1;
 const EDGE_CASE_MAX_PER_ROOM = 3;
-/** An Edge Case enemy's HP, range [min, max] — a "literal bug in the system"
- * dies almost instantly, on purpose. */
-const EDGE_CASE_HP_MIN = 10;
-const EDGE_CASE_HP_MAX = 15;
+/**
+ * An Edge Case enemy's HP, range [min, max].
+ *
+ * **Raised 10-15 -> 25-35 on 2026-08-21, and this is the half of the
+ * one-shot report that nothing else could reach.** Edge Cases are **58.4% of
+ * every enemy you meet** — the corridor-breakup population outnumbers the
+ * entity rooms — and at 10-15 HP the 22-damage pistol one-shot **99.9%** of
+ * them. That, and not the pistol being strong, is why "even with the pistol"
+ * was true: the same measurement puts pistol one-shots of *regular* enemies at
+ * **0.0%**, four shots for the median one.
+ *
+ * Measured across 23 corpus repositories, no other lever touched it. Raising
+ * `HP_PER_COMPLEXITY`, nerfing the shotgun and reverting the density change all
+ * left pistol one-shots at ~58%, because none of them changes this band. This
+ * one takes it to **0.1%** on normal and 0.0% on hard.
+ *
+ * The original intent — *"a literal bug in the system dies almost instantly"* —
+ * is deliberately kept, just at a scale that survives one pistol round: at 25-35
+ * they still die to a single shotgun blast, a knife swing on easy, or two pistol
+ * shots. What changes is that they are no longer free.
+ *
+ * **Easy is deliberately left alone.** Its 0.7x multiplier puts the band at
+ * 17.5-24.5 against the pistol's 22, so the pistol still one-shots 55% of the
+ * population there. On easy that reads as intended rather than as the defect.
+ */
+const EDGE_CASE_HP_MIN = 25;
+const EDGE_CASE_HP_MAX = 35;
 
 /**
  * How much of a pack's HP budget the anchor of a *lockable* room takes, as a
