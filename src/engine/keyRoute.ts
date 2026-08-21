@@ -121,6 +121,11 @@ function targetReachableWithout(map: GameMap, from: Point, target: KeyItem, held
     }
     if (!grew) return false;
   }
+  // Unreachable: every round either returns, or opens at least one gate, and
+  // the loop is bounded by the gate count — so it cannot run out of rounds with
+  // progress still being made. Kept as a total function rather than a `while
+  // (true)` that a reader has to prove terminates.
+  /* v8 ignore next -- @preserve */
   return false;
 }
 

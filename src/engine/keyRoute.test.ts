@@ -91,6 +91,37 @@ describe("nextKeyStep", () => {
     expect(step?.direct).toBe(false);
   });
 
+  it("falls back to the nearest lead when the chain forks and none is necessary", () => {
+    // The `?? leads[0]` the comment in `nextKeyStep` describes: a pocket with
+    // two ways in means neither key is individually required, so there is no
+    // honest "first" to name — take the nearest, which is still reachable and
+    // still progress.
+    const g = grid();
+    g[3][2] = DOOR_TILE; // gate 1, south way in
+    g[1][3] = DOOR_TILE; // gate 2, east way in
+    g[2][3] = 1;
+    g[3][3] = 1;
+    g[3][1] = 1;
+    g[6][9] = DOOR_TILE; // gate 0, the door being bumped
+    const m = map(
+      g,
+      [gate(0, 3, { x: 9, y: 6 }), gate(1, 2, { x: 2, y: 3 }), gate(2, 1, { x: 3, y: 1 })],
+      [key(0, 1, 1), key(1, 5, 9), key(2, 9, 9)],
+    );
+    const step = nextKeyStep(m, FROM, 0, new Set());
+    expect(step?.direct).toBe(false);
+    expect(step?.key.gateId).toBe(1); // the nearer of the two equally-optional ways in
+  });
+
+  it("returns null when asked from outside the grid", () => {
+    // Defensive: the caller floors a live player position, but nothing in the
+    // signature stops an off-grid tile, and an out-of-bounds row must not throw
+    // its way out of a HUD cue.
+    const g = grid();
+    const m = map(g, [gate(0, 0, { x: 9, y: 6 })], [key(0, 5, 9)]);
+    expect(nextKeyStep(m, { x: -3, y: -3 }, 0, new Set())).toBeNull();
+  });
+
   it("returns null when the asked-for key is sealed off entirely", () => {
     // Not a chain — genuinely walled in, with no other key to offer. Silence
     // is the honest answer, and it is what the hint did before this existed.
