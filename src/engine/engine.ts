@@ -108,6 +108,7 @@ import { audio } from "./audio";
 import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreBreakdown } from "./scoring";
 import { gateIdAt } from "../map/gates";
 import { gateColorName } from "./gateColors";
+import { nextKeyStep } from "./keyRoute";
 import { resolvePlayerDisplayName } from "./playerNames";
 import {
   PLAYER_STATS_ENABLED,
@@ -642,6 +643,10 @@ interface PlayerState {
   /** Which gate the live "you need a key" toast is about, so it can name the
    * colour. Meaningless while `lockedDoorToastFrames` is 0. */
   lockedDoorGateId: number;
+  /** The gate whose key has to be fetched *first*, when the one the player
+   * asked for is behind another lock — see `nextKeyStep`. `-1` when the asked-for
+   * key is reachable, which is the case the toast has always handled. */
+  lockedDoorBlockerGateId: number;
   kills: number;
   killScore: number;
   recentKillTimes: number[];
@@ -1737,6 +1742,7 @@ export class RaycasterEngine {
       reloadingWeaponIndex: null,
       heldGates: new Set<number>(),
       lockedDoorGateId: -1,
+      lockedDoorBlockerGateId: -1,
       kills: 0,
       killScore: 0,
       recentKillTimes: [],
@@ -3570,6 +3576,7 @@ export class RaycasterEngine {
         this.ctx,
         local.lockedDoorToastFrames / LOCKED_DOOR_TOAST_FRAMES,
         this.map.gates[local.lockedDoorGateId]?.colorIndex ?? 1,
+        local.lockedDoorBlockerGateId >= 0 ? (this.map.gates[local.lockedDoorBlockerGateId]?.colorIndex ?? -1) : -1,
       );
     }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
@@ -4756,64 +4763,30 @@ export class RaycasterEngine {
     if (p.id !== this.localPlayerId) return;
     if (p.keyPingFrames > 0) return;
 
+    // The asked-for key when it is reachable, otherwise the one that unblocks
+    // it. Before 2026-08-21 this pointed only at the asked-for key and went
+    // silent whenever it sat behind another lock — which measured as 71% of
+    // doors at the moment a player first meets them. See `nextKeyStep`.
+    const step = nextKeyStep(
+      this.map,
+      { x: Math.floor(p.player.posX), y: Math.floor(p.player.posY) },
+      gateId,
+      p.heldGates,
+    );
     p.lockedDoorToastFrames = LOCKED_DOOR_TOAST_FRAMES;
     p.lockedDoorGateId = gateId;
+    p.lockedDoorBlockerGateId = step && !step.direct ? step.key.gateId : -1;
     p.keyPingFrames = KEY_PING_FRAMES;
-    p.keyPingTarget = this.keyForGate(p, gateId);
+    p.keyPingTarget = step ? { x: step.key.x, y: step.key.y } : null;
     p.keyPingBeatFrames = KEY_PING_LEAD_FRAMES;
     audio.playLockedDoor();
     // No coordinates, deliberately: `consoleSidebar.ts` mirrors these strings
     // straight onto the screen, and key/exit/secret locations never go into
-    // one. The minimap is where "where" gets answered.
-    console.log(`%c[door] locked — you need the ${gateColorName(this.map, gateId)} key`, "color:#568ebe;font-weight:bold");
-  }
-
-  /**
-   * `gateId`'s own uncollected key, if it can actually be walked to.
-   *
-   * This used to be "the nearest uncollected key of any kind", because keys
-   * were fungible and any of them opened the door being pushed. Now exactly one
-   * key opens it, so pointing at the nearest is pointing at the wrong one —
-   * confidently, and at a key that will not help.
-   *
-   * Still measured by *walking* distance rather than straight line, via the
-   * player-rooted BFS field the chase AI already maintains (`PathField`), whose
-   * `isWall` counts a still-locked `DOOR_TILE` as solid. So a key sitting
-   * behind another locked door is skipped instead of pointed at — and with one
-   * key per gate, `null` ("it is behind something else") is the honest answer
-   * rather than a reason to fall back to some other key.
-   *
-   * `ensure` is idempotent and re-floods only when the player crossed a tile
-   * or the grid mutated — and `updateEnemyAi` calls it with these very
-   * arguments later in this same tick, so this costs nothing amortised.
-   *
-   * Multiplayer key *loot drops* are deliberately not candidates: their
-   * minimap markers are fog-gated on `map.visited` precisely so a disconnect
-   * doesn't broadcast its own location, and pinging one would undo that.
-   *
-   * `null` when every remaining key is walled off, or none is left — the
-   * denial and the toast still fire, there is simply nothing to point at.
-   */
-  private keyForGate(p: PlayerState, gateId: number): Point | null {
-    p.pathField.ensure(
-      this.map,
-      Math.floor(p.player.posX),
-      Math.floor(p.player.posY),
-      this.gridVersion,
-    );
-    let best: Point | null = null;
-    let bestDist = Infinity;
-    for (const key of this.map.keys) {
-      if (key.collected || key.gateId !== gateId) continue;
-      const dist = p.pathField.distAt(Math.floor(key.x), Math.floor(key.y));
-      // `-1` is `PathField`'s "unreached". There is exactly one key per gate,
-      // so this loop finds at most one candidate and the comparison is really
-      // just "is it reachable at all".
-      if (dist < 0 || dist >= bestDist) continue;
-      bestDist = dist;
-      best = { x: key.x, y: key.y };
-    }
-    return best;
+    // one. A colour name is not a location — the line already named one — so
+    // the blocker may be named too. The minimap is still where "where" gets
+    // answered.
+    const lead = p.lockedDoorBlockerGateId >= 0 ? `; find the ${gateColorName(this.map, p.lockedDoorBlockerGateId)} key first` : "";
+    console.log(`%c[door] locked — you need the ${gateColorName(this.map, gateId)} key${lead}`, "color:#568ebe;font-weight:bold");
   }
 
   /**

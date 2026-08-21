@@ -12,6 +12,20 @@ That second category is why this file is kept rather than deleted. Most entries 
 Entries are newest-first, in the format the `notes` backlog uses. Nothing here is edited for hindsight — an entry that was wrong at the time stays wrong, with a later correction appended, so the reasoning trail survives intact.
 
 
+- [x] **A locked door always gives the player somewhere to go now — 71% of doors used to give them silence (2026-08-21).** From a playtest report: a violet door on `git`'s `t/unit-tests/clar/clar.c` showed the banner and pinged nothing, with no way to tell where the key was.
+
+  **Neither component was broken, which is why it survived this long.** `placeKeys` never puts a key behind a lock the player has not already paid for, and `assertAllRoomsReachable` proves every level solvable in key order. The ping, for its part, deliberately refused to point at a key behind another locked door — *"a key behind another locked door isn't a suggestion"* — because pointing at an unreachable thing is worse than pointing at nothing. Both defensible; together they hand the player a colour name and silence.
+
+  **And the silent case was the common one.** `placeKeyFor`'s *preferred* tier puts each key in the room the previous gate just opened, so chains are serial by construction: across 47 multi-gate levels in git/curl/flask/django, **46 were fully serial**, the median level had exactly one key reachable from spawn however many gates it had, and **116 of 163 doors (71%) had an unreachable key at the moment the player first met them**.
+
+  **The fix answers the next step rather than the literal question.** `nextKeyStep` (`engine/keyRoute.ts`) runs the same flood/collect/reopen fixpoint `placeKeys` and `assertAllRoomsReachable` already run — from the player's tile, seeded with the keys they hold — and returns the asked-for key when it is reachable, otherwise the key that unblocks it. The banner grows a second line naming that colour, tinted as *its* gate, and the minimap pings it.
+
+  Two details that are not incidental. **A door the player already holds the key for had to stop counting as an obstacle**: `PathField`'s `isWall` calls a still-`DOOR_TILE` solid regardless, so without that the new hint would cheerfully send someone after a key already in their pocket. And the lead is checked for **necessity** — re-run the fixpoint without it, keep it only if the target stays unreachable — so the word "first" is true rather than merely plausible; with `MAX_GATE_ROOMS` at 4 that costs a handful of floods once per ping window.
+
+  **Verified against the thing that motivated it**: re-running the corpus diagnostic over every gate of every multi-gate level, asked from spawn with no keys, the silent share goes **71.2% → 0.0%** — the same 116 doors now point at a blocking key, and the 47 that already worked still point directly. Both new rules were mutation-tested.
+
+  **A player tip was wanted alongside it and the proposed wording was wrong**, in an instructive way. The suggestion was "if the HUD shows multiple keys, you most likely need all of them to reach the exit"; `placeDoors` takes *at most one* room that actually gates the exit and picks the rest by loot value, which suggested the opposite. Measured instead of argued: of 85 levels showing two or more key pips, **28% need none of the keys to reach the exit and 26% need all of them**, the rest in between. Both readings were wrong about a quarter of the time, so the tip teaches the mechanic — keys chain, follow the one you can reach — and quotes the spread rather than a rule.
+
 - [x] **Enemy HP raised — `HP_PER_COMPLEXITY` 25 -> 35 and Edge Cases 10-15 -> 25-35 — from a playtest report, priced across the corpus, and confirmed by play (2026-08-21).** The one balance change in this sequence that shipped, and the only one validated by the instrument the solver does not have.
 
   **The report**: *"pretty much every enemy is one-shot-killable in normal difficulty, even with the pistol, esp. with the shotgun."* Both halves were true and they had different causes, which is why no single number fixed it.

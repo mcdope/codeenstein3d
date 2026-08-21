@@ -1919,6 +1919,92 @@ describe("RaycasterEngine — locked-door hint", () => {
     expect(hintState(engine).keyPingTarget).toBeNull();
   });
 
+  it("pings the blocking key when the asked-for key is behind another gate's door", () => {
+    // The reported defect, 2026-08-21: a violet door whose key sat behind the
+    // green door showed the banner and pinged nothing, leaving the player with
+    // a colour name and no lead. Measured at 71% of doors at the moment a
+    // player first meets them, so this was the common case, not an edge one.
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE; // gate 0 — the one the player walks into, east of spawn
+    g[3][2] = DOOR_TILE; // gate 1 — the only way into the north-west pocket
+    g[1][3] = 1;
+    g[2][3] = 1;
+    g[3][3] = 1;
+    g[3][1] = 1; // pocket is (1..2, 1..2), sealed but for the door at (2,3)
+    const behindGate1: KeyItem = { x: 1.5, y: 1.5, collected: false, gateId: 0 };
+    const reachableKey: KeyItem = { x: 5.5, y: 9.5, collected: false, gateId: 1 };
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [behindGate1, reachableKey],
+        doors: [{ x: 7, y: 5 }, { x: 2, y: 3 }],
+        gates: [
+          { id: 0, colorIndex: 3, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] },
+          { id: 1, colorIndex: 2, room: { x: 1, y: 1, w: 2, h: 2 }, doors: [{ x: 2, y: 3 }] },
+        ],
+      },
+      size,
+    );
+    const { engine, input } = makeEngine(map);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    silenceAudio();
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    const state = hintState(engine);
+    // Points at gate 1's key — the one that is actually reachable — not at
+    // gate 0's, and not at nothing.
+    expect(state.keyPingTarget).toEqual({ x: 5.5, y: 9.5 });
+    expect(state.lockedDoorGateId).toBe(0);
+    expect(state.lockedDoorBlockerGateId).toBe(1);
+    // And the console line names the lead, without a coordinate.
+    const line = String(doorLogs(log)[0]?.[0] ?? "");
+    expect(line).toContain("you need the violet key");
+    expect(line).toContain("find the green key first");
+    expect(line).not.toMatch(/\d/);
+  });
+
+  it("pings the asked-for key when the door in the way is one the player can already open", () => {
+    // The wrinkle that makes the fix safe: `PathField` treats a still-`DOOR_TILE`
+    // as solid even when its key is in hand, so a naive reachability test would
+    // send the player after a key they are already carrying. Holding gate 1
+    // must resolve to gate 0's own key, direct.
+    const size = 12;
+    const g = walledRoom(size);
+    g[5][7] = DOOR_TILE;
+    g[3][2] = DOOR_TILE;
+    g[1][3] = 1;
+    g[2][3] = 1;
+    g[3][3] = 1;
+    g[3][1] = 1;
+    const behindGate1: KeyItem = { x: 1.5, y: 1.5, collected: false, gateId: 0 };
+    const reachableKey: KeyItem = { x: 5.5, y: 9.5, collected: false, gateId: 1 };
+    const map = fakeMap(
+      {
+        grid: g,
+        keys: [behindGate1, reachableKey],
+        doors: [{ x: 7, y: 5 }, { x: 2, y: 3 }],
+        gates: [
+          { id: 0, colorIndex: 3, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] },
+          { id: 1, colorIndex: 2, room: { x: 1, y: 1, w: 2, h: 2 }, doors: [{ x: 2, y: 3 }] },
+        ],
+      },
+      size,
+    );
+    const { engine, input } = makeEngine(map);
+    silenceAudio();
+    hintState(engine).heldGates.add(1);
+
+    input.keys.add("KeyW");
+    for (let i = 0; i < 20; i++) engine.advance(0.1);
+
+    const state = hintState(engine);
+    expect(state.keyPingTarget).toEqual({ x: 1.5, y: 1.5 });
+    expect(state.lockedDoorBlockerGateId).toBe(-1);
+  });
+
   it("skips an already-collected key when choosing what to ping", () => {
     // A teammate can have taken the closest one; it still sits in `map.keys`,
     // just flagged, and pinging it would send the player to bare floor.

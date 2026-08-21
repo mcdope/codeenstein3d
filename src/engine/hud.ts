@@ -212,23 +212,43 @@ const HUD_GATE_NAMES = ["red", "blue", "green", "violet"];
  * thing to do, so this and `drawOutOfAmmoToast` genuinely land in the same
  * second — the same collision `drawAcidOverflowToast` was moved down to avoid.
  */
-export function drawLockedDoorToast(ctx: CanvasRenderingContext2D, alpha: number, colorIndex: number): void {
+export function drawLockedDoorToast(
+  ctx: CanvasRenderingContext2D,
+  alpha: number,
+  colorIndex: number,
+  blockerColorIndex = -1,
+): void {
   const w = ctx.canvas.width;
   const text = `You need the ${HUD_GATE_NAMES[colorIndex]} key!`;
+  // The second line exists because naming the key was not enough: keys are
+  // chained, so the one being asked for is usually behind another door and the
+  // player was left with a colour and no lead (measured at 71% of doors at the
+  // moment they are first met). `-1` is "the key you want is reachable" — the
+  // case this toast has always covered, and it stays a single line.
+  const lead = blockerColorIndex >= 0 ? `→ find the ${HUD_GATE_NAMES[blockerColorIndex]} key first` : null;
   const tone = HUD_GATE_COLORS[colorIndex];
   ctx.save();
   ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
   ctx.textAlign = "center";
   ctx.font = "bold 14px ui-monospace, monospace";
-  const boxW = ctx.measureText(text).width + 24;
+  const leadWidth = lead === null ? 0 : ctx.measureText(lead).width;
+  const boxW = Math.max(ctx.measureText(text).width, leadWidth) + 24;
   const boxX = w / 2 - boxW / 2;
+  const boxH = lead === null ? 24 : 42;
   ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(boxX, 86, boxW, 24);
+  ctx.fillRect(boxX, 86, boxW, boxH);
   ctx.strokeStyle = tone;
   ctx.lineWidth = 1;
-  outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, 23);
+  outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, boxH - 1);
   ctx.fillStyle = tone;
   ctx.fillText(text, w / 2, 102);
+  if (lead !== null) {
+    // Tinted as the *blocking* gate, not the asked-for one: the whole point of
+    // the line is to send the player at a different door, and the colour is
+    // what they will actually match against the world.
+    ctx.fillStyle = HUD_GATE_COLORS[blockerColorIndex];
+    ctx.fillText(lead, w / 2, 120);
+  }
   ctx.textAlign = "start";
   ctx.restore();
 }
