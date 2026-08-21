@@ -27,7 +27,7 @@ and level generation happen entirely in the browser, and nothing is uploaded any
 | A file | A level |
 | A folder | Nothing of its own — the tree order (directories first, then alphabetical) is the order you play the levels in |
 | A function, method, class or global inside that file | A room of that level |
-| A function/method (HP = `cyclomatic_complexity × 25`, split across its pack — doubled and capped for an Elite) | An enemy — higher complexity means more health, more enemies, or a gold-tinted Elite pack |
+| A function/method (HP = `cyclomatic_complexity × 35`, split across its pack — doubled and capped for an Elite) | An enemy — higher complexity means more health, more enemies, or a gold-tinted Elite pack |
 | A function with code smells (>5 params, >3 nesting levels) | A tougher enemy (scaled bonus complexity) |
 | A global variable | An acid pool (hazard terrain) |
 | A private/protected method | A locked room, gated behind a key found elsewhere in the level |
@@ -108,7 +108,7 @@ Procedural Map Generator (grid, enemies, hazards, teleporters)
 Each stage only consumes the data structure from the previous stage — languages, map styles, and renderers can evolve independently.
 
 ### Level Generation
-- **Functions → Enemies** carrying `cyclomatic_complexity × 25` HP *between them* — one enemy below complexity 5, then one more per 5 on top, splitting that pool rather than inflating a single body
+- **Functions → Enemies** carrying `cyclomatic_complexity × 35` HP *between them* — one enemy below complexity 5, then one more per 5 on top, splitting that pool rather than inflating a single body
   - At complexity ≥ 40 the room becomes an **Elite pack** instead: 2× the room's HP budget, capped and split across up to 8 members, led by a gold-tinted Elite dealing 2× damage
   - Functions with code smells (more than 5 params, more than 3 nesting levels) get scaled bonus complexity
   

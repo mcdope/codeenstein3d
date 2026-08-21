@@ -64,7 +64,7 @@ describe("spawnEnemies", () => {
     const room = makeRoom(1, 1, 6, 6, entity({ complexityScore: SOLO_COMPLEXITY }));
     const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
     expect(enemies).toHaveLength(1);
-    expect(enemies[0].hp).toBe(Math.max(25, Math.round((SOLO_COMPLEXITY * 25) / 1)));
+    expect(enemies[0].hp).toBe(Math.max(35, Math.round((SOLO_COMPLEXITY * 35) / 1))); // 35 = HP_PER_COMPLEXITY
     expect(enemies[0].elite).toBe(false);
     expect(enemies[0].edgeCase).toBe(false);
     expect(enemies[0].entity).toBe(room.entity);
@@ -74,7 +74,7 @@ describe("spawnEnemies", () => {
     const room = makeRoom(1, 1, 6, 6, entity({ complexityScore: 0 }));
     const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
     expect(enemies).toHaveLength(1);
-    expect(enemies[0].hp).toBe(25); // complexity clamped to 1 -> 1*25/1
+    expect(enemies[0].hp).toBe(35); // complexity clamped to 1 -> 1*HP_PER_COMPLEXITY/1
   });
 
   it("splits a high-complexity function into a pack, one extra enemy per 10 points", () => {
@@ -87,9 +87,13 @@ describe("spawnEnemies", () => {
   it("spawns an Elite pack at/above the complexity threshold, at twice the pack budget", () => {
     const room = makeRoom(1, 1, 10, 10, entity({ complexityScore: 40 }));
     const enemies = spawnEnemies([room], { x: 99, y: 99 }, mulberry32(1));
-    expect(enemies).toHaveLength(6); // 40*25*2 = 2000, split by the 350 HP member cap
-    for (const e of enemies) expect(e.hp).toBe(333);
-    expect(enemies.reduce((sum, e) => sum + e.hp, 0)).toBe(1998); // 2000, minus rounding
+    // 40 * 35 * 2 = 2800, exactly the 8 x 350 member-cap ceiling.
+    // The pack got bigger when the HP rate rose 25 -> 35 (2026-08-21): the
+    // budget grew while the per-member cap did not, so it spends the cap on more
+    // bodies rather than harder ones. That is the cap doing its job.
+    expect(enemies).toHaveLength(8);
+    for (const e of enemies) expect(e.hp).toBe(350); // ELITE_MEMBER_HP_CAP
+    expect(enemies.reduce((sum, e) => sum + e.hp, 0)).toBe(2800); // capped at 8 x 350
   });
 
   it("flags only the anchor as Elite, because the damage multiplier is per-enemy", () => {
@@ -134,13 +138,14 @@ describe("spawnEnemies", () => {
     // the size of any individual enemy in it.
     const perMember = (complexityScore: number) =>
       spawnEnemies([makeRoom(1, 1, 18, 18, entity({ complexityScore }))], { x: 99, y: 99 }, mulberry32(1))[0].hp;
-    // 39 -> an 8-member pack at 122 each; 40 -> a 6-member Elite pack at 333.
-    // Body count *drops* crossing the threshold now (8 -> 6), where under the
-    // old /10 divisor it rose (4 -> 6). That non-monotonicity is a real
-    // consequence of the density change and is recorded rather than smoothed:
-    // "fewer, much harder" is the intended reading of an Elite room.
-    expect(perMember(39)).toBe(122);
-    expect(perMember(40)).toBe(333); // was 2000 before the Elite pack split
+    // 39 -> an 8-member pack at 171 each; 40 -> an 8-member Elite pack at the
+    // 350 member cap. Both numbers moved when the HP rate rose 25 -> 35
+    // (2026-08-21). The body count no longer changes across the boundary at all
+    // — the Elite budget now saturates ELITE_MAX_MEMBERS (39 x 35 x 2 = 2730,
+    // against a 8 x 350 = 2800 ceiling) — so what the threshold buys is purely
+    // per-member HP and the damage multiplier.
+    expect(perMember(39)).toBe(171);
+    expect(perMember(40)).toBe(350); // was 2000 before the Elite pack split
   });
 
   it("aggregates enemies across multiple rooms", () => {
@@ -414,8 +419,8 @@ describe("spawnEdgeCaseEnemies", () => {
       expect(e.edgeCase).toBe(true);
       expect(e.elite).toBe(false);
       expect(e.entity.name).toBe("EdgeCase");
-      expect(e.hp).toBeGreaterThanOrEqual(10);
-      expect(e.hp).toBeLessThanOrEqual(15);
+      expect(e.hp).toBeGreaterThanOrEqual(25);
+      expect(e.hp).toBeLessThanOrEqual(35);
     }
   });
 
