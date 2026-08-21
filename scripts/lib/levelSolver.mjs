@@ -452,7 +452,7 @@ export function prePlacedBudget({ ammoPickups, constants, ownedWeapons, difficul
  * level. Deliberately the *whole* roster, not the shortest path's worth — the
  * question it answers is "if you fought everything, what would the level give
  * back", which is the ceiling the reliance ratio is measured against. */
-export function dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef = null }) {
+export function dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const regular = expectedRegularDrop({ constants, ownedWeapons, bonusLevel, difficulty });
   const elite = expectedEliteDrop({ constants, ownedWeapons, difficulty });
   let damage = 0;
@@ -465,7 +465,11 @@ export function dropBudget({ roster, constants, ownedWeapons, bonusLevel, diffic
     // what the kill cost.
     const scale = hpScaledDropRef && !elite_ ? e.maxHp / hpScaledDropRef : 1;
     damage += value.damage * scale;
-    health += value.health;
+    // The same coupling applied to the guaranteed heal (user's suggestion,
+    // 2026-08-21). Health's cost driver is damage *taken*, which tracks how
+    // long an enemy lives rather than its HP directly — so HP is a proxy here,
+    // not the identity it is for ammo. Priced separately for that reason.
+    health += value.health * (hpScaledHealthRef && !elite_ ? e.maxHp / hpScaledHealthRef : 1);
   }
   return { damage, health, perRegularKill: regular, perEliteKill: elite };
 }
@@ -534,7 +538,7 @@ export function hpOutliers(roster, obtainableDamage) {
  * carryover over the starting formula from level 2 on. Getting that wrong
  * makes every level after the first read as far poorer than it plays.
  */
-export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1, carryoverCapMultiple = Infinity, hpScaledDropRef = null }) {
+export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAmmo = null, campaignLevelIndex = 1, carryoverCapMultiple = Infinity, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const roster = scaleRosterForDifficulty(map.enemies, difficulty, constants.DIFFICULTY_MULTIPLIERS);
   const bonusLevel = Boolean(map.bonusLevel);
   const poolValue = poolDamageValues(constants.profiles, ownedWeapons);
@@ -545,7 +549,7 @@ export function solveLevel({ map, constants, difficulty, ownedWeapons, carriedAm
 
   const enemies = enemyBudget(roster, constants, difficulty);
   const prePlaced = prePlacedBudget({ ammoPickups: map.ammoPickups, constants, ownedWeapons, difficulty });
-  const drops = dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef });
+  const drops = dropBudget({ roster, constants, ownedWeapons, bonusLevel, difficulty, hpScaledDropRef, hpScaledHealthRef });
 
   const obtainable = carriedDamage + prePlaced.damage + drops.damage;
   const ratio = (damage) => (enemies.totalHp > 0 ? damage / enemies.totalHp : Infinity);
@@ -650,13 +654,13 @@ export function guaranteedLoadout(campaignLevelIndex, constants) {
  * charged for the whole roster (a kill rate of 1) while banking none of the
  * drops (a rate of 0).
  */
-export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE, carryoverCapMultiple = Infinity, hpScaledDropRef = null }) {
+export function solveCampaign({ levels, constants, difficulty, killRate = DEFAULT_KILL_RATE, carryoverCapMultiple = Infinity, hpScaledDropRef = null, hpScaledHealthRef = null }) {
   const results = [];
   let carried = null;
   for (const [i, level] of levels.entries()) {
     const campaignLevelIndex = i + 1;
     const ownedWeapons = guaranteedLoadout(campaignLevelIndex, constants);
-    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex, carryoverCapMultiple, hpScaledDropRef });
+    const solved = solveLevel({ map: level.map, constants, difficulty, ownedWeapons, carriedAmmo: carried, campaignLevelIndex, carryoverCapMultiple, hpScaledDropRef, hpScaledHealthRef });
     results.push({ ...solved, filename: level.filename });
     carried = carryForward(solved, constants, killRate);
   }
