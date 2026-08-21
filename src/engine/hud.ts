@@ -669,7 +669,7 @@ function drawAmmoPanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats:
   //
   // `stats` reports the *total* owned, so the reserve shown beside the
   // magazine is that total minus what is already in the gun — the familiar
-  // "9 / 31" split. A weapon with no magazine (Friday Hotfix) keeps the single
+  // "9/31" split. A weapon with no magazine (Friday Hotfix) keeps the single
   // bare number it always had.
   // `9/31`, not `9 / 31`: the spaces cost two glyphs of a panel that has 87px
   // at the Classic preset, and a four-digit reserve — ordinary by mid-campaign

@@ -4984,7 +4984,7 @@ export class RaycasterEngine {
    * and the multiplayer level-transition payload) must go through this rather
    * than reading `p.ammo` directly, or a magazine's worth of ammo silently
    * evaporates at every level boundary. The HUD subtracts the loaded rounds
-   * back out to show the familiar "9 / 31" split.
+   * back out to show the familiar "9/31" split.
    */
   /**
    * How far through its reload the equipped weapon is, 0 (not reloading) to 1
