@@ -227,3 +227,32 @@ describe("recordHighscore", () => {
     expect(warnSpy.mock.calls[2][0]).toContain("Failed to save");
   });
 });
+
+describe("isHighscoreEntry — rollbacksUsed", () => {
+  const base = {
+    score: 1,
+    campaignName: "demo",
+    levelName: "a.c",
+    levelsCleared: 1,
+    hash: "abc",
+    achievedAt: 1,
+  };
+
+  it("accepts an entry with the field, without it, and rejects a non-number", async () => {
+    // Reached through the real load path rather than by exporting the
+    // predicate: a stored board is JSON, so the only way a bad value gets in
+    // is through here.
+    for (const [value, kept] of [
+      [2, true],
+      [0, true],
+      [undefined, true],
+      ["2", false],
+      [null, false],
+    ] as [unknown, boolean][]) {
+      const entry = value === undefined ? { ...base } : { ...base, rollbacksUsed: value };
+      localStorage.setItem("codeenstein-highscores", JSON.stringify([entry]));
+      const board = await loadHighscores();
+      expect(board.some((e) => e.hash === "abc"), `rollbacksUsed=${JSON.stringify(value)}`).toBe(kept);
+    }
+  });
+});

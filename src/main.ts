@@ -953,11 +953,11 @@ let rollbacksRemaining = 0;
  * continued run is marked rather than silently equal to a clean one. */
 let rollbacksUsed = 0;
 /** Set while a Kernel Panic overlay is offering the rollback choice, holding
- * the campaign save as of the dead level's *entry*. Exists so `beforeunload`
+ * the stats as of the dead level's *entry*. Exists so `beforeunload`
  * can tell "died, decision still pending" apart from "still playing" — the
  * two want opposite things persisted, and without it a tab closed at the
  * death screen writes `lastStats` (health 0) as the resume point. */
-let pendingRollback: { entrySave: CampaignSave | null } | null = null;
+let pendingRollback: { entryStats: EngineStats } | null = null;
 /** In-flight (or already-resolved) whole-codebase stats for the currently
  * loaded workspace — every parsable file in `workspaceTree`, not just the
  * files this run's levels actually visit. Kicked off by `startCodebaseStats`
@@ -2799,9 +2799,7 @@ window.addEventListener("beforeunload", () => {
     // Persist the level-entry snapshot instead. The rollback was already
     // charged at the moment of death, so this is not a free retry — which is
     // the whole reason it is charged there rather than on the button.
-    const { entrySave } = pendingRollback;
-    if (entrySave) saveCampaign({ ...entrySave, rollbacksRemaining, rollbacksUsed });
-    else clearCampaignSave();
+    persistRollbackPoint(pendingRollback.entryStats);
     return;
   }
   if (activeEngine && lastStats) persistProgress(lastStats);
@@ -3367,9 +3365,11 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   // `src/prng.ts`'s doc comment for what's seeded vs. left cosmetic.
   const gameplaySeed = randomSeed();
 
-  /** This level's own entry snapshot, filled on its first rendered frame —
-   * see `onStats` below, and `onGameOver`, which restores it. */
-  let entrySave: CampaignSave | null = null;
+  /** This level's own entry state, captured on its first rendered frame —
+   * see `onStats` below, and `onGameOver`, which restores it. Held as raw
+   * stats rather than a built save so the one place that knows whether a run
+   * is savable at all stays `buildCampaignSave`. */
+  let entryStats: EngineStats | null = null;
 
   // A genuinely fresh run — no carryover, or no in-memory recorder left to
   // append to (e.g. right after a page reload, via "Continue Run") — starts a
@@ -3419,7 +3419,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
         // carryover to build one from, and rebuilding the engine's own
         // starting health/ammo in this file would be a mirror with no link to
         // the thing it mirrors.
-        entrySave ??= buildCampaignSave(stats);
+        entryStats ??= stats;
         const now = Date.now();
         if (now - lastSaveAt >= AUTOSAVE_INTERVAL_MS) {
           lastSaveAt = now;
@@ -3436,7 +3436,15 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
           // state for exactly this reason.
           rollbacksRemaining -= 1;
           rollbacksUsed += 1;
-          pendingRollback = { entrySave };
+          // `?? stats` is unreachable: `advance()` fires `onStats` for a
+          // frame before it fires `onGameOver` for that same frame, and
+          // `start()` fires one before the loop even begins — so a death
+          // cannot happen on a level that never reported stats. Kept as a
+          // real fallback rather than a `!` so a future reordering degrades
+          // to "resume at the death frame" instead of throwing.
+          /* v8 ignore next -- @preserve */
+          const entry = entryStats ?? stats;
+          pendingRollback = { entryStats: entry };
           const remaining = rollbacksRemaining;
           hud.showKernelPanic(
             statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats),
@@ -3459,8 +3467,13 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
                 currentReplayRecorder?.dropCurrentLevel();
                 // Rewritten, never cleared — clearing would hide the Continue
                 // tab mid-run, and leaving the autosave alone would resume the
-                // player into the low-health state they just died in.
-                if (entrySave) saveCampaign({ ...entrySave, rollbacksRemaining, rollbacksUsed });
+                // player into the low-health state they just died in. Routed
+                // through `persistProgress` so the "is this run savable at
+                // all" question (remote/demo workspaces have no resume point)
+                // has exactly one answer, in `buildCampaignSave`. The counts
+                // it writes are the module-scope ones, already decremented
+                // above, which is precisely what a resume should find.
+                persistRollbackPoint(entry);
                 launchLevel(path, parsed, source, effectiveCarryover);
               },
             },
@@ -4180,6 +4193,23 @@ function buildCampaignSave(stats: EngineStats): CampaignSave | null {
     rollbacksRemaining,
     rollbacksUsed,
   };
+}
+
+/**
+ * Write the resume point a rollback restores to: the dead level's entry
+ * state, with whatever rollback counts are current (they are decremented at
+ * the death itself, before this runs).
+ *
+ * A thin alias for `persistProgress` rather than its own save-building
+ * logic, so a remote or demo workspace — which has no resume point at all —
+ * is still handled in the single place that decides that,
+ * `buildCampaignSave`. Deliberately does *not* fall back to
+ * `clearCampaignSave()` when the run isn't savable: on a demo run that would
+ * reach out and delete an unrelated local campaign save the player still
+ * wants.
+ */
+function persistRollbackPoint(entryStats: EngineStats): void {
+  persistProgress(entryStats);
 }
 
 /** Save the current position + stats, if a level is actually running. */

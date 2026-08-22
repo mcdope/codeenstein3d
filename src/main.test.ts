@@ -6444,6 +6444,10 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
   });
 });
 
+/** `console.log`'s spy. Named so the helpers below can take it as a
+ * parameter without `.mock.calls` degrading to `any[]`. */
+type ConsoleLogSpy = { mock: { calls: unknown[][] } };
+
 describe("main.ts — rollbacks (arcade continues)", () => {
   let raf: RafController;
 
@@ -6462,6 +6466,214 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
     return importMain();
   }
+
+  /** Loads a one-file hazard workspace and walks into the acid until the
+   * player dies, leaving whatever overlay the death produced on screen.
+   * Returns the generated map so a caller can walk back into the acid again
+   * after a rollback. */
+  async function dieInTheAcid(logSpy: ConsoleLogSpy): Promise<void> {
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as {
+      grid: number[][];
+      spawn: { x: number; y: number };
+      hazards: { x: number; y: number }[];
+    };
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    const path = bfsPath(map.grid, map.spawn, map.hazards[0]);
+    walkPath(canvas, raf, path, () => testHooks()?.getPlayerState().state !== "playing", 1000);
+    for (let i = 0; i < 300 && testHooks()?.getPlayerState().state === "playing"; i++) raf.flush(1, 50);
+    expect(testHooks()?.getPlayerState().state).toBe("over");
+  }
+
+  /** Waits for `recordRunHighscore`'s fire-and-forget write to land and
+   * returns the decoded board. */
+  async function waitForHighscoreEntries(): Promise<Awaited<ReturnType<typeof loadHighscores>>> {
+    // `waitUntil` takes a synchronous predicate, so poll the raw blob (which
+    // is what `recordHighscore` writes) and decode once it appears.
+    await waitUntil(() => localStorage.getItem("codeenstein-highscores") !== null, 8000);
+    await flushAsync();
+    return loadHighscores();
+  }
+
+  /** Boots a hazard workspace with hooks on and waits for the canvas. */
+  async function launchHazardRun(): Promise<ConsoleLogSpy> {
+    await importMainWithHooks();
+    const logSpy = vi.spyOn(console, "log");
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    return logSpy;
+  }
+
+  it("rolls the level back to its entry state, rewriting the save rather than clearing it", async () => {
+    localStorage.setItem("codeenstein-difficulty", "normal");
+    const logSpy = await launchHazardRun();
+    const { loadCampaignSave } = await import("./main");
+    await dieInTheAcid(logSpy);
+
+    expect(rollbackState()).toMatchObject({ remaining: 1, used: 1 });
+
+    raf.flush(1, 1300); // past DISMISS_LOCK_MS
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" })); // "Roll back"
+
+    await waitUntil(() => logSpy.mock.calls.some((c) => String(c[0]).includes("[rollback]")));
+    // The save is rewritten to the entry snapshot, never cleared — clearing
+    // would hide the Continue tab mid-run, and leaving the death autosave
+    // would resume the player into the state they just died in.
+    const save = loadCampaignSave();
+    expect(save).not.toBeNull();
+    expect(save!.rollbacksRemaining).toBe(1);
+    expect(save!.rollbacksUsed).toBe(1);
+    expect(save!.health).toBeGreaterThan(0);
+    // Nothing recorded: the run is still going.
+    expect(localStorage.getItem("codeenstein-highscores")).toBeNull();
+    // And the level really did relaunch — a second [map] log for the same file.
+    expect(logSpy.mock.calls.filter((c) => String(c[0]).startsWith("[map]")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("falls back to the plain one-button panic screen once they are spent", async () => {
+    localStorage.setItem("codeenstein-difficulty", "hard"); // exactly 1
+    const logSpy = await launchHazardRun();
+    await dieInTheAcid(logSpy);
+    expect(rollbackState()).toMatchObject({ remaining: 0, used: 1 });
+
+    raf.flush(1, 1300);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
+    await waitUntil(() => logSpy.mock.calls.some((c) => String(c[0]).includes("[rollback]")));
+
+    // Second death, with none left: straight to the end-of-run path, which
+    // on level 1 refuses the entry exactly as it always did.
+    await dieInTheAcid(logSpy);
+    await waitUntil(() =>
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
+    );
+    expect(rollbackState()).toMatchObject({ remaining: 0, used: 1 });
+    // Two full walk-into-the-acid deaths in one test, so it needs more than
+    // the default 5s — same reason the replay tests below carry one.
+  }, 20000);
+
+  it("closing the tab at the death screen resumes from the entry state, already charged", async () => {
+    localStorage.setItem("codeenstein-difficulty", "normal");
+    const logSpy = await launchHazardRun();
+    const { loadCampaignSave } = await import("./main");
+    await dieInTheAcid(logSpy);
+
+    window.dispatchEvent(new Event("beforeunload"));
+
+    // Not health 0. Before this branch existed, `activeEngine` was still set
+    // and `lastStats` was the death frame, so the unload handler wrote a
+    // resume point that died on its first frame.
+    const save = loadCampaignSave();
+    expect(save).not.toBeNull();
+    expect(save!.health).toBeGreaterThan(0);
+    // Already charged, so closing the tab is not a cheaper way out than
+    // pressing either button.
+    expect(save!.rollbacksRemaining).toBe(1);
+    expect(save!.rollbacksUsed).toBe(1);
+  });
+
+  it("treats storage that throws as 'not disabled'", async () => {
+    // Discriminating on purpose: the opt-out key IS set, so a working read
+    // would report `granted: 0`. Only the catch branch produces a non-zero
+    // grant here, which is what makes this a test of the catch rather than a
+    // restatement of the default.
+    localStorage.setItem("codeenstein-rollbacks-disabled", "1");
+    localStorage.setItem("codeenstein-difficulty", "normal");
+    await importMainWithHooks();
+    expect(rollbackState()!.granted).toBe(0); // the read works, and the key is honoured
+
+    const getItem = Storage.prototype.getItem;
+    Storage.prototype.getItem = vi.fn(() => {
+      throw new Error("storage unavailable, as in private browsing");
+    });
+    try {
+      expect(rollbackState()!.granted).toBe(2); // never throws; falls back to "not disabled"
+    } finally {
+      Storage.prototype.getItem = getItem;
+    }
+  });
+
+  it("stamps rollbacksUsed onto the highscore entry a continued run finally records", async () => {
+    // Resumed at level 2 with the budget already spent, so the death below
+    // ends the run for real *and* clears the levelsCleared gate — which is
+    // the only way to reach the entry-writing path at all on a one-file
+    // fixture.
+    localStorage.setItem(
+      "codeenstein-campaign-save",
+      campaignSave({ levelIndex: 2, rollbacksRemaining: 0, rollbacksUsed: 2 }),
+    );
+    await importMainWithHooks();
+    const logSpy = vi.spyOn(console, "log");
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(rollbackState()).toMatchObject({ remaining: 0, used: 2 });
+
+    await dieInTheAcid(logSpy);
+
+    const entries = await waitForHighscoreEntries();
+    expect(entries).toHaveLength(1);
+    // The mark the board renders: this run restarted levels, and says so.
+    expect(entries[0].rollbacksUsed).toBe(2);
+  }, 20000);
+
+  it("leaves rollbacksUsed off a clean run entirely", async () => {
+    // Absent rather than 0, so a clean run and an entry recorded before
+    // rollbacks existed stay the same case — see HighscoreEntry.rollbacksUsed.
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ levelIndex: 2 }));
+    await importMainWithHooks();
+    const logSpy = vi.spyOn(console, "log");
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    await dieInTheAcid(logSpy); // 2 rollbacks -> spends one, offers the choice
+    raf.flush(1, 1300);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); // Give up
+
+    const entries = await waitForHighscoreEntries();
+    expect(entries).toHaveLength(1);
+    expect(entries[0].rollbacksUsed).toBe(1); // it did spend one, on the death itself
+  }, 20000);
+
+  it("Continue Run restores the stored counts instead of re-granting", async () => {
+    localStorage.setItem("codeenstein-difficulty", "easy"); // would grant 3 if re-derived
+    localStorage.setItem(
+      "codeenstein-campaign-save",
+      campaignSave({ rollbacksRemaining: 1, rollbacksUsed: 2 }),
+    );
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => rollbackState()?.used === 2, 8000);
+    // 1, not Easy's 3: a resumed run keeps what it had left.
+    expect(rollbackState()).toEqual({ remaining: 1, used: 2, granted: 3 });
+  });
+
+  it("Continue Run says how many are left, pluralised", async () => {
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ rollbacksRemaining: 1, rollbacksUsed: 0 }));
+    const logSpy = vi.spyOn(console, "log");
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => logSpy.mock.calls.some((c) => String(c[0]).includes("[continue] resuming")), 8000);
+    expect(logSpy.mock.calls.some((c) => String(c[0]).includes("1 rollback left"))).toBe(true);
+  });
+
+  it("Continue Run honours the harness opt-out over the stored count", async () => {
+    localStorage.setItem("codeenstein-rollbacks-disabled", "1");
+    localStorage.setItem("codeenstein-campaign-save", campaignSave({ rollbacksRemaining: 3, rollbacksUsed: 0 }));
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#continue-run")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    // Otherwise a resumed save would smuggle rollbacks back into a scripted
+    // run that explicitly asked for none.
+    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0 });
+  });
 
   it("grants the difficulty's budget on a fresh workspace load", async () => {
     localStorage.setItem("codeenstein-difficulty", "easy");
