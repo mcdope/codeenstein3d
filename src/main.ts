@@ -1131,7 +1131,8 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
 
   renderFileTree(workspaceSlots[key].pane, init.tree, { onSelectFile: handleFileSelected });
   setSlotStatus(key, init.rootName);
-  setGameRunning(false); // nothing is launched yet — the marker starts paused
+  levelIsLoaded = false;
+  setGameRunning(false); // nothing is launched yet — the tab is not marked at all
   showWorkspacePaneFor(visibleLaunchTab);
 }
 
@@ -1143,9 +1144,34 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
  * Multiplayer deliberately doesn't drive this — `sessionEngine.ts` wires
  * `onFreezeChange` to a no-op on purpose (one peer's pause must not freeze the
  * shared sim), so a session leaves the marker wherever single-player left it.
- * That is invisible in practice: a session is driven from the Multiplayer tab,
- * which never carries the marker. */
+ *
+ * That was previously written off as "invisible in practice: a session is
+ * driven from the Multiplayer tab, which never carries the marker". **That is
+ * wrong.** All six tab buttons render at all times, and `SLOT_FOR_TAB` maps
+ * only `multiplayer`/`settings` to `null` — so the *source* tab (Demos or
+ * Repo) is on screen and stale for the whole session. `onMultiplayerSessionEnded`
+ * therefore clears it when the session ends, the same as the single-player
+ * handlers do. What a running session's marker *should* say is a separate
+ * question and is deliberately left alone. */
 let gameIsRunning = false;
+
+/**
+ * Whether a level is on screen at all — the other half of the marker, and a
+ * separate question from whether it is advancing.
+ *
+ * They used to be one flag, which is why the marker outlived its level: a
+ * workspace is only ever *added* to `loadedWorkspaceSlot` (never removed), so
+ * once anything had loaded, the tab carried a transport glyph for the rest of
+ * the page's life. After a run ended that read `❚❚` — a pause readout offering
+ * to resume something that no longer existed.
+ *
+ * Deliberately a flag rather than `currentLevelPath !== null`: `launchLevel`
+ * repaints the marker ~54 lines before it assigns `currentLevelPath`, so
+ * deriving it there would read the *previous* level's value — `null` on the
+ * first launch of a session, leaving the tab unmarked through the whole
+ * briefing and popping the glyph in on Start.
+ */
+let levelIsLoaded = false;
 
 function setGameRunning(running: boolean): void {
   gameIsRunning = running;
@@ -1159,7 +1185,7 @@ function setGameRunning(running: boolean): void {
  * isn't. */
 function updateLoadedSourceMarker(): void {
   for (const tab of Object.keys(launchTabs) as LaunchTab[]) {
-    const marked = loadedWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === loadedWorkspaceSlot;
+    const marked = levelIsLoaded && loadedWorkspaceSlot !== null && SLOT_FOR_TAB[tab] === loadedWorkspaceSlot;
     launchTabs[tab].button.classList.toggle("tab-btn--loaded", marked);
     launchTabs[tab].button.classList.toggle("tab-btn--paused", marked && !gameIsRunning);
   }
@@ -2294,6 +2320,11 @@ function onMultiplayerSessionEnded(
     "level-transition-failed": "Multiplayer session ended — the level transition failed to complete.",
   };
   setMultiplayerStatus(message[reason], false);
+  // The session is over, so the source tab must stop reporting a live
+  // transport state — same reason `onGameOver`/`onWin` do it, and the same
+  // overlay shape. It unmarks entirely once the results screen is dismissed
+  // and `resetToFileTree` runs.
+  setGameRunning(false);
   const { title, color } = MULTIPLAYER_RESULT_THEME[reason];
   const hud = new GameHud(canvas);
   activeHud = hud;
@@ -3270,9 +3301,13 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   // `stopActiveReplay`'s doc comment).
   stopActiveReplay?.();
 
+  // A level exists from here on. Set before the repaint below rather than
+  // alongside `currentLevelPath` further down — see `levelIsLoaded`'s doc
+  // comment for why that ordering is load-bearing.
+  levelIsLoaded = true;
   // Nothing advances between here and the briefing overlay's Start button —
   // teardown, map generation and engine construction all happen with the sim
-  // stopped, so the tab marker stays ⏸ until that click.
+  // stopped, so the tab marker stays ❚❚ until that click.
   setGameRunning(false);
 
   // Header (or equivalent) files make small, single-purpose "bonus levels" —
@@ -3468,6 +3503,12 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
         }
       },
       onGameOver: (stats) => {
+        // The engine has already stopped itself before firing this (see
+        // `endGame`), and `stop()` never notifies the freeze handler — so
+        // without this the tab would go on claiming ▶ for the whole overlay.
+        // The level is still loaded, so it reads ❚❚ until `resetToFileTree`
+        // unmarks it.
+        setGameRunning(false);
         if (rollbacksRemaining > 0) {
           // Spent *now*, at the death, rather than when the button is
           // clicked. If the decrement waited for the click, closing the tab
@@ -3525,6 +3566,7 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
         hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), resetToFileTree);
       },
       onWin: (stats) => {
+        setGameRunning(false); // same as `onGameOver` — nothing advances under the summary
         hud.showCommitSummary(
           {
             linesRefactored: parsed.linesOfCode,
@@ -4062,6 +4104,15 @@ async function findNextParsableFile(tree: TreeNode, afterPath: string): Promise<
  * rather than it dropping mid-run on every level transition.
  */
 function showFileTreePlaceholder(): void {
+  // The single honest definition of "no level is on screen", and therefore
+  // where the marker is dropped. Hooking `resetToFileTree` instead would miss
+  // the four `catch` paths that land here — a failed local pick, a repo that
+  // 404s, a Continue Run whose workspace is gone, and a replay that cannot be
+  // rebuilt. Those never reach `commitWorkspaceSlot` either (it sits inside
+  // the same `try`), so the tab would keep a glyph over an empty viewport:
+  // the exact defect this marker rule exists to remove.
+  levelIsLoaded = false;
+  updateLoadedSourceMarker();
   loadingScreen.hidden = true;
   canvasArea.hidden = true;
   for (const child of [...viewport.children]) {

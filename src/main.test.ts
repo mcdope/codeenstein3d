@@ -5460,6 +5460,13 @@ describe("main.ts — per-tab file trees", () => {
     expect(document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent).toBe("demo-campaign");
     expect(document.querySelector<HTMLElement>("#workspace-name")!.classList.contains("error")).toBe(false);
     expect(paneHidden("#file-tree-demo")).toBe(false);
+
+    // ...and the marker is gone with it. The failed fetch tears the level
+    // down to the file-tree placeholder, so a tab still carrying ▶/❚❚ would
+    // be offering a transport state for a level that is no longer on screen —
+    // the same defect as a marker outliving a finished run, reached by a
+    // path that never touches `resetToFileTree` or `commitWorkspaceSlot`.
+    expect(document.querySelector<HTMLButtonElement>("#tab-demo")!.classList.contains("tab-btn--loaded")).toBe(false);
   });
 
   it("renders a Continue Run into the Local tab's slot, since both pick a local folder", async () => {
@@ -5555,6 +5562,74 @@ describe("main.ts — starting a level and driving live gameplay", () => {
     raf.flush(1, 16); // resume edge
     expect(tabDemo.classList.contains("tab-btn--paused")).toBe(false);
   });
+});
+
+describe("main.ts — the tab marker only exists while a level does", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  const tabLocal = (): HTMLButtonElement => document.querySelector<HTMLButtonElement>("#tab-local")!;
+  const marked = (): boolean => tabLocal().classList.contains("tab-btn--loaded");
+  const paused = (): boolean => tabLocal().classList.contains("tab-btn--paused");
+
+  /** Walks into the acid until the player dies, leaving the overlay up. */
+  function dieInAcid(logSpy: { mock: { calls: unknown[][] } }): void {
+    const mapLog = logSpy.mock.calls.find((c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object));
+    const map = mapLog![1] as { grid: number[][]; spawn: { x: number; y: number }; hazards: { x: number; y: number }[] };
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    raf.flush(1, 1300);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" })); // dismiss briefing
+    walkPath(canvas, raf, bfsPath(map.grid, map.spawn, map.hazards[0]), () => testHooks()?.getPlayerState().state !== "playing", 1000);
+    for (let i = 0; i < 300 && testHooks()?.getPlayerState().state === "playing"; i++) raf.flush(1, 50);
+  }
+
+  it("stays unmarked when a workspace holds nothing launchable", async () => {
+    // A workspace commits before any level launches, so the marker used to
+    // appear the instant a folder was picked — reporting a transport state
+    // for a level that never existed.
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "notes.txt": "not a source file" }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws");
+    await flushAsync();
+    expect(marked()).toBe(false);
+  });
+
+  it("reads ❚❚ under the Kernel Panic overlay, then unmarks once the run is over", async () => {
+    // One timeline, two assertions, deliberately: the setup is a full
+    // level-to-death walk and running it twice was enough to tip a vitest
+    // worker into a heap OOM. Both facts belong to the same moment anyway.
+    //
+    // Before this, the engine stopped itself before firing onGameOver and
+    // stop() never notified the freeze handler, so nothing cleared
+    // `gameIsRunning` — the tab claimed ▶ for the whole death screen. And
+    // afterwards it fell to ❚❚ and stayed there forever.
+    localStorage.setItem("codeenstein-difficulty", "hard"); // no rollbacks: straight to the terminal overlay
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    dieInAcid(logSpy);
+    expect(testHooks()?.getPlayerState().state).toBe("over");
+    expect(marked()).toBe(true); // the level is still loaded behind the overlay
+    expect(paused()).toBe(true); // ...but nothing is advancing
+
+    raf.flush(1, 1300); // past DISMISS_LOCK_MS
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" })); // back to the file tree
+
+    await waitUntil(() => marked() === false, 8000);
+    expect(paused()).toBe(false); // not "paused with no level" — no marker at all
+  }, 20000);
 });
 
 function setClientSize(el: HTMLElement, width: number, height: number): void {
