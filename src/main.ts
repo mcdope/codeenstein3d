@@ -4459,6 +4459,11 @@ async function recordRunHighscore(
       // the board, while a stored 0 would claim to know something about a run
       // that predates the question.
       ...(rollbacksUsed ? { rollbacksUsed } : {}),
+      // Always written, unlike the two above — every run has a difficulty,
+      // so there is no "absent means clean" case to preserve, and an absent
+      // value should keep meaning "recorded before the board tracked this".
+      // Read at record time for the same reason `playerName` is.
+      difficulty: currentDifficulty,
       levelName,
       levelsCleared,
       hash,

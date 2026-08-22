@@ -97,7 +97,7 @@ A rollback restores the state you *entered* the level with — health, armour, e
 
 **The level is the same; the fight is not.** Layout is generated from the source file and never changes, so you keep everything you learned about where the rooms and the exit are. Enemy timing and aim, loot rolls and weapon spread are all re-rolled, so the fight plays out differently — a rollback is another attempt, not a rehearsed one.
 
-The count you have left is shown above the status bar while you play, and a run that spent any is marked in the **RB** column of the Highscores dialog. Rollbacks are single-player only; a co-op session ends when the whole team is down.
+The count you have left is shown above the status bar while you play, and a run that spent any is marked in the **RB** column of the Highscores dialog, beside a **Difficulty** column saying which setting it was played on — the two together are what let you weigh one row against another. Rollbacks are single-player only; a co-op session ends when the whole team is down.
 
 One detail that matters if you close the tab: a rollback is spent at the moment you die, not when you press the button. Resume that run later and you will start at the beginning of the level you died on, with the rollback already counted.
 

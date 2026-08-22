@@ -91,6 +91,51 @@ describe("renderHighscoreTable — populated board", () => {
     expect(cell(container, "Lines").className).not.toBe("muted");
   });
 
+  it("names the difficulty a run was played on", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ difficulty: "hard" })]);
+    expect(cell(container, "Difficulty").textContent).toBe("Hard");
+    expect(cell(container, "Difficulty").className).not.toBe("muted");
+    expect(cell(container, "Difficulty").title).toBe(""); // stored, not inferred
+  });
+
+  it("recovers the difficulty of an older entry from its replay", () => {
+    // The whole reason the shipped default board does not need regenerating:
+    // every replay segment already records the difficulty it was played at.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [
+      entry({ replay: replay({ levels: [{ difficulty: "easy" }, { difficulty: "easy" }] as never }) }),
+    ]);
+    expect(cell(container, "Difficulty").textContent).toBe("Easy");
+    expect(cell(container, "Difficulty").title).toContain("replay");
+  });
+
+  it("refuses to label a run whose difficulty changed partway", () => {
+    // No single honest answer, and reporting the first level's would turn
+    // "switched to Easy at level 9" into a Hard entry on the board.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [
+      entry({ replay: replay({ levels: [{ difficulty: "hard" }, { difficulty: "easy" }] as never }) }),
+    ]);
+    expect(cell(container, "Difficulty").textContent).toBe("—");
+    expect(cell(container, "Difficulty").className).toBe("muted");
+  });
+
+  it("shows a muted dash when there is no difficulty and no replay to read", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry()]);
+    expect(cell(container, "Difficulty").textContent).toBe("—");
+    expect(cell(container, "Difficulty").className).toBe("muted");
+  });
+
+  it("prefers the stored difficulty over the replay's", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [
+      entry({ difficulty: "normal", replay: replay({ levels: [{ difficulty: "hard" }] as never }) }),
+    ]);
+    expect(cell(container, "Difficulty").textContent).toBe("Normal");
+  });
+
   it("shows the rollback count on a run that spent some", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry({ rollbacksUsed: 2 })]);
