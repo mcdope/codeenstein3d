@@ -69,8 +69,39 @@ const VIEWPORT_MARGIN = 8;
 export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "launch-tabs",
-    title: "Six tabs, five ways in",
-    body: "Four of these tabs load source code to play — from your machine, a saved run, a public repository, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
+    // Deliberately counts nothing. The strip is not a fixed size: **Continue**
+    // is `display: none` until a campaign save exists, and **Multiplayer**
+    // until the build was given a signaling server URL — so a first-time
+    // visitor sees four tabs, or five on the public site, and never the six
+    // that exist in the markup. The old title said "Six tabs, five ways in"
+    // and the body described "the fifth" as co-op, on a tab most readers
+    // could not see. Note the co-op step later in this list is simply dropped
+    // when that tab is hidden (see `resolvable`), which is the right
+    // behaviour and another reason this step must not promise it.
+    title: "Every tab is a way in",
+    body: "Each of these loads source code to play, and every file it finds becomes a level — a folder on your machine, a public repository, or the bundled demos. The gear on the right holds the settings. Others appear only when they apply: Continue, once you have a run to pick back up, and Multiplayer, when this copy of the game is set up for co-op.",
+  },
+  {
+    // Local is the leftmost tab and the one selected on arrival, so it leads
+    // the per-tab walk. It had no step at all until a playtest noticed: the
+    // overview mentions "from your machine" and then nothing followed it up,
+    // which also left the Repo step's old title ("Or play your own code")
+    // reading as though it were this tab's job.
+    targetId: "tab-local",
+    title: "Play a folder on this machine",
+    body: "Select Workspace opens a folder picker, and every source file inside becomes a level — a single script or a whole repository. The folder is read in your browser and nothing is uploaded anywhere. This is also the only tab whose runs autosave, so a campaign you leave halfway comes back under Continue. It needs Chrome, Edge or Brave: the folder picker it uses does not exist in other browsers, and the button says so if yours cannot.",
+  },
+  {
+    // Steps follow the tab strip left to right and Repo sits third, after
+    // Local and before Demos. Anchored on the tab button rather than
+    // `#repo-input`, the same shape `tab-local`, `tab-demo` and
+    // `tab-multiplayer` use — a step reaching into the panel would need
+    // `activateTabId` and would walk strip -> panel -> strip across
+    // consecutive popouts, which is what the ordering rule above exists to
+    // prevent.
+    targetId: "tab-repo",
+    title: "Play code you don't have locally",
+    body: "Paste a repository from GitHub, GitLab or Codeberg and its files become the levels, no download or checkout of your own needed. The address says which site it came from, and the button names the one it recognised before anything is fetched — a bare owner/repo still means GitHub. Public repositories only. Below it sit four suggestions from Easy to Nightmare if you'd rather not pick one.",
   },
   {
     targetId: "tab-demo",
@@ -114,7 +145,17 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "view-highscores",
     title: "Scores stay on your machine",
-    body: "Runs are scored and kept locally — nothing is uploaded. Every entry on the board can be replayed from here, exactly as it was played.",
+    // Anchored on the button and describing the dialog rather than opening
+    // it, deliberately: a dialog shown with `showModal()` lives in the
+    // browser's top layer, which paints above every z-index — the popout and
+    // its buttons would be behind it and unreachable. Same reason this tour
+    // is a fixed layer rather than a `<dialog>` (see `style.css`).
+    //
+    // The old body claimed every entry could be replayed. Two states say
+    // otherwise (`highscorePanel.ts`): a run recorded before a balance change
+    // reads "rules changed" with no button, and one whose recording was
+    // dropped shows a dash.
+    body: "Runs are scored and kept locally — nothing is uploaded. Each row also says what the run cost: which difficulty it was played on, and how many rollbacks it spent restarting a level. Watch replays a run frame-for-frame; Export plays it back and records that to a .webm video, in real time at 1x with the controls locked until it finishes. A run recorded before a balance change reads \"rules changed\" instead — it would no longer match its own score.",
   },
   {
     targetId: "file-tree",
