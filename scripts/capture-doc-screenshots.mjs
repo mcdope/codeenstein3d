@@ -31,7 +31,7 @@
  * however the fixture is written. IDKFA does not help: it grants weapons long
  * after the map was generated. The alternative was a multi-level cheat-driven
  * run, whose depot stock is still rolled rather than chosen. So the engine
- * exposes four `debug*` staging hooks (see `engine.ts`), used only here.
+ * exposes five `debug*` staging hooks (see `engine.ts`), used only here.
  *
  * ## Why the framing works without moving
  *
@@ -121,6 +121,13 @@ const FRAME_MS = 1000 / 60;
  * exact phase is what stops the ring being a coin-flip between runs. */
 const PULSE_PERIOD_MS = 360 * Math.PI;
 const PULSE_PEAK_MS = 90 * Math.PI;
+
+/** The mine's lens pulses on a different clock — `0.4 + 0.6*sin(now/220)` in
+ * `collectMineBillboards` — so it peaks every 440π ms at 110π. Same reasoning
+ * as the weapon ring above: without locking the phase, the mine's brightness
+ * is a coin-flip and the file churns on every regeneration. */
+const MINE_PULSE_PERIOD_MS = 440 * Math.PI;
+const MINE_PULSE_PEAK_MS = 110 * Math.PI;
 
 const LOOT_KINDS = ["health", "swap", "bullets", "shells", "rockets", "smg", "gas", "weapon"];
 /** Matches `GATE_COLOR_NAMES` in `src/engine/gateColors.ts`, by value — the
@@ -387,10 +394,10 @@ async function turnTo(page, headingRad) {
 
 /** Advance to the next moment at which the weapon ring's pulse is at its peak,
  * so that shot looks identical on every regeneration. */
-async function pumpToPulsePeak(page) {
+async function pumpToPulsePeak(page, periodMs = PULSE_PERIOD_MS, peakMs = PULSE_PEAK_MS) {
   const now = await page.evaluate(() => performance.now());
-  const phase = ((now - PULSE_PEAK_MS) % PULSE_PERIOD_MS + PULSE_PERIOD_MS) % PULSE_PERIOD_MS;
-  await pump(page, PULSE_PERIOD_MS - phase);
+  const phase = ((now - peakMs) % periodMs + periodMs) % periodMs;
+  await pump(page, periodMs - phase);
 }
 
 /** Where the camera is and which way it points, right now. */
@@ -617,6 +624,60 @@ async function main() {
     const keyRect = { x: kLeft, y: kTop, w: kRight - kLeft, h: kBottom - kTop };
     await assertNotFlat(page, keyRect, "keys-all-colours");
     writeIfChanged("keys-all-colours.png", await grabCrop(page, { ...keyRect, label: "keys-all-colours" }));
+
+    // --- Red key vs proximity mine ----------------------------------------
+    //
+    // The picture this whole section exists for. These two used to be drawn
+    // with the same primitive in near-identical reds, and a playtest report
+    // was that the red key got avoided by reflex. Photographing them in one
+    // frame is the only way to show a reader — or a future maintainer about
+    // to retune either one — that the silhouettes now actually differ.
+    //
+    // Both subjects in a single shot rather than two crops stitched later:
+    // side-by-side at the same distance and the same lighting is the whole
+    // claim, and two separate captures could drift apart without anyone
+    // noticing.
+    await page.reload();
+    await launchFixtureLevel(page, server.url);
+    await page.evaluate(() => window.__codeensteinTestHooks.debugClearEnemies());
+    await turnTo(page, heading.headingRad);
+    await pump(page, FRAME_MS * 4);
+    const vsCam = await camera(page);
+    const [minePos, redKeyPos] = rowPositions(vsCam, [-ROW_SPACING, ROW_SPACING]);
+    await page.evaluate(
+      ({ mine, key }) => {
+        window.__codeensteinTestHooks.debugSpawnMine(mine);
+        window.__codeensteinTestHooks.debugSpawnKey(key);
+      },
+      { mine: { x: minePos.x, y: minePos.y }, key: { x: redKeyPos.x, y: redKeyPos.y, gateId: 0 } },
+    );
+    await pumpToPulsePeak(page, MINE_PULSE_PERIOD_MS, MINE_PULSE_PEAK_MS);
+
+    // The mine is floor-anchored and grows upward; the key floats at waist
+    // height. Union of the two, mirroring each sprite's own anchor maths.
+    const mineProj = project(vsCam, minePos.x, minePos.y, 0.42);
+    const keyProj2 = project(vsCam, redKeyPos.x, redKeyPos.y, 0.28);
+    const mineGroundY = RENDER_H / 2 + RENDER_H / mineProj.depth / 2;
+    // Tallest thing on the mine is the centre prong. The dome's centre sits
+    // one radius (0.28w) above the floor line and the prong reaches 2.05 more
+    // radii beyond that, so the tip is 3.05 radii up.
+    const mineTop = mineGroundY - mineProj.size * (0.28 * 3.05);
+    const vsTop = Math.min(mineTop, RENDER_H / 2 + keyProj2.size * 0.4 - keyProj2.size / 2) - 14;
+    const vsBottom = Math.max(mineGroundY, RENDER_H / 2 + keyProj2.size * 0.4 + keyProj2.size / 2) + 14;
+    const vsLeft = Math.min(mineProj.screenX - mineProj.size / 2, keyProj2.screenX - keyProj2.size / 2) - 14;
+    const vsRight = Math.max(mineProj.screenX + mineProj.size / 2, keyProj2.screenX + keyProj2.size / 2) + 14;
+    const vsRect = { x: vsLeft, y: vsTop, w: vsRight - vsLeft, h: vsBottom - vsTop };
+    await assertNotFlat(page, vsRect, "key-vs-mine");
+    writeIfChanged("key-vs-mine.png", await grabCrop(page, { ...vsRect, label: "key-vs-mine" }));
+
+    const mineRect = {
+      x: mineProj.screenX - mineProj.size / 2 - 10,
+      y: mineTop - 10,
+      w: mineProj.size + 20,
+      h: mineGroundY - mineTop + 20,
+    };
+    await assertNotFlat(page, mineRect, "mine");
+    writeIfChanged("mine.png", await grabCrop(page, { ...mineRect, scale: 4, label: "mine" }));
 
     // --- HUD key pips -----------------------------------------------------
     //

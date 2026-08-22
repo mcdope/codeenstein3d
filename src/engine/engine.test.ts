@@ -482,6 +482,14 @@ describe("RaycasterEngine — construction", () => {
       // Spawned uncollected, so it is a thing you could still walk over.
       expect(map.keys[0].collected).toBe(false);
 
+      // Spawned already-spotted: a mine reveals itself only inside
+      // `MINE_SIGHT_RADIUS`, and the screenshot this hook exists for would
+      // otherwise have to walk the camera into a live mine's blast radius to
+      // photograph one. The fuse is untouched, so it is a visible mine rather
+      // than an inert prop.
+      hooks!.debugSpawnMine({ x: 5.5, y: 6.5 });
+      expect(map.mines).toEqual([{ x: 5.5, y: 6.5, alive: true, visible: true, closeTimer: 0 }]);
+
       // Reveals the carved level and the wall right around it, but NOT the
       // solid rock the generator never carved — flooding everything would draw
       // a grey field on the automap that no real playthrough could produce.
