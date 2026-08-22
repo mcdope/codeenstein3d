@@ -337,3 +337,4 @@ implemented, already refuted, or impossible as written.
 - [ ] add a pun to the gameover screen if cheats were used: "You used cheats and still died? lol"
 - [ ] revisit enemy dmg, seems a bit low
 - [ ] paused icon shown on tab button after final death / end of run
+- [ ] intro tour should also explain the highscore ui, incl. export. also the repo tab.
