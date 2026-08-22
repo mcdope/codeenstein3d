@@ -334,7 +334,4 @@ implemented, already refuted, or impossible as written.
 - [ ] remeasure perf impact of level-end-summary
 - [ ] hud face from wad (when loaded)
 - [ ] revisit enemy dmg, seems a bit low
-- [ ] when an elite is discovered (near by, or aggro'd):
-  - [ ] show a toast (to all player if coop)
-  - [ ] if coop: add a permament till killed map ping (like for keys) on the elite, so players know where to assist
 - [ ] coop: give players a hotkey to trigger a map ping on themself, to get help. should last for some seconds.
