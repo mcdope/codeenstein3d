@@ -441,6 +441,40 @@ The workspace can load a repository from GitHub, and the backlog long carried "s
 
 **Which leaves a proxy the app controls, and that is the part being declined.** There is a server already (`scripts/multiplayer-server.mjs`), but turning it into an open fetch proxy means an SSRF surface, unbounded third-party bandwidth billed to whoever hosts it, and an availability commitment for a feature that is otherwise entirely client-side. The cost is operational and permanent; the benefit over supporting the three or four hosts people actually use is small. **Add hosts, do not add a proxy.**
 
+### Which hosts, and why Bitbucket was declined
+
+GitHub shipped first; GitLab and Codeberg followed on 2026-08-20 behind one
+auto-detecting "Repo" tab that reads the host off the pasted domain (see
+[history.md](history.md) for the three traps that pass found). **Bitbucket was
+the last candidate and is declined (user, 2026-08-23)**, closing the backlog
+item rather than leaving it open indefinitely.
+
+The reasoning is about *this* feature rather than about Bitbucket generally.
+The adapter reads **public** repositories over an unauthenticated API, so the
+only usage it can serve is someone pasting a public repo to turn it into a
+level. Bitbucket's presence in that population is small — it is predominantly
+private and team-hosted Atlassian work, and dropping Mercurial hosting in 2020
+moved most of the open-source projects that were distinctively there elsewhere.
+Against that, the per-host cost is not nominal: a sibling adapter, a URL and
+shorthand parser, a tab entry, its own rate-limit inference path, and tests.
+The backlog item also recorded that Bitbucket is **unproven** — its API answered
+`ACAO: *` on the one probe, but the probe itself 404'd, so the tree shape and
+pagination were never actually checked and scoping would have started by
+redoing that work.
+
+Declined, not walled off: the "Repo" tab dispatches on domain, so if a real
+request for Bitbucket (or Gitea, or Forgejo) ever arrives, the adapter drops
+into a slot that already exists.
+
+**The rule that outlives the decision — check CORS against the live host before
+writing any adapter, not after.** It is the only property that decides whether a
+host is possible at all from a page, and it cannot be reasoned about from
+documentation: GitLab sends `ratelimit-remaining` but omits it from
+`Access-Control-Expose-Headers`, so a header-gated check is dead code; its
+obvious `/-/raw/` URL sends no CORS header at all. Self-hosted Gitea and Forgejo
+configure CORS per deployment, so "Gitea works" is a claim about one instance,
+never about the software.
+
 ## Dependency Minimalism
 
 The project deliberately avoids adding a new npm dependency where a built-in browser API already covers the need: `crypto.subtle.digest('SHA-256', ...)` is used for the AST/campaign hash shown in highscores instead of a bundled hash library, and highscore-board compression uses `CompressionStream`/`DecompressionStream` instead of a bundled compression library. The same principle drove the parser architecture: rather than pull in a second parsing library to cover additional languages, every non-bespoke language (12 of 14) is handled by one data-driven adapter built on the same Tree-sitter grammars already in use — see [Architecture](architecture.md#parser--source--normalized-ast-data). `[notes: Task 23, 35, 44]`
