@@ -6804,7 +6804,9 @@ describe("RaycasterEngine — coop help ping", () => {
 
     for (let i = 0; i < 320; i++) engine.advance(0.016);
     expect(players(engine).get("host")!.helpPingFrames).toBe(0);
-  });
+    // 320 ticks of a live sim is slow under CI's coverage instrumentation — the
+    // 5s default was not enough there even though it is ~0.5s locally.
+  }, 20_000);
 
   it("arms a TEAMMATE's ping on this peer — the whole point, and the opposite of the key hint", () => {
     // `cueLockedDoorHint` deliberately returns early for any non-local player,
@@ -6836,46 +6838,67 @@ describe("RaycasterEngine — coop help ping", () => {
     expect(call).toHaveBeenCalledTimes(2);
   });
 
-  it("edge-latches: a bit held true past the cooldown still only pings once", () => {
+  it("edge-latches: a held bit does not re-arm, even with the cooldown cleared", () => {
     // The real hazard this guards. In multiplayer `consumeHelpPing()` is a
     // non-clearing read of the current frame, and `InputDelayBuffer.finalize()`
     // re-delivers the previous snapshot verbatim whenever a packet is missing —
     // so one press genuinely arrives as `helpPing: true` on every held-fallback
-    // tick that follows. Re-setting the flag each frame reproduces that. The
-    // cooldown alone would not catch it: it expires at 480 frames, so without
-    // the latch the siren would simply restart there and never stop.
+    // tick that follows. Re-setting the flag each frame reproduces that.
+    //
+    // The cooldown is zeroed every frame on purpose, so the latch is the *only*
+    // thing left that can prevent a re-arm. Letting the real 480-frame cooldown
+    // run out instead would take ~600 engine ticks (which timed out on CI) and
+    // would also let the test pass on the cooldown alone, saying nothing at all
+    // about the latch it is named after.
     const call = silenceHelp();
     const { engine, input } = coopEngine();
+    input.helpPing = true;
+    engine.advance(0.016);
+    const armed = players(engine).get("host")!.helpPingFrames;
+    expect(armed).toBeGreaterThan(0);
+    expect(call).toHaveBeenCalledTimes(1);
 
-    for (let i = 0; i < 600; i++) {
+    for (let i = 0; i < 5; i++) {
       input.helpPing = true; // never released, exactly like a held fallback
+      players(engine).get("host")!.helpPingCooldownFrames = 0;
       engine.advance(0.016);
     }
 
-    expect(players(engine).get("host")!.helpPingFrames).toBe(0);
-    // One ping's worth of beats (~300 frames at one per 60), not two pings'.
-    expect(call.mock.calls.length).toBeLessThanOrEqual(6);
+    // Still the original ping quietly running down, not a fresh one.
+    expect(players(engine).get("host")!.helpPingFrames).toBeLessThan(armed);
+    expect(call).toHaveBeenCalledTimes(1);
   });
 
-  it("re-arms on a genuine second press once the cooldown has expired", () => {
+  it("blocks a second press while the lockout runs, and re-arms once it clears", () => {
     silenceHelp();
     const { engine, input } = coopEngine();
     input.helpPing = true;
     engine.advance(0.016);
+    const firstCooldown = players(engine).get("host")!.helpPingCooldownFrames;
+    expect(firstCooldown).toBeGreaterThan(0);
 
-    // Released, then pressed again while the lockout is still running.
-    for (let i = 0; i < 100; i++) engine.advance(0.016);
-    input.helpPing = true;
-    engine.advance(0.016);
-    expect(players(engine).get("host")!.helpPingCooldownFrames).toBeGreaterThan(0);
+    // A real second press — released and pressed again, so the latch is open —
+    // while the lockout is still running. It must not restart the ping.
+    for (let i = 0; i < 20; i++) engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingCooldownFrames).toBeLessThan(firstCooldown); // it decays
     const midway = players(engine).get("host")!.helpPingFrames;
-
-    for (let i = 0; i < 500; i++) engine.advance(0.016);
-    expect(players(engine).get("host")!.helpPingCooldownFrames).toBe(0);
     input.helpPing = true;
     engine.advance(0.016);
-    const after = players(engine).get("host")!.helpPingFrames;
-    expect(after).toBeGreaterThan(midway);
+    expect(players(engine).get("host")!.helpPingFrames).toBeLessThan(midway); // still running down, not reset
+
+    // One idle frame so the key counts as released — without it the latch
+    // reads two presses on consecutive frames as a single hold, which is
+    // exactly what it is for.
+    engine.advance(0.016);
+    const beforeSecond = players(engine).get("host")!.helpPingFrames;
+
+    // Same press once the lockout has cleared. Zeroed rather than waited out:
+    // 480 real frames is ~600 engine ticks, and what is under test here is the
+    // gate, not the arithmetic of the countdown (covered by the decay above).
+    players(engine).get("host")!.helpPingCooldownFrames = 0;
+    input.helpPing = true;
+    engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingFrames).toBeGreaterThan(beforeSecond);
   });
 
   it("does nothing in single-player, but still drains the flag", () => {
