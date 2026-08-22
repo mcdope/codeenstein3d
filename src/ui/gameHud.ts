@@ -43,13 +43,19 @@ export interface CommitSummaryInfo {
   stats?: StatsScreenInfo;
 }
 
-interface OverlayContent {
+export interface OverlayContent {
   title: string;
   /** Theme color for the title, box border, and button (a CSS color string). */
   color: string;
   lines: string[];
   stats?: [string, string][];
   buttonLabel: string;
+  /** A second, non-default choice, drawn beside the primary. Label and
+   * handler travel together so they cannot desync — an overlay showing a
+   * button that does nothing is worse than one with no button. Absent (every
+   * caller but the rollback death screen) takes a byte-identical path to
+   * before this existed. */
+  secondary?: { label: string; onPick: () => void };
   /** Widens the box's max width — the commit summary and run-end screens
    * need this once they carry `StatsScreenInfo`'s grouped rows (e.g.
    * "Health 500 · Ammo 250 · Speed 400 · Accuracy 180"), which run
@@ -65,17 +71,45 @@ export class GameHud {
    * level died on) — see `EngineStats.runScoreBreakdown`/`runPlayerStats`.
    * `undefined` shows the screen with no stats rows, same as before this
    * param existed (e.g. the replay viewer's failure paths). */
-  showKernelPanic(stats: StatsScreenInfo | undefined, onReturn: () => void): void {
+  showKernelPanic(
+    stats: StatsScreenInfo | undefined,
+    onReturn: () => void,
+    rollback?: { remaining: number; onRollback: () => void },
+  ): void {
+    // "Roll back" is the *primary* deliberately. Space is also the fire key,
+    // and `DISMISS_LOCK_MS` exists precisely because players mash it — if
+    // "Give up" were the default, a mashed trigger would irreversibly end the
+    // run, whereas a mis-triggered rollback costs one rollback and puts the
+    // player back in play. Escape keeps the meaning it already has on this
+    // screen (leave, back to the file tree), which is why it maps to the
+    // secondary rather than to some notion of "cancel".
+    // `rollback.remaining` is the count *after* this rollback is spent — it
+    // is decremented at the death itself, before this screen is shown (see
+    // `onGameOver`), so that closing the tab here is not a free retry. That
+    // makes a bare "N left" actively wrong to read: on the last one it says
+    // "0 rollbacks left" directly above a button offering to spend one, which
+    // is how this first got reported. Every line below therefore talks about
+    // *this* choice and what follows it, never about a bare balance.
+    const n = rollback?.remaining ?? 0;
     this.show(
       {
         title: "KERNEL PANIC",
         color: "#ff4d4d",
-        lines: ["System stability reached 0%.", "The process was terminated."],
+        lines: rollback
+          ? [
+              "System stability reached 0%.",
+              n === 0
+                ? "This is your last rollback — the level restarts as you entered it."
+                : `${n} more rollback${n === 1 ? "" : "s"} after this one — the level restarts as you entered it.`,
+              "This attempt's score and kills are discarded, and the run is marked.",
+            ]
+          : ["System stability reached 0%.", "The process was terminated."],
         stats: stats ? statRows(stats) : undefined,
-        buttonLabel: "Return to file tree",
+        buttonLabel: rollback ? "Roll back" : "Return to file tree",
+        ...(rollback ? { secondary: { label: "Give up", onPick: onReturn } } : {}),
         wide: stats !== undefined,
       },
-      onReturn,
+      rollback ? rollback.onRollback : onReturn,
     );
   }
 
@@ -198,12 +232,18 @@ export class GameHud {
     const ctx = this.canvas.getContext("2d");
     if (ctx) drawOverlay(ctx, content);
 
+    // Primary first, secondary (when there is one) second — the same order
+    // `overlayLayout` returns the rects in, so an index means the same thing
+    // in both.
+    const handlers = content.secondary ? [onAck, content.secondary.onPick] : [onAck];
+    const rects = overlayLayout(this.canvas.width, this.canvas.height, content).buttons;
+
     // Every one of these overlays can appear mid-fight (dying, or stepping on
     // the exit while still under fire) — with Space/mousedown also being the
     // fire controls, a player mashing the trigger the instant this appears
     // would otherwise dismiss it before they even see it. `shownAt` gates
-    // every dismiss trigger below until `DISMISS_LOCK_MS` has actually
-    // elapsed, rather than removing the listeners immediately.
+    // every trigger below until `DISMISS_LOCK_MS` has actually elapsed,
+    // rather than removing the listeners immediately.
     const shownAt = performance.now();
     const isLocked = (): boolean => performance.now() - shownAt < DISMISS_LOCK_MS;
 
@@ -213,20 +253,47 @@ export class GameHud {
     // plus Enter/Escape for a conventional dialog feel. One-shot: every
     // listener removes itself the moment any of them fires (after the lock
     // above has expired).
-    const dismiss = (): void => {
+    const pick = (index: number): void => {
       if (isLocked()) return;
       window.removeEventListener("keydown", onKey);
       this.canvas.removeEventListener("mousedown", onMouseDown);
       cancelAnimationFrame(gamepadPollId);
-      onAck();
+      handlers[index]();
     };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.code === "Enter" || e.code === "Space" || e.code === "Escape") {
+      if (e.code === "Enter" || e.code === "Space") {
         e.preventDefault();
-        dismiss();
+        pick(0);
+      } else if (e.code === "Escape") {
+        e.preventDefault();
+        // The last handler, which is the primary when there is only one — so
+        // a single-button overlay keeps Escape's existing "dismiss" meaning
+        // exactly, and a two-button one gets the conventional cancel.
+        pick(handlers.length - 1);
       }
     };
-    const onMouseDown = (): void => dismiss();
+    const onMouseDown = (e: MouseEvent): void => {
+      // One button: anywhere on the canvas, as before this existed.
+      if (handlers.length === 1) {
+        pick(0);
+        return;
+      }
+      // Two: an explicit choice is required, so a press that misses both
+      // does nothing at all and leaves the listeners attached. The canvas
+      // renders at 640x400 (or 1280x800) and is CSS-scaled up by
+      // `canvasFit.ts`, so client coordinates have to be scaled back into
+      // canvas pixels — there is no other client-to-canvas mapping in the
+      // codebase to reuse, since aiming goes through pointer lock and
+      // `movementX` rather than coordinates. A zero-sized rect (jsdom, and a
+      // display:none canvas) falls back to 1:1 rather than dividing by zero.
+      const r = this.canvas.getBoundingClientRect();
+      const sx = r.width > 0 ? this.canvas.width / r.width : 1;
+      const sy = r.height > 0 ? this.canvas.height / r.height : 1;
+      const x = (e.clientX - r.left) * sx;
+      const y = (e.clientY - r.top) * sy;
+      const hit = rects.findIndex((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
+      if (hit !== -1) pick(hit);
+    };
 
     window.addEventListener("keydown", onKey);
     this.canvas.addEventListener("mousedown", onMouseDown);
@@ -237,15 +304,25 @@ export class GameHud {
     // there's no `InputController` polling gamepad state to piggyback on.
     // Poll for "any button just pressed" directly here instead, same
     // one-shot-per-frame edge-trigger shape as `InputController.pollGamepad`,
-    // gated by the same `isLocked()` a keyboard/mouse dismiss already is.
-    let gamepadWasPressed = false;
+    // gated by the same `isLocked()` a keyboard/mouse press already is.
+    //
+    // With two buttons the "any button" reading would be ambiguous, so it
+    // narrows to face buttons 0 and 1 (A/cross and B/circle) mapping to
+    // primary and secondary. `prev` is updated every frame regardless of the
+    // lock, exactly as the single-button latch was, so a button already held
+    // down when the overlay appears is not an edge once the lock expires.
+    const prev: boolean[] = handlers.map(() => false);
     let gamepadPollId = 0;
     const pollGamepadDismiss = (): void => {
       const pads = typeof navigator.getGamepads === "function" ? navigator.getGamepads() : [];
       const pad = Array.from(pads).find((p): p is Gamepad => p !== null);
-      const pressed = pad?.buttons.some((b) => b.pressed) ?? false;
-      if (pressed && !gamepadWasPressed) dismiss();
-      gamepadWasPressed = pressed;
+      const now =
+        handlers.length === 1
+          ? [pad?.buttons.some((b) => b.pressed) ?? false]
+          : [pad?.buttons[0]?.pressed ?? false, pad?.buttons[1]?.pressed ?? false];
+      const edge = now.findIndex((pressed, i) => pressed && !prev[i]);
+      for (let i = 0; i < now.length; i++) prev[i] = now[i];
+      if (edge !== -1) pick(edge);
       gamepadPollId = requestAnimationFrame(pollGamepadDismiss);
     };
     gamepadPollId = requestAnimationFrame(pollGamepadDismiss);
@@ -301,6 +378,71 @@ const PAD_BOTTOM = 26;
 const BTN_W = 170;
 const BTN_H = 32;
 const PAD_AFTER_BTN = 22;
+/** Space between the two buttons of a two-choice overlay. */
+const BTN_GAP = 16;
+
+/** One button's rect, in canvas pixels — see `overlayLayout`. */
+export interface OverlayButtonRect {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+/** Everything about an overlay's geometry, with nothing drawn. */
+export interface OverlayGeometry {
+  boxX: number;
+  boxY: number;
+  boxW: number;
+  boxH: number;
+  contentEnd: number;
+  /** Primary first, then the secondary if there is one. */
+  buttons: OverlayButtonRect[];
+}
+
+/**
+ * The overlay's geometry, as a pure function of canvas size and content.
+ *
+ * Split out of `drawOverlay` so `show()` can hit-test a mouse press against
+ * the *same* rects that were drawn instead of recomputing them from its own
+ * copy of the formula — the identical "one function, no drift" reason the
+ * height is measured by running the content walk twice rather than by a
+ * second hand-tuned formula (see `layout()` below).
+ *
+ * Pure, and deliberately so: nothing here touches the context, because the
+ * content walk only accumulates constants and never calls `measureText`. That
+ * lets `show()` still wire up working input on a canvas whose 2D context is
+ * unavailable, which is a real case the suite covers.
+ */
+export function overlayLayout(w: number, h: number, content: OverlayContent): OverlayGeometry {
+  const boxW = Math.min(content.wide ? 620 : 420, w - 48);
+
+  let contentEnd = PAD_TOP;
+  for (let i = 0; i < content.lines.length; i++) contentEnd += LINE_GAP;
+  if (content.stats && content.stats.length > 0) {
+    contentEnd += STATS_LEAD + (content.stats.length - 1) * STAT_GAP;
+  }
+
+  const boxH = contentEnd + PAD_BOTTOM + BTN_H + PAD_AFTER_BTN;
+  const boxX = (w - boxW) / 2;
+  const boxY = (h - boxH) / 2;
+
+  // Branch-free on the button count: at one button this reproduces today's
+  // `w / 2 - BTN_W / 2` exactly, so no existing overlay moves by a pixel. The
+  // `Math.min` is the narrow-canvas clamp — it shrinks both buttons equally
+  // rather than letting a two-button row run past its own box.
+  const count = content.secondary ? 2 : 1;
+  const btnW = Math.min(BTN_W, (boxW - 32 - (count - 1) * BTN_GAP) / count);
+  const totalW = count * btnW + (count - 1) * BTN_GAP;
+  const buttons = Array.from({ length: count }, (_, i) => ({
+    x: w / 2 - totalW / 2 + i * (btnW + BTN_GAP),
+    y: boxY + contentEnd + PAD_BOTTOM,
+    w: btnW,
+    h: BTN_H,
+  }));
+
+  return { boxX, boxY, boxW, boxH, contentEnd, buttons };
+}
 
 /**
  * Paint a dark scrim + centered box over whatever's currently on the canvas
@@ -311,35 +453,29 @@ const PAD_AFTER_BTN = 22;
 function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): void {
   const w = ctx.canvas.width;
   const h = ctx.canvas.height;
-  const boxW = Math.min(content.wide ? 620 : 420, w - 48);
+  const { boxX, boxY, boxW, boxH, buttons } = overlayLayout(w, h, content);
 
   /**
-   * Walks title -> lines -> stats, advancing (and returning) a running `y`
-   * offset from `y0`. Called twice: once with `draw: false` purely to learn
-   * how tall the content actually is (so the box/button can be sized and
-   * positioned correctly *before* anything is drawn), then again with
-   * `draw: true` at the real box position. Using one function for both
-   * means the measured height and the real drawing can never drift apart —
-   * which a previous version did, with the box height and the button's
-   * position each computed from their own separate, hand-tuned formula that
-   * didn't actually match the real per-line/per-stat spacing, so the button
-   * sometimes overlapped the last line of text above it.
+   * Walks title -> lines -> stats, drawing at a running `y` offset from
+   * `boxY`. The *measurement* half of this used to live here too, run with
+   * `draw: false` purely to learn the content height; it now lives in
+   * `overlayLayout` above, which is the one place the height is derived. The
+   * hazard that split guards against is unchanged and worth restating: the
+   * box height and the button position were once each computed by their own
+   * hand-tuned formula that didn't match the real per-line/per-stat spacing,
+   * so the button sometimes overlapped the last line of text above it.
    */
-  function layout(y0: number, draw: boolean): number {
+  function layout(y0: number): void {
     let y = y0 + PAD_TOP;
-    if (draw) {
-      ctx.font = "bold 22px ui-monospace, monospace";
-      ctx.fillStyle = content.color;
-      ctx.fillText(content.title, w / 2, y, boxW - 32);
-    }
+    ctx.font = "bold 22px ui-monospace, monospace";
+    ctx.fillStyle = content.color;
+    ctx.fillText(content.title, w / 2, y, boxW - 32);
 
     for (const line of content.lines) {
       y += LINE_GAP;
-      if (draw) {
-        ctx.font = "13px ui-monospace, monospace";
-        ctx.fillStyle = "#cdd3cd";
-        ctx.fillText(line, w / 2, y, boxW - 32);
-      }
+      ctx.font = "13px ui-monospace, monospace";
+      ctx.fillStyle = "#cdd3cd";
+      ctx.fillText(line, w / 2, y, boxW - 32);
     }
 
     if (content.stats && content.stats.length > 0) {
@@ -349,30 +485,20 @@ function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): vo
       const sideMaxWidth = boxW / 2 - 24;
       y += STATS_LEAD;
       for (const [label, value] of content.stats) {
-        if (draw) {
-          ctx.font = "13px ui-monospace, monospace";
-          ctx.fillStyle = "#8a9490";
-          ctx.textAlign = "right";
-          ctx.fillText(label, w / 2 - 8, y, sideMaxWidth);
+        ctx.font = "13px ui-monospace, monospace";
+        ctx.fillStyle = "#8a9490";
+        ctx.textAlign = "right";
+        ctx.fillText(label, w / 2 - 8, y, sideMaxWidth);
 
-          ctx.font = "bold 13px ui-monospace, monospace";
-          ctx.fillStyle = "#ffffff";
-          ctx.textAlign = "left";
-          ctx.fillText(value, w / 2 + 8, y, sideMaxWidth);
-          ctx.textAlign = "center";
-        }
+        ctx.font = "bold 13px ui-monospace, monospace";
+        ctx.fillStyle = "#ffffff";
+        ctx.textAlign = "left";
+        ctx.fillText(value, w / 2 + 8, y, sideMaxWidth);
+        ctx.textAlign = "center";
         y += STAT_GAP;
       }
-      y -= STAT_GAP; // the last row doesn't need its own trailing gap
     }
-
-    return y;
   }
-
-  const contentEnd = layout(0, false);
-  const boxH = contentEnd + PAD_BOTTOM + BTN_H + PAD_AFTER_BTN;
-  const boxX = (w - boxW) / 2;
-  const boxY = (h - boxH) / 2;
 
   ctx.fillStyle = "rgba(2,3,4,0.88)";
   ctx.fillRect(0, 0, w, h);
@@ -384,14 +510,26 @@ function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): vo
 
   ctx.textAlign = "center";
   ctx.textBaseline = "alphabetic";
-  layout(boxY, true);
+  layout(boxY);
 
-  const btnY = boxY + contentEnd + PAD_BOTTOM;
-  ctx.fillStyle = content.color;
-  ctx.fillRect(w / 2 - BTN_W / 2, btnY, BTN_W, BTN_H);
-  ctx.fillStyle = "#04120a";
-  ctx.font = "bold 13px ui-monospace, monospace";
-  ctx.fillText(content.buttonLabel, w / 2, btnY + BTN_H / 2 + 4);
+  // Primary filled, secondary outlined — that contrast *is* the "this one is
+  // the default" cue, which is why there is no selection state to move around
+  // and no redraw on input.
+  const labels = [content.buttonLabel, ...(content.secondary ? [content.secondary.label] : [])];
+  buttons.forEach((b, i) => {
+    if (i === 0) {
+      ctx.fillStyle = content.color;
+      ctx.fillRect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = "#04120a";
+    } else {
+      ctx.strokeStyle = content.color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(b.x + 0.5, b.y + 0.5, b.w - 1, b.h - 1);
+      ctx.fillStyle = content.color;
+    }
+    ctx.font = "bold 13px ui-monospace, monospace";
+    ctx.fillText(labels[i], b.x + b.w / 2, b.y + BTN_H / 2 + 4);
+  });
 
   ctx.textAlign = "start";
 }

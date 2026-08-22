@@ -46,7 +46,15 @@ From there you explore, fight, loot, and make your way to the level's exit tile.
 - **Reach the exit** → a **Commit Summary** overlay shows stats ("Lines refactored", "Bugs squashed") and a **Continue** button loads the next level, carrying your health, ammo, and weapons forward. An **Export Map as PNG** button also appears below the canvas — it downloads a top-down image of the level you just cleared, textured the same as what you actually saw in-game, for sharing. It's only ever available for a level you've already finished.
   - **The exit only works once its own room is clear.** Standing on the exit tile does nothing at all while any enemy that spawned in that same room is still alive — no message, it just doesn't trigger. Clear the room first.
 - **Run out of levels** (you've cleared the whole tree) → **Build Successful**.
-- **Die** → **Kernel Panic**, and you're returned to the file tree.
+- **Die** → **Kernel Panic**. If your run still has a **rollback** left, the screen offers one: **Roll back** restarts the level you died on exactly as you entered it, and **Give up** ends the run and returns you to the file tree. With none left there is no choice to make — the run is over, same as it always was.
+
+### Rollbacks
+
+A run starts with a small budget of rollbacks — **2 on Easy, 1 on Normal, none on Hard** — and the number left is shown above the status bar while you play. On Hard there are none to spend and the Kernel Panic screen keeps its single button: death there is final, which is part of what the tier means. Spending one puts you back at the start of the level you died on, with the health, armour, ammunition, weapons and score you *walked in with*. Whatever you picked up or scored during the failed attempt is gone; so is the damage you took.
+
+Two things are worth knowing. The **level layout is the same** — it is built from the source file and does not change — but the enemies will not behave identically, because their timing, their aim and what they drop are rolled fresh each time you enter. And a run that spends a rollback **still gets a leaderboard entry**; the Highscores dialog marks it in the **RB** column, so a continued run and a clean one are told apart rather than one of them being thrown away. The **Difficulty** column next to it says which setting the run was played on, so the two rows can actually be weighed against each other.
+
+A rollback is spent the moment you die, not when you press the button, so closing the tab at the Kernel Panic screen is not a way to get a free one — resume it later and you will pick up at the start of that level with the rollback already used.
 
 Your progress autosaves as you play — but only for a **Local** workspace, so if you close the tab mid-campaign, **Continue Run** picks it back up (you'll be asked to re-pick the same local folder, since a browser can't hold onto a file handle across sessions). A **Repo** or **Demos** run doesn't persist or offer a "Continue Run": there's no local folder to re-pick for either, and re-fetching/rebuilding one from scratch would silently start the campaign back over rather than truly resuming it, so neither pretends to save.
 

@@ -66,6 +66,7 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     heldGates: [],
     gateColors: [],
     cheatsUsed: false,
+    rollbacksRemaining: 0,
     score: 500,
     kills: 4,
     weaponIndex: 0, // pistol -> bullets
@@ -489,6 +490,49 @@ describe("drawHud", () => {
     const panelTop = 600 - HUD_HEIGHT;
     expect(badgeY).toBeLessThan(panelTop);
     expect(badgeY).toBeGreaterThan(50); // below the toast strip (y 26-50)
+  });
+
+  it("draws no rollback badge when none are left", () => {
+    const c = ctx();
+    drawHud(asCtx(c), fakeStats({ rollbacksRemaining: 0 }));
+    expect(c.fillText.mock.calls.map((call) => String(call[0])).join(" ")).not.toContain("ROLLBACK");
+  });
+
+  it("draws the rollback badge, pluralised, when the run is holding some", () => {
+    const many = ctx();
+    drawHud(asCtx(many), fakeStats({ rollbacksRemaining: 2 }));
+    expect(many.fillText.mock.calls.map((call) => String(call[0]))).toContain("↩ 2 ROLLBACKS LEFT");
+
+    const one = ctx();
+    drawHud(asCtx(one), fakeStats({ rollbacksRemaining: 1 }));
+    expect(one.fillText.mock.calls.map((call) => String(call[0]))).toContain("↩ 1 ROLLBACK LEFT");
+  });
+
+  it("stacks the rollback badge above the cheats badge instead of on top of it", () => {
+    // A run can be both cheated and holding rollbacks. Both badges are drawn
+    // from the bar's top edge, so without the stacking handoff they land at
+    // the identical y and the second paints straight over the first.
+    const c = ctx(800, 600);
+    drawHud(asCtx(c), fakeStats({ cheatsUsed: true, rollbacksRemaining: 2 }));
+    const at = (needle: string): number =>
+      c.fillText.mock.calls.find((call) => String(call[0]).includes(needle))![2] as number;
+    const cheatsY = at("CHEATS USED");
+    const rollbackY = at("ROLLBACK");
+    expect(rollbackY).toBeLessThan(cheatsY);
+    expect(cheatsY - rollbackY).toBeGreaterThanOrEqual(13); // at least a full box apart, never overlapping
+    expect(rollbackY).toBeGreaterThan(50); // still clear of the toast strip (y 26-50)
+  });
+
+  it("puts the cheats badge at the same y whether or not rollbacks are showing", () => {
+    // The stacking must grow upward. If it grew downward instead, the cheat
+    // badge would move into the HUD panel on any run that also had rollbacks.
+    const alone = ctx(800, 600);
+    drawHud(asCtx(alone), fakeStats({ cheatsUsed: true }));
+    const both = ctx(800, 600);
+    drawHud(asCtx(both), fakeStats({ cheatsUsed: true, rollbacksRemaining: 3 }));
+    const yOf = (c: MockCanvasContext): number =>
+      c.fillText.mock.calls.find((call) => String(call[0]).includes("CHEATS USED"))![2] as number;
+    expect(yOf(both)).toBe(yOf(alone));
   });
 
   it("fills the stability bar red at/below 30%", () => {

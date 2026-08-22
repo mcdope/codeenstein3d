@@ -33,6 +33,7 @@
  * `vitest run`, so this runs in CI.
  */
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
@@ -195,5 +196,18 @@ describe("the shared predicates stay reachable from a real Node process", () => 
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
     expect(run.stdout.trim()).toBe("ok");
+  });
+
+  // The rollback opt-out key is a *string* mirror rather than a numeric one,
+  // and it fails more quietly than any of the scalars above: `main.ts` reads
+  // `codeenstein-rollbacks-disabled` from localStorage, `scripts/lib/rollbacks.mjs`
+  // writes it, and nothing links the two. A typo on either side means the
+  // preset is silently ignored — the page boots with rollbacks *on*, every
+  // harness that presets it carries on, and only `assertRollbacksDisabled`
+  // catches it, at browser-run time rather than in CI.
+  it("pins the rollback opt-out key against the one main.ts reads", async () => {
+    const { ROLLBACKS_DISABLED_KEY } = await import("./rollbacks.mjs");
+    const mainSource = readFileSync(fileURLToPath(new URL("../../src/main.ts", import.meta.url)), "utf8");
+    expect(mainSource).toContain(`const ROLLBACKS_DISABLED_KEY = "${ROLLBACKS_DISABLED_KEY}";`);
   });
 });

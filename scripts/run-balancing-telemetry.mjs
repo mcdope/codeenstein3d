@@ -48,6 +48,7 @@ import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { ensureDevServer } from "./lib/devServer.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
+import { assertRollbacksDisabled, installRollbacksDisabled } from "./lib/rollbacks.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "demo-campaign");
 const CAMPAIGN_NAME = "demo-campaign";
@@ -614,6 +615,7 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
 
     if (!HEADED) await installVirtualClock(page); // headed mode runs on the real clock so a human can follow along
     await installDifficulty(page, difficulty);
+    await installRollbacksDisabled(page);
     const attemptSeed = seedForAttempt(attemptOrdinal);
     const seedParam = attemptSeed === null ? "" : `&seed=${attemptSeed}`;
     // `?eventLog=1` only when a destination was actually configured — the
@@ -624,6 +626,7 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
+    await assertRollbacksDisabled(page);
     await dismissOverlay(page);
 
     const run = await playRun(page, profile, levelPlans, `${profileName}/${difficulty}`);

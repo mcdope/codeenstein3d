@@ -14,6 +14,7 @@
  * at a glance in the Highscore UI.
  */
 
+import type { DifficultyLevel } from "../difficulty";
 import type { ReplayPayload } from "./replay";
 import { isBinaryBoard, packBoardForStorage, unpackBoardFromStorage } from "./replayCodec";
 import { decompressFromStorage } from "./storageCompression";
@@ -42,6 +43,28 @@ export interface HighscoreEntry {
   /** The file the run ended on — died on, or the last one cleared before the
    * campaign ran out of files. */
   levelName: string;
+  /** The difficulty this run was played on, so two rows can actually be
+   * compared. Absent on every entry recorded before this field existed —
+   * including the shipped default board — but `difficultyOf()` recovers those
+   * from the attached replay rather than giving up, since every level segment
+   * records the difficulty it was played at.
+   *
+   * Read at record time, the same as `playerName` above. That used to carry
+   * a real caveat — a run could change difficulty partway and be labelled by
+   * wherever it finished — which is exactly why `setDifficultyLocked` now
+   * fixes the setting for the lifetime of a run. Record time and run start
+   * are therefore the same answer, and the per-segment values in the replay
+   * agree with this one. The disagreement case survives only for entries
+   * recorded before that lock existed, which `difficultyOf` declines to
+   * label rather than guess at. */
+  difficulty?: DifficultyLevel;
+  /** How many rollbacks this run spent restarting a level it died on, when
+   * it spent any. Absent on a clean run *and* on every entry recorded before
+   * rollbacks existed, deliberately the same case: a stored `0` would claim
+   * to know something about a run that predates the question. The board has
+   * never carried a difficulty either, so this marks a run rather than making
+   * two rows comparable — see the display note in `renderHighscoreTable`. */
+  rollbacksUsed?: number;
   /** How many levels were actually cleared before the run ended. Never `0` —
    * dying on the very first level (0 cleared) isn't recorded at all, see
    * `recordRunHighscore` in `main.ts`. */
@@ -221,6 +244,32 @@ function isHighscoreEntry(value: unknown): value is HighscoreEntry {
     typeof v.hash === "string" &&
     typeof v.achievedAt === "number" &&
     (v.codebaseLinesOfCode === undefined || typeof v.codebaseLinesOfCode === "number") &&
-    (v.codebaseComplexity === undefined || typeof v.codebaseComplexity === "number")
+    (v.codebaseComplexity === undefined || typeof v.codebaseComplexity === "number") &&
+    (v.rollbacksUsed === undefined || typeof v.rollbacksUsed === "number") &&
+    (v.difficulty === undefined || v.difficulty === "easy" || v.difficulty === "normal" || v.difficulty === "hard")
   );
+}
+
+/**
+ * The difficulty an entry was played on, or `undefined` when it genuinely
+ * cannot be known.
+ *
+ * Falls back to the attached replay because the information is already in
+ * there — every `ReplayLevelSegment` records the difficulty its level was
+ * played at — so entries written before `difficulty` existed, the shipped
+ * default board included, still show a real value instead of a dash. Only
+ * regenerating that board would have fixed it otherwise, and regenerating it
+ * to backfill a display column is a poor trade.
+ *
+ * The replay is only trusted when **every** recorded segment agrees. A run
+ * whose difficulty was changed partway has no single honest label, and
+ * quietly reporting the first level's would turn "I switched to Easy at
+ * level 9" into a Hard entry on the board.
+ */
+export function difficultyOf(entry: HighscoreEntry): DifficultyLevel | undefined {
+  if (entry.difficulty) return entry.difficulty;
+  const levels = entry.replay?.levels;
+  if (!levels || levels.length === 0) return undefined;
+  const first = levels[0].difficulty;
+  return levels.every((level) => level.difficulty === first) ? first : undefined;
 }

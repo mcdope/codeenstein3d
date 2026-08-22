@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
 /** Renders the top-10 leaderboard into the Highscores `<dialog>` (see main.ts). */
-import { truncateHash, type HighscoreEntry } from "../engine/highscores";
+import { difficultyOf, truncateHash, type HighscoreEntry } from "../engine/highscores";
 
 /** Shown for an entry with no name of its own — greyed, so a board mixing
  * named and unnamed runs reads as "nobody set a name here" rather than as a
@@ -52,7 +52,7 @@ export function renderHighscoreTable(
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    '<tr><th>#</th><th class="wrap">Player</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
+    '<tr><th>#</th><th class="wrap">Player</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th>Difficulty</th><th title="Rollbacks spent">RB</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -95,6 +95,36 @@ export function renderHighscoreTable(
 
     const levels = document.createElement("td");
     levels.textContent = String(entry.levelsCleared);
+
+    // Spelled out rather than abbreviated: "Diff" would read as a git diff
+    // in a game whose whole vocabulary is version control. Recovered from the
+    // attached replay for entries written before the column existed — see
+    // `difficultyOf` — so the shipped default board shows real values instead
+    // of a column of dashes.
+    const difficulty = document.createElement("td");
+    const level_ = difficultyOf(entry);
+    if (level_) {
+      difficulty.textContent = level_[0].toUpperCase() + level_.slice(1);
+      if (!entry.difficulty) difficulty.title = "Read back from this run's replay";
+    } else {
+      difficulty.className = "muted";
+      difficulty.textContent = "—";
+    }
+
+    // Marks a continued run rather than ranking it. Together with the
+    // difficulty beside it, a reader can now actually weigh two rows against
+    // each other — which is the whole reason that column was added. Same
+    // absent-vs-zero split as the two codebase columns above, and it matters
+    // more here: "—" means recorded before rollbacks existed, "0" means the
+    // run had them and spent none.
+    const rollbacks = document.createElement("td");
+    if (typeof entry.rollbacksUsed === "number") {
+      rollbacks.textContent = String(entry.rollbacksUsed);
+      if (entry.rollbacksUsed > 0) rollbacks.title = "Restarted a level from its entry state";
+    } else {
+      rollbacks.className = "muted";
+      rollbacks.textContent = "—";
+    }
 
     const level = document.createElement("td");
     level.className = "wrap";
@@ -139,7 +169,7 @@ export function renderHighscoreTable(
       if (hasReplay) replay.title = "Recorded before a gameplay change — it would no longer match this score.";
     }
 
-    row.append(rank, player, score, campaign, loc, complexity, levels, level, hash, replay);
+    row.append(rank, player, score, campaign, loc, complexity, levels, difficulty, rollbacks, level, hash, replay);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);

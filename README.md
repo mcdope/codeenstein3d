@@ -242,6 +242,7 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 - **Player name** — Labels your highscore entries, and floats above your character in co-op
 - **Gore** — None/Normal/More/Extreme/Excessive/Absurd, scaling blood-particle count, size and how long stains last; Absurd's stains never expire
 - **Difficulty** — Easy/Normal/Hard, scaling enemy HP, damage, ammo scarcity
+- **Difficulty** — Easy / Normal / Hard; applies at the next level and then **locks for the rest of the run**, since the highscore board records it
 - **Render quality** — Classic (640×400, the default) or Sharp (1280×800 with a half-resolution floor); applies at the next level, and aiming is identical in both
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
 - **Select BGM Folder** — Pick a local folder of audio files for custom playlist (session-only — a browser can't hold onto the folder handle)
@@ -252,7 +253,7 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 - **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
 - **Reach green exit tile** → Commit summary screen (with an "Export Map as PNG" button for the level you just cleared) → Next level loads (health/ammo/weapons carry over)
 - **Run out of files** → "Build Successful" screen
-- **Die** → "Kernel Panic" screen
+- **Die** → "Kernel Panic" screen — with a **rollback** left (2 Easy / 1 Normal / 0 Hard) it offers to restart the level exactly as you entered it; with none left, which is always the case on Hard, the run ends
 - **Continue Run button** — Resume a saved campaign exactly where you left off
 
 ---

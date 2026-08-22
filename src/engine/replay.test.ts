@@ -274,3 +274,60 @@ describe("ReplayPlaybackInput", () => {
     expect(input.captureSnapshot()).toBe(s);
   });
 });
+
+describe("CampaignReplayRecorder.dropCurrentLevel — a rolled-back attempt", () => {
+  const H = (): Promise<string> => Promise.resolve("h");
+
+  it("removes the in-progress level so it never reaches the payload", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), H(), H());
+    rec.record(0.016, snapshot());
+    rec.startLevel(meta({ filePath: "b.c" }), H(), H()); // died here
+    rec.record(0.016, snapshot());
+    rec.dropCurrentLevel();
+    rec.startLevel(meta({ filePath: "b.c" }), H(), H()); // rolled back, played it again
+    rec.record(0.016, snapshot());
+
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c", "b.c"]);
+    // Exactly one b.c, not two: the failed attempt is gone rather than
+    // sitting in front of the surviving one, where playback would have
+    // stopped at its death and never reached anything after it.
+    expect(payload!.levels).toHaveLength(2);
+  });
+
+  it("leaves the levels before it untouched and in order", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    for (const f of ["a.c", "b.c", "c.c"]) {
+      rec.startLevel(meta({ filePath: f }), H(), H());
+      rec.record(0.016, snapshot());
+    }
+    rec.dropCurrentLevel();
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c", "b.c"]);
+  });
+
+  it("is a no-op when nothing is being recorded", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    expect(() => rec.dropCurrentLevel()).not.toThrow();
+    rec.startLevel(meta({ filePath: "a.c" }), H(), H());
+    rec.record(0.016, snapshot());
+    rec.dropCurrentLevel();
+    // Called twice: the second must not eat the level before it.
+    rec.dropCurrentLevel();
+    rec.startLevel(meta({ filePath: "a.c" }), H(), H());
+    rec.record(0.016, snapshot());
+    const payload = await rec.finish();
+    expect(payload!.levels.map((l) => l.filePath)).toEqual(["a.c"]);
+  });
+
+  it("stops recording into the dropped level", async () => {
+    const rec = new CampaignReplayRecorder("demo");
+    rec.startLevel(meta({ filePath: "a.c" }), H(), H());
+    rec.record(0.016, snapshot());
+    rec.dropCurrentLevel();
+    expect(() => rec.record(0.016, snapshot())).not.toThrow(); // no live level to record into
+    const payload = await rec.finish();
+    expect(payload).toBeNull(); // nothing savable was captured at all
+  });
+});

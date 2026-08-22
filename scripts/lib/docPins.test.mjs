@@ -49,7 +49,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { DIFFICULTY_MULTIPLIERS } from "../../src/difficulty";
+import { DIFFICULTY_MULTIPLIERS, ROLLBACKS_BY_DIFFICULTY } from "../../src/difficulty";
 import { AMMO_META, AMMO_TYPES, STARTING_SHELLS } from "../../src/engine/ammo";
 import {
   EDGE_CASE_DAMAGE_MULTIPLIER,
@@ -183,6 +183,22 @@ describe("player guide — mechanics, controls and the HUD", () => {
     pin("doc/user/mechanics.md", `| Easy | ×${d.easy.hp} | ×${d.easy.damage} |`);
     pin("doc/user/mechanics.md", `| Hard | ×${d.hard.hp} | ×${d.hard.damage} |`);
     pin("doc/user/mechanics.md", `up to ±${d.easy.enemyAimSpreadDeg}° per shot`);
+  });
+
+  it("states the rollback counts at the real values", () => {
+    const r = ROLLBACKS_BY_DIFFICULTY;
+    // Hard is 0, which the player docs spell "none" rather than printing a
+    // zero — so the pin renders it the same way. Still driven by the real
+    // constant: give Hard a rollback back and every one of these stops
+    // matching until the prose is updated too.
+    const word = (n) => (n === 0 ? "none" : String(n));
+    pin("doc/user/mechanics.md", `| ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 | ${r.easy} |`);
+    pin("doc/user/mechanics.md", `| ×1 | ×1 | Slightly off — up to ±4° | ×1 | ${r.normal} |`);
+    pin("doc/user/mechanics.md", `| ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 | ${word(r.hard)} |`);
+    pin("doc/user/mechanics.md", `**${r.easy} on Easy, ${r.normal} on Normal, and ${word(r.hard)} at all on Hard**`);
+    pin("doc/user/getting-started.md", `**${r.easy} on Easy, ${r.normal} on Normal, ${word(r.hard)} on Hard**`);
+    pin("doc/user/hud-and-ui.md", `(${r.easy} / ${r.normal} / ${word(r.hard)})`);
+    pin("README.md", `(${r.easy} Easy / ${r.normal} Normal / ${r.hard} Hard)`);
   });
 
   it("states the drop odds at the real rates", () => {

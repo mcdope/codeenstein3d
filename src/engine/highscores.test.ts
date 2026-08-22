@@ -5,6 +5,7 @@
 import { webcrypto } from "node:crypto";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  difficultyOf,
   hashRun,
   loadHighscores,
   loadHighscoresForDisplay,
@@ -225,5 +226,118 @@ describe("recordHighscore", () => {
     expect(board[0].replay).toBeDefined(); // never actually saved, so unmodified
     expect(warnSpy).toHaveBeenCalledTimes(3);
     expect(warnSpy.mock.calls[2][0]).toContain("Failed to save");
+  });
+});
+
+describe("isHighscoreEntry — rollbacksUsed", () => {
+  const base = {
+    score: 1,
+    campaignName: "demo",
+    levelName: "a.c",
+    levelsCleared: 1,
+    hash: "abc",
+    achievedAt: 1,
+  };
+
+  it("accepts an entry with the field, without it, and rejects a non-number", async () => {
+    // Reached through the real load path rather than by exporting the
+    // predicate: a stored board is JSON, so the only way a bad value gets in
+    // is through here.
+    for (const [value, kept] of [
+      [2, true],
+      [0, true],
+      [undefined, true],
+      ["2", false],
+      [null, false],
+    ] as [unknown, boolean][]) {
+      const entry = value === undefined ? { ...base } : { ...base, rollbacksUsed: value };
+      localStorage.setItem("codeenstein-highscores", JSON.stringify([entry]));
+      const board = await loadHighscores();
+      expect(board.some((e) => e.hash === "abc"), `rollbacksUsed=${JSON.stringify(value)}`).toBe(kept);
+    }
+  });
+});
+
+describe("isHighscoreEntry — difficulty", () => {
+  const base = {
+    score: 1,
+    campaignName: "demo",
+    levelName: "a.c",
+    levelsCleared: 1,
+    hash: "diffcheck",
+    achievedAt: 1,
+  };
+
+  it("accepts the three real levels and nothing else", async () => {
+    for (const [value, kept] of [
+      ["easy", true],
+      ["normal", true],
+      ["hard", true],
+      [undefined, true],
+      ["nightmare", false],
+      [2, false],
+      [null, false],
+    ] as [unknown, boolean][]) {
+      const entry = value === undefined ? { ...base } : { ...base, difficulty: value };
+      localStorage.setItem("codeenstein-highscores", JSON.stringify([entry]));
+      const board = await loadHighscores();
+      expect(board.some((e) => e.hash === "diffcheck"), `difficulty=${JSON.stringify(value)}`).toBe(kept);
+    }
+  });
+});
+
+describe("difficultyOf", () => {
+  const base: HighscoreEntry = {
+    score: 1,
+    campaignName: "demo",
+    levelName: "a.c",
+    levelsCleared: 1,
+    hash: "h",
+    achievedAt: 1,
+  };
+  const withLevels = (...difficulties: string[]): HighscoreEntry => ({
+    ...base,
+    replay: { version: 2, campaignName: "demo", levels: difficulties.map((d) => ({ difficulty: d })) } as never,
+  });
+
+  it("returns the stored value when there is one", () => {
+    expect(difficultyOf({ ...base, difficulty: "hard" })).toBe("hard");
+  });
+
+  it("prefers the stored value over a replay that disagrees", () => {
+    expect(difficultyOf({ ...withLevels("easy"), difficulty: "hard" })).toBe("hard");
+  });
+
+  it("reads it back from a replay whose segments all agree", () => {
+    expect(difficultyOf(withLevels("easy", "easy", "easy"))).toBe("easy");
+  });
+
+  it("gives up when the segments disagree", () => {
+    // A run whose difficulty was changed partway has no single honest label.
+    expect(difficultyOf(withLevels("hard", "hard", "easy"))).toBeUndefined();
+  });
+
+  it("gives up with no replay, and with an empty one", () => {
+    expect(difficultyOf(base)).toBeUndefined();
+    expect(difficultyOf(withLevels())).toBeUndefined();
+  });
+});
+
+describe("difficultyOf against the shipped default board", () => {
+  it("resolves a real difficulty for every shipped row, so no dashes ship", async () => {
+    // The claim that made regenerating the board unnecessary, checked against
+    // the actual shipped bytes rather than argued from the generator's
+    // source. Those rows predate the `difficulty` field entirely, so every
+    // value here comes back through the replay-recovery path — if that path
+    // ever breaks, or a future board is generated without replays attached,
+    // the first-time visitor's board silently becomes a column of dashes and
+    // this is what says so.
+    localStorage.clear();
+    const board = await loadHighscoresForDisplay();
+    expect(board.length).toBeGreaterThan(0);
+    for (const entry of board) {
+      expect(entry.difficulty, `${entry.playerName ?? entry.levelName} should predate the field`).toBeUndefined();
+      expect(difficultyOf(entry), `${entry.playerName ?? entry.levelName} recovered from replay`).toBeDefined();
+    }
   });
 });

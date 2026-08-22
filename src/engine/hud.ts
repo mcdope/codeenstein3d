@@ -561,7 +561,17 @@ export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void
   drawScorePanel(ctx, L.panels.score, stats);
   drawAmmoTable(ctx, L.panels.table, stats);
 
-  if (stats.cheatsUsed) drawCheatedRunBadge(ctx, L.bar.y);
+  // Cheats first, so its box keeps the exact y it had before rollbacks
+  // existed and the rollback badge stacks *above* it — the geometry tests
+  // pin the cheat badge's position, and a run can carry both at once.
+  let badgeY = L.bar.y;
+  if (stats.cheatsUsed) {
+    badgeY = drawStatusBadge(ctx, "⚠ CHEATS USED — RUN NOT RECORDED", "#ff5a4a", "rgba(255,90,74,0.6)", badgeY);
+  }
+  if (stats.rollbacksRemaining > 0) {
+    const n = stats.rollbacksRemaining;
+    drawStatusBadge(ctx, `↩ ${n} ROLLBACK${n === 1 ? "" : "S"} LEFT`, "#e0a04a", "rgba(224,160,74,0.6)", badgeY);
+  }
 }
 
 /** Background, top accent and the bezel rules between panels. */
@@ -920,11 +930,24 @@ function drawScorePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
  * Sits on the HUD panel's own top edge rather than in the panel: every slot
  * inside it is spoken for, and the width between them varies with canvas size,
  * so anything placed among them would collide on some viewport. Top-center is
- * taken too — that is where the transient toasts appear, and this must not
- * compete with the very toast that precedes it.
+ * taken too — that is where the transient toasts appear, and these must not
+ * compete with the very toast that precedes one of them.
+ *
+ * Returns the box's top y so a second badge can stack directly above the
+ * first: a run can be both cheated and holding rollbacks, and two badges
+ * drawn at the same `y0` would sit exactly on top of each other. `border` is
+ * passed rather than derived from `color` because the two are different
+ * notations (a hex fill against an `rgba()` stroke at 60% alpha), and
+ * string-munging one into the other silently produces an invalid colour that
+ * canvas ignores — leaving the badge with no outline at all.
  */
-function drawCheatedRunBadge(ctx: CanvasRenderingContext2D, y0: number): void {
-  const text = "⚠ CHEATS USED — RUN NOT RECORDED";
+function drawStatusBadge(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  color: string,
+  border: string,
+  y0: number,
+): number {
   const w = ctx.canvas.width;
   ctx.save();
   ctx.font = "bold 9px ui-monospace, monospace";
@@ -934,13 +957,14 @@ function drawCheatedRunBadge(ctx: CanvasRenderingContext2D, y0: number): void {
   const boxY = y0 - boxH - 2;
   ctx.fillStyle = "rgba(4,8,10,0.8)";
   ctx.fillRect(w - 12 - boxW, boxY, boxW, boxH);
-  ctx.strokeStyle = "rgba(255,90,74,0.6)";
+  ctx.strokeStyle = border;
   ctx.lineWidth = 1;
   outlineRect(ctx, w - 12 - boxW + 0.5, boxY + 0.5, boxW - 1, boxH - 1);
-  ctx.fillStyle = "#ff5a4a";
+  ctx.fillStyle = color;
   ctx.fillText(text, w - 18, boxY + 9);
   ctx.textAlign = "left";
   ctx.restore();
+  return boxY;
 }
 
 /** Small uppercase caption; honors the current `textAlign`. */

@@ -3,7 +3,8 @@
 
 /**
  * Difficulty setting — scales enemy HP, enemy-dealt damage, and ammo/loot
- * drop amounts. Lives at the `src/` root, not under `map/` or `engine/`,
+ * drop amounts, and sets how many rollbacks a run gets. Lives at the `src/`
+ * root, not under `map/` or `engine/`,
  * since both layers need it and the map layer must never import the engine
  * layer (see `doc/dev/architecture.md`'s layering rule) — a small, dependency-
  * free shared module is the cleanest way for both to read the same table
@@ -51,6 +52,40 @@ export const DIFFICULTY_MULTIPLIERS: Record<DifficultyLevel, DifficultyMultiplie
   easy: { hp: 0.7, damage: 0.85, ammoDropRate: 1.3, enemyAimSpreadDeg: 10 },
   normal: { hp: 1, damage: 1, ammoDropRate: 1, enemyAimSpreadDeg: 4 },
   hard: { hp: 1.5, damage: 1.5, ammoDropRate: 0.7, enemyAimSpreadDeg: 0 },
+};
+
+/**
+ * How many rollbacks (arcade continues) a fresh single-player run starts with.
+ * Spending one restarts the level you died on from the state you entered it
+ * with, rather than ending the run — see `main.ts`'s `onGameOver`.
+ *
+ * **A separate table rather than a field on `DifficultyMultipliers`, and the
+ * distinction is not cosmetic.** Every member of that interface is a
+ * *multiplier applied to a simulation quantity*, consumed inside the engine's
+ * own combat maths (`engine.ts` resolves the table once at construction and
+ * multiplies hp/damage/loot/aim by it). A retry budget is not a multiplier, is
+ * never read by the engine's simulation at all, and is consumed by the app
+ * shell — folding it in would make `DIFFICULTY_MULTIPLIERS`' name a lie and
+ * invite the next reader to treat it as another combat knob.
+ *
+ * The counts run the same direction as every other difficulty axis (Easy most
+ * forgiving, Hard least), so they compound with the HP/damage/loot curve rather
+ * than offsetting it — the same principle `DIFFICULTY_MULTIPLIERS`'
+ * `ammoDropRate` follows.
+ *
+ * **Hard is deliberately zero**, which makes it the one tier where death is
+ * still final and the Kernel Panic screen keeps its original single button.
+ * That is a design statement rather than a spare slot: a difficulty whose
+ * whole identity is a tighter margin should not also hand back the run. Two
+ * consequences worth knowing before changing it — the rollback badge never
+ * draws on Hard (it hides at 0), and `grantedRollbacks()` returning 0 is no
+ * longer proof that the harness opt-out took effect, which is why
+ * `getRollbackState` reports `disabled` separately for scripts to assert on.
+ */
+export const ROLLBACKS_BY_DIFFICULTY: Record<DifficultyLevel, number> = {
+  easy: 2,
+  normal: 1,
+  hard: 0,
 };
 
 export const DEFAULT_DIFFICULTY: DifficultyLevel = "normal";

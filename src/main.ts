@@ -45,7 +45,7 @@ import {
   TOOLCHAIN_WEAPON_INDEX,
   UNLOCKABLE_WEAPONS,
 } from "./engine/weapons";
-import { DEFAULT_DIFFICULTY, type DifficultyLevel } from "./difficulty";
+import { DEFAULT_DIFFICULTY, ROLLBACKS_BY_DIFFICULTY, type DifficultyLevel } from "./difficulty";
 import { migrateStorage } from "./storageSchema";
 import { isAutomated } from "./automation";
 import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
@@ -207,6 +207,11 @@ const GORE_KEY = "codeenstein-gore-level";
 /** localStorage key for the standing difficulty preference — same "declared
  * up here, not next to load/save" reasoning as `GORE_KEY` above. */
 const DIFFICULTY_KEY = "codeenstein-difficulty";
+/** Harness-only: suppresses the rollback grant entirely (see
+ * `rollbacksDisabled`). Same "declared up here" reasoning as the keys around
+ * it. Not a player-facing setting — nothing in the UI writes it, and it is
+ * only ever read under `isTestHooksActive()`. */
+const ROLLBACKS_DISABLED_KEY = "codeenstein-rollbacks-disabled";
 /** localStorage keys for the three standing volume preferences — same
  * "declared up here" reasoning as `GORE_KEY`/`DIFFICULTY_KEY` above. */
 const MASTER_VOLUME_KEY = "codeenstein-master-volume";
@@ -262,6 +267,8 @@ const loadingScreen = requireElement<HTMLElement>("#loading-screen");
 const loadingStatus = requireElement<HTMLParagraphElement>("#loading-status");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
+/** Dimmed alongside the select while a run holds the difficulty fixed. */
+const difficultyLabel = requireElement<HTMLLabelElement>("#difficulty-label");
 const renderQualitySelect = requireElement<HTMLSelectElement>("#render-quality-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
 const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
@@ -935,6 +942,24 @@ let lastSaveAt = 0;
  * a manual sidebar pick doesn't count as "campaign progression" — drives
  * `applyForcedUnlocks`'s level-4/8/12 safety net. */
 let campaignLevelIndex = 1;
+/** Rollbacks (arcade continues) left in the current single-player run.
+ *
+ * *Stored*, never re-derived from `currentDifficulty`: difficulty is a
+ * standing preference living outside `CampaignSave` on purpose (see
+ * `DIFFICULTY_KEY`), so re-deriving would silently re-grant the full budget
+ * to anyone who changed the setting mid-campaign. Granted in
+ * `commitWorkspaceSlot` alongside `campaignLevelIndex`/`cheatsUsed`, restored
+ * from the save by Continue Run, and spent in `launchLevel`'s `onGameOver`. */
+let rollbacksRemaining = 0;
+/** How many this run has spent — stamped onto the highscore entry so a
+ * continued run is marked rather than silently equal to a clean one. */
+let rollbacksUsed = 0;
+/** Set while a Kernel Panic overlay is offering the rollback choice, holding
+ * the stats as of the dead level's *entry*. Exists so `beforeunload`
+ * can tell "died, decision still pending" apart from "still playing" — the
+ * two want opposite things persisted, and without it a tab closed at the
+ * death screen writes `lastStats` (health 0) as the resume point. */
+let pendingRollback: { entryStats: EngineStats } | null = null;
 /** In-flight (or already-resolved) whole-codebase stats for the currently
  * loaded workspace — every parsable file in `workspaceTree`, not just the
  * files this run's levels actually visit. Kicked off by `startCodebaseStats`
@@ -1096,6 +1121,12 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
   // `campaignLevelIndex` from the save straight after this.)
   campaignLevelIndex = 1;
   cheatsUsed = false;
+  // A fresh workspace load abandons whatever run was in progress, so the
+  // picker opens back up until the first level of the new one launches.
+  setDifficultyLocked(false);
+  rollbacksRemaining = grantedRollbacks();
+  rollbacksUsed = 0;
+  pendingRollback = null;
   updateMultiplayerTabEnabled();
 
   renderFileTree(workspaceSlots[key].pane, init.tree, { onSelectFile: handleFileSelected });
@@ -1193,6 +1224,34 @@ difficultySelect.addEventListener("change", () => {
   currentDifficulty = difficultySelect.value as DifficultyLevel;
   saveDifficulty(currentDifficulty);
 });
+
+/**
+ * Lock or unlock the difficulty picker for the lifetime of a run.
+ *
+ * Difficulty used to be changeable at any moment, applying from the next
+ * level — the same "standing preference" shape gore and render quality have.
+ * For those two that is harmless; for this one it is not, and the highscore
+ * board is why. Score is entirely difficulty-blind (there is no difficulty
+ * term anywhere in `scoring.ts`), so the tier is the *only* thing separating
+ * an Easy 8,000 from a Hard one. A player could clear fifteen levels on Easy,
+ * switch to Hard for the last, and post a Hard-labelled entry — and the
+ * honest per-level record in the replay would disagree with the label on the
+ * board. Recording the difficulty made that visible rather than creating it.
+ *
+ * So the setting is fixed for a run: pick it before you start, live with it,
+ * change it freely again once the run is over. Gore and render quality are
+ * deliberately left alone — neither touches the simulation or the score.
+ *
+ * The `title` doubles as the explanation, because a control that is simply
+ * dead reads as a bug.
+ */
+function setDifficultyLocked(locked: boolean): void {
+  difficultySelect.disabled = locked;
+  difficultyLabel.classList.toggle("muted", locked);
+  difficultySelect.title = locked
+    ? "Locked while a run is in progress — a score is only comparable if the difficulty held for the whole run."
+    : "";
+}
 
 /** Standing render-quality preference — same "independent standing
  * preference" shape as gore/difficulty above. Consumed by
@@ -1455,7 +1514,13 @@ continueButton.addEventListener("click", async () => {
     if (gen !== workspaceLoadGeneration) return; // superseded while parsing the saved level
     if (parsed) {
       campaignLevelIndex = save.levelIndex;
-      console.log(`%c[continue] resuming at ${match.path}`, "color:#8effa0;font-weight:bold");
+      // Restored, not re-granted — the whole point of storing the count.
+      rollbacksRemaining = rollbacksDisabled() ? 0 : save.rollbacksRemaining;
+      rollbacksUsed = save.rollbacksUsed;
+      console.log(
+        `%c[continue] resuming at ${match.path} (${rollbacksRemaining} rollback${rollbacksRemaining === 1 ? "" : "s"} left)`,
+        "color:#8effa0;font-weight:bold",
+      );
       setLoadingStatus("Generating world…");
       await yieldToMainThread(); // let the status above paint before the synchronous map generation below
       launchLevel(match.path, parsed, text, {
@@ -2583,6 +2648,23 @@ if (isTestHooksActive()) {
   // order" fallback `autoLaunchInitialLevel` uses when detection finds nothing.
   (window as unknown as { __codeensteinCampaignTestHooks?: unknown }).__codeensteinCampaignTestHooks = {
     getLevelOrder: (): Promise<string[]> => campaignLevelOrder(workspaceTree),
+    /** The resolved rollback state, so a script can assert the opt-out
+     * actually took effect rather than inferring it from the shape of the
+     * death overlay.
+     *
+     * Three fields because no two of them answer the question on their own.
+     * `remaining` cannot tell "disabled" from "already spent them all".
+     * `granted` (what a *fresh* run would get right now) cannot either, since
+     * Hard's grant is legitimately 0 — so a harness running the hard combo
+     * would read `granted: 0` and call the opt-out confirmed whether or not
+     * it ever took. `disabled` is the only one that actually reports the
+     * switch, and it is what `assertRollbacksDisabled` checks. */
+    getRollbackState: (): { remaining: number; used: number; granted: number; disabled: boolean } => ({
+      remaining: rollbacksRemaining,
+      used: rollbacksUsed,
+      granted: grantedRollbacks(),
+      disabled: rollbacksDisabled(),
+    }),
   };
   (window as unknown as { __codeensteinReplayTestHooks?: unknown }).__codeensteinReplayTestHooks = {
     /** A structured-clone-safe snapshot — `probe` is a live closure and can't
@@ -2744,7 +2826,22 @@ if (isTestHooksActive()) {
 }
 
 window.addEventListener("beforeunload", () => {
-  if (activeEngine && lastStats && !isReplaying) persistProgress(lastStats);
+  if (isReplaying) return;
+  if (pendingRollback) {
+    // Died with the rollback choice still on screen. Closing the tab is not a
+    // choice, but the two wrong things to do here are both worse than picking
+    // one: `activeEngine` is still non-null (only `resetToFileTree` clears it,
+    // and it has not run) and `lastStats` is the death frame, so falling
+    // through to `persistProgress` below would write health 0 as the resume
+    // point and hand the player a Continue Run that dies on its first frame.
+    //
+    // Persist the level-entry snapshot instead. The rollback was already
+    // charged at the moment of death, so this is not a free retry — which is
+    // the whole reason it is charged there rather than on the button.
+    persistRollbackPoint(pendingRollback.entryStats);
+    return;
+  }
+  if (activeEngine && lastStats) persistProgress(lastStats);
 });
 
 /**
@@ -2764,7 +2861,23 @@ async function handleFileSelected(node: TreeNode): Promise<void> {
       console.group(`[parse] ${node.path}`);
       console.log(parsed);
       console.groupEnd();
-      if (parsed) launchLevel(node.path, parsed, text);
+      if (parsed) {
+        // A manual pick launches with no carryover at all, so the player gets
+        // a fresh loadout, a fresh score and a fresh run — the rollback budget
+        // is granted again to match.
+        //
+        // This deliberately diverges from `campaignLevelIndex` and
+        // `cheatsUsed`, which both leak across a manual pick. Those are
+        // documented quirks rather than a rule worth following: a cheat
+        // penalty *should* stick, and the level index is invisible. A player
+        // who picked a new file and silently had no rollbacks for the whole
+        // run, with nothing on screen saying why, is a different thing
+        // entirely. It also keeps this count in agreement with the engine's
+        // own fresh-run default for a carryover-less launch.
+        rollbacksRemaining = grantedRollbacks();
+        rollbacksUsed = 0;
+        launchLevel(node.path, parsed, text);
+      }
       return;
     }
 
@@ -3217,6 +3330,8 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   currentLevelPath = path;
   currentParsedFile = parsed;
   currentLevelSource = source;
+  // A run is now in progress — see `setDifficultyLocked`.
+  setDifficultyLocked(true);
 
   // Tear down any level already running before starting the new one — a
   // live multiplayer session included: nothing else ever called .stop() on
@@ -3291,6 +3406,12 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   // `src/prng.ts`'s doc comment for what's seeded vs. left cosmetic.
   const gameplaySeed = randomSeed();
 
+  /** This level's own entry state, captured on its first rendered frame —
+   * see `onStats` below, and `onGameOver`, which restores it. Held as raw
+   * stats rather than a built save so the one place that knows whether a run
+   * is savable at all stays `buildCampaignSave`. */
+  let entryStats: EngineStats | null = null;
+
   // A genuinely fresh run — no carryover, or no in-memory recorder left to
   // append to (e.g. right after a page reload, via "Continue Run") — starts a
   // new campaign recording; auto-advancing to this level from the previous
@@ -3334,6 +3455,12 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     {
       onStats: (stats) => {
         lastStats = stats;
+        // The state a rollback restores to, taken from this level's very
+        // first frame rather than synthesized here: a fresh level 1 has no
+        // carryover to build one from, and rebuilding the engine's own
+        // starting health/ammo in this file would be a mirror with no link to
+        // the thing it mirrors.
+        entryStats ??= stats;
         const now = Date.now();
         if (now - lastSaveAt >= AUTOSAVE_INTERVAL_MS) {
           lastSaveAt = now;
@@ -3341,10 +3468,60 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
         }
       },
       onGameOver: (stats) => {
-        // Died on the current (not yet cleared) level, so only the levels
-        // before it actually count as progress.
-        void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1, currentReplayRecorder);
-        clearCampaignSave();
+        if (rollbacksRemaining > 0) {
+          // Spent *now*, at the death, rather than when the button is
+          // clicked. If the decrement waited for the click, closing the tab
+          // at this screen would be strictly better than pressing either
+          // button — a free retry — which is the kind of hole players find
+          // immediately. `beforeunload` persists the same already-charged
+          // state for exactly this reason.
+          rollbacksRemaining -= 1;
+          rollbacksUsed += 1;
+          // `?? stats` is unreachable: `advance()` fires `onStats` for a
+          // frame before it fires `onGameOver` for that same frame, and
+          // `start()` fires one before the loop even begins — so a death
+          // cannot happen on a level that never reported stats. Kept as a
+          // real fallback rather than a `!` so a future reordering degrades
+          // to "resume at the death frame" instead of throwing.
+          /* v8 ignore next -- @preserve */
+          const entry = entryStats ?? stats;
+          pendingRollback = { entryStats: entry };
+          const remaining = rollbacksRemaining;
+          hud.showKernelPanic(
+            statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats),
+            () => {
+              pendingRollback = null;
+              endRun(parsed, path, stats);
+              resetToFileTree();
+            },
+            {
+              remaining,
+              onRollback: () => {
+                pendingRollback = null;
+                console.log(
+                  `%c[rollback] ${path} — restoring the level-entry state, ${remaining} left`,
+                  "color:#e0a04a;font-weight:bold",
+                );
+                // Before relaunching: the failed attempt must leave the
+                // recording, or playback stops at the death it ended on and
+                // never reaches anything after it.
+                currentReplayRecorder?.dropCurrentLevel();
+                // Rewritten, never cleared — clearing would hide the Continue
+                // tab mid-run, and leaving the autosave alone would resume the
+                // player into the low-health state they just died in. Routed
+                // through `persistProgress` so the "is this run savable at
+                // all" question (remote/demo workspaces have no resume point)
+                // has exactly one answer, in `buildCampaignSave`. The counts
+                // it writes are the module-scope ones, already decremented
+                // above, which is precisely what a resume should find.
+                persistRollbackPoint(entry);
+                launchLevel(path, parsed, source, effectiveCarryover);
+              },
+            },
+          );
+          return;
+        }
+        endRun(parsed, path, stats);
         hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), resetToFileTree);
       },
       onWin: (stats) => {
@@ -3379,6 +3556,18 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     gameplaySeed,
     undefined,
     currentReplayRecorder,
+    // Params 10-14 (localPlayerId, localSpawn, playerCount,
+    // rotSpeedMultiplierOverride, localChosenName) are all multiplayer- or
+    // replay-only and every one of them has a default, so `undefined` is
+    // exactly what they would have received anyway. They have to be written
+    // out because the constructor is entirely positional — see its own note
+    // on `localChosenName` — and `rollbacksRemaining` is appended after them.
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    rollbacksRemaining,
   );
 
   hud.showLevelStart(
@@ -3558,6 +3747,8 @@ async function advanceToNextLevel(stats: EngineStats): Promise<void> {
             weaponIndex: stats.weaponIndex,
             ownedWeapons: stats.ownedWeapons,
             levelIndex: campaignLevelIndex,
+            rollbacksRemaining,
+            rollbacksUsed,
           });
         }
         launchLevel(next.path, parsed, text, carryover);
@@ -3887,6 +4078,9 @@ function showFileTreePlaceholder(): void {
 
 /** Stop any running level and return the viewport to its initial state. */
 function resetToFileTree(): void {
+  // The run is over (won, given up, or died with nothing left), so the
+  // difficulty is the player's to change again.
+  setDifficultyLocked(false);
   activeEngine?.stop();
   activeEngine = null;
   activeHud = null;
@@ -3940,6 +4134,16 @@ interface CampaignSave {
    * safety net. Defaulted to 1 for saves written before this field existed
    * (see `loadCampaignSave`), rather than rejecting the whole save. */
   levelIndex: number;
+  /** Rollbacks left when this was written. Backfilled from the *current*
+   * difficulty's grant for saves written before rollbacks existed (see
+   * `loadCampaignSave`): those runs were played without the feature, so any
+   * stored number would be a fiction, and granting the normal budget is the
+   * reading that neither punishes nor over-rewards a resumed old save. */
+  rollbacksRemaining: number;
+  /** How many this run had already spent. Defaulted to 0 for older saves —
+   * unlike `rollbacksRemaining` there is a true answer here, and it is 0: a
+   * run played before the feature existed cannot have spent one. */
+  rollbacksUsed: number;
 }
 
 /** Parse and loosely validate a save from `localStorage`; `null` on any
@@ -3976,6 +4180,9 @@ export function loadCampaignSave(): CampaignSave | null {
       gas: typeof save.gas === "number" ? save.gas : 0,
       shells: typeof save.shells === "number" ? save.shells : STARTING_SHELLS,
       levelIndex: typeof save.levelIndex === "number" ? save.levelIndex : 1,
+      rollbacksRemaining:
+        typeof save.rollbacksRemaining === "number" ? save.rollbacksRemaining : grantedRollbacks(),
+      rollbacksUsed: typeof save.rollbacksUsed === "number" ? save.rollbacksUsed : 0,
     } as CampaignSave;
   } catch {
     return null;
@@ -4001,10 +4208,19 @@ export function clearCampaignSave(): void {
   if (tabContinue.getAttribute("aria-selected") === "true") activateLaunchTab("local");
 }
 
-/** Save the current position + stats, if a level is actually running. */
-function persistProgress(stats: EngineStats): void {
-  if (!workspaceRootName || !currentLevelPath || workspaceIsRemote) return;
-  saveCampaign({
+/**
+ * The campaign save describing `stats` right now, or `null` when this run
+ * isn't savable at all (no workspace, no level running, or a remote/demo
+ * workspace — see `persistProgress`'s guard, which this inherits).
+ *
+ * Split out of `persistProgress` because a rollback needs the same shape for
+ * a *past* moment (the dead level's entry frame) rather than for right now,
+ * and two hand-built copies of a 13-field record is exactly how a field ends
+ * up written on one path and forgotten on the other.
+ */
+function buildCampaignSave(stats: EngineStats): CampaignSave | null {
+  if (!workspaceRootName || !currentLevelPath || workspaceIsRemote) return null;
+  return {
     workspaceName: workspaceRootName,
     filePath: currentLevelPath,
     health: stats.health,
@@ -4018,7 +4234,32 @@ function persistProgress(stats: EngineStats): void {
     weaponIndex: stats.weaponIndex,
     ownedWeapons: stats.ownedWeapons,
     levelIndex: campaignLevelIndex,
-  });
+    rollbacksRemaining,
+    rollbacksUsed,
+  };
+}
+
+/**
+ * Write the resume point a rollback restores to: the dead level's entry
+ * state, with whatever rollback counts are current (they are decremented at
+ * the death itself, before this runs).
+ *
+ * A thin alias for `persistProgress` rather than its own save-building
+ * logic, so a remote or demo workspace — which has no resume point at all —
+ * is still handled in the single place that decides that,
+ * `buildCampaignSave`. Deliberately does *not* fall back to
+ * `clearCampaignSave()` when the run isn't savable: on a demo run that would
+ * reach out and delete an unrelated local campaign save the player still
+ * wants.
+ */
+function persistRollbackPoint(entryStats: EngineStats): void {
+  persistProgress(entryStats);
+}
+
+/** Save the current position + stats, if a level is actually running. */
+function persistProgress(stats: EngineStats): void {
+  const save = buildCampaignSave(stats);
+  if (save) saveCampaign(save);
 }
 
 // --- Gore level (standing preference, independent of any campaign save) ----
@@ -4108,6 +4349,44 @@ function loadDifficulty(): DifficultyLevel {
   return DEFAULT_DIFFICULTY;
 }
 
+/**
+ * Whether rollbacks are suppressed for this page load.
+ *
+ * Harness-only, and gated on `isTestHooksActive()` (DEV **and**
+ * `?testHooks=1`) so a shipped build cannot be talked into it by a
+ * hand-written localStorage key. `localStorage` rather than a URL param
+ * because that is the shape `installDifficulty`/`installPlayerName` already
+ * use in `run-balancing-telemetry.mjs` — one mechanism for "harness presets a
+ * preference before the page boots", not two.
+ *
+ * Note the balancing bot is **not** why this exists: `playRun` returns the
+ * instant the engine reports `over` and never dismisses the Kernel Panic
+ * overlay, so a bot cannot spend a rollback and per-level telemetry is
+ * unaffected either way. It exists for the two scripts that assert on the
+ * *death path itself* — `verify-campaign-playthrough.mjs` (which requires a
+ * highscore written and the save cleared on death) and
+ * `generate-default-highscore.mjs` (which waits for a highscore a died run
+ * would no longer write).
+ */
+function rollbacksDisabled(): boolean {
+  if (!isTestHooksActive()) return false;
+  try {
+    return localStorage.getItem(ROLLBACKS_DISABLED_KEY) === "1";
+  } catch {
+    // Storage unavailable (private browsing) reads as "not disabled", the
+    // same never-throw philosophy every other read here follows.
+    return false;
+  }
+}
+
+/** How many rollbacks a fresh run starts with, at the difficulty in force
+ * right now. Read exactly twice — a fresh workspace load, and backfilling a
+ * save written before rollbacks existed — so that changing the difficulty
+ * mid-run cannot re-grant. */
+function grantedRollbacks(): number {
+  return rollbacksDisabled() ? 0 : ROLLBACKS_BY_DIFFICULTY[currentDifficulty];
+}
+
 function saveDifficulty(level: DifficultyLevel): void {
   try {
     localStorage.setItem(DIFFICULTY_KEY, level);
@@ -4155,6 +4434,22 @@ function saveVolume(key: string, volume: number): void {
  * anything (`null` if recording never captured a frame, overflowed a cap, or
  * no recorder was active at all, e.g. during a replay viewing).
  */
+/**
+ * End the run for real: bank the highscore and drop the resume point.
+ *
+ * Split out because two paths reach it — dying with no rollbacks left, and
+ * choosing "Give up" at the rollback offer — and the second is already inside
+ * an overlay handler, so it must not re-show the overlay the way the first
+ * does. Deliberately *not* responsible for `resetToFileTree`, which each
+ * caller sequences for itself.
+ */
+function endRun(parsed: ParsedFile, path: string, stats: EngineStats): void {
+  // Died on the current (not yet cleared) level, so only the levels before it
+  // actually count as progress.
+  void recordRunHighscore(parsed, path, stats, campaignLevelIndex - 1, currentReplayRecorder);
+  clearCampaignSave();
+}
+
 async function recordRunHighscore(
   parsed: ParsedFile,
   path: string,
@@ -4197,6 +4492,16 @@ async function recordRunHighscore(
       // Omitted entirely when unset, so "never named themselves" and "played
       // before the setting existed" stay the same case.
       ...(playerName ? { playerName } : {}),
+      // Same omit-when-absent shape, and for the same reason: a clean run and
+      // a run recorded before rollbacks existed should read identically on
+      // the board, while a stored 0 would claim to know something about a run
+      // that predates the question.
+      ...(rollbacksUsed ? { rollbacksUsed } : {}),
+      // Always written, unlike the two above — every run has a difficulty,
+      // so there is no "absent means clean" case to preserve, and an absent
+      // value should keep meaning "recorded before the board tracked this".
+      // Read at record time for the same reason `playerName` is.
+      difficulty: currentDifficulty,
       levelName,
       levelsCleared,
       hash,
