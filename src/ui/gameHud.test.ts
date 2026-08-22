@@ -293,7 +293,7 @@ describe("GameHud — gamepad dismiss", () => {
 function panicWithRollback(remaining = 2): { onReturn: ReturnType<typeof vi.fn>; onRollback: ReturnType<typeof vi.fn> } {
   const onReturn = vi.fn();
   const onRollback = vi.fn();
-  hud.showKernelPanic(undefined, onReturn, { remaining, onRollback });
+  hud.showKernelPanic(undefined, onReturn, { rollback: { remaining, onRollback } });
   return { onReturn, onRollback };
 }
 
@@ -501,6 +501,54 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
     passLockWindow();
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
     expect(onRollback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GameHud — Kernel Panic after a cheated run", () => {
+  /** The line itself is a joke and may well get reworded; what must hold is
+   * that it appears exactly when a cheat has fired and nowhere else, so these
+   * assert the property rather than pinning the whole sentence. */
+  const stillDied = (texts: string[]): boolean => texts.some((t) => t.includes("still died"));
+
+  it("says something about it when a cheat fired this run", () => {
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true });
+    const texts = fillTextCalls();
+    expect(texts).toContain("KERNEL PANIC");
+    expect(texts).toContain("The process was terminated.");
+    expect(stillDied(texts)).toBe(true);
+  });
+
+  it("says nothing on a clean run", () => {
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: false });
+    expect(stillDied(fillTextCalls())).toBe(false);
+  });
+
+  it("says nothing when no options are passed at all", () => {
+    // The replay viewer's path, and every caller that predates the flag — a
+    // cheated run never becomes a replay in the first place (highscore
+    // recording, and with it the recorder, is disabled once a cheat fires).
+    hud.showKernelPanic(undefined, vi.fn());
+    expect(stillDied(fillTextCalls())).toBe(false);
+  });
+
+  it("stays out of the way when a rollback is on offer", () => {
+    // Deliberate, not incidental: that screen is a decision the player has to
+    // read, and every line on it is required to describe the choice and what
+    // follows it. The punchline waits for the death that actually ends the run.
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true, rollback: { remaining: 1, onRollback: vi.fn() } });
+    const texts = fillTextCalls();
+    expect(texts).toContain("Roll back");
+    expect(stillDied(texts)).toBe(false);
+  });
+
+  it("adds exactly one line and disturbs nothing else", () => {
+    hud.showKernelPanic(undefined, vi.fn());
+    const clean = fillTextCalls();
+    vi.clearAllMocks();
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true });
+    const cheated = fillTextCalls();
+    expect(cheated.length).toBe(clean.length + 1);
+    for (const t of clean) expect(cheated).toContain(t);
   });
 });
 

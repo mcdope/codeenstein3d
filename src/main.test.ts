@@ -6531,6 +6531,53 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
     // Dying never gets the "Export Map as PNG" button — only a genuine win does.
     expect([...document.querySelectorAll("button")].some((b) => b.textContent === "🖼️ Export Map as PNG")).toBe(false);
   });
+
+  it("a death after a cheat has fired gets a line about it on the Kernel Panic screen", async () => {
+    // End to end because the flag crosses three layers to get here: the
+    // engine latches `cheatsUsed` on the cheat, carries it out on
+    // `EngineStats`, and `onGameOver` hands it to the overlay. A unit test on
+    // `GameHud` alone would keep passing if any of that came unwired.
+    localStorage.setItem("codeenstein-difficulty", "hard"); // no rollbacks: straight to the terminal overlay
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as {
+      grid: number[][];
+      spawn: { x: number; y: number };
+      hazards: { x: number; y: number }[];
+    };
+
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    raf.flush(1, 16); // let start() finish wiring the real InputController
+
+    // IDKFA rather than IDDQD: it latches `cheatsUsed` identically but leaves
+    // the player killable, which is the whole point of this timeline. Cheat
+    // letters are read via keydown on the *canvas* (InputController.attach()).
+    for (const key of "IDKFA") {
+      canvas.dispatchEvent(new KeyboardEvent("keydown", { key }));
+    }
+    raf.flush(1, 16); // let advance() consume the completed cheat buffer
+
+    walkPath(canvas, raf, bfsPath(map.grid, map.spawn, map.hazards[0]), () => testHooks()?.getPlayerState().state !== "playing", 1000);
+    for (let i = 0; i < 300 && testHooks()?.getPlayerState().state === "playing"; i++) {
+      raf.flush(1, 50);
+    }
+    expect(testHooks()?.getPlayerState().state).toBe("over");
+
+    const ctx = canvas.getContext("2d") as unknown as { fillText: { mock: { calls: unknown[][] } } };
+    const texts = ctx.fillText.mock.calls.map(([text]) => text as string);
+    expect(texts).toContain("KERNEL PANIC");
+    expect(texts).toContain("Return to file tree"); // the terminal screen, not the rollback one
+    expect(texts.some((t) => t.includes("still died"))).toBe(true);
+  }, 20000);
 });
 
 /** `console.log`'s spy. Named so the helpers below can take it as a

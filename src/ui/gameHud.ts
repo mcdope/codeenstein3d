@@ -74,8 +74,18 @@ export class GameHud {
   showKernelPanic(
     stats: StatsScreenInfo | undefined,
     onReturn: () => void,
-    rollback?: { remaining: number; onRollback: () => void },
+    opts?: {
+      rollback?: { remaining: number; onRollback: () => void };
+      /** Whether any cheat has fired this run — `EngineStats.cheatsUsed`, the
+       * same latch the in-play HUD badge reads, so this screen can never
+       * contradict the badge the player was looking at a second ago. Adds one
+       * line and nothing else; a clean run takes a byte-identical path to
+       * before this existed. Deliberately ignored when a rollback is on
+       * offer — see the `lines` branch below. */
+      cheated?: boolean;
+    },
   ): void {
+    const rollback = opts?.rollback;
     // "Roll back" is the *primary* deliberately. Space is also the fire key,
     // and `DISMISS_LOCK_MS` exists precisely because players mash it — if
     // "Give up" were the default, a mashed trigger would irreversibly end the
@@ -103,7 +113,16 @@ export class GameHud {
                 : `${n} more rollback${n === 1 ? "" : "s"} after this one — the level restarts as you entered it.`,
               "This attempt's score and kills are discarded, and the run is marked.",
             ]
-          : ["System stability reached 0%.", "The process was terminated."],
+          : [
+              "System stability reached 0%.",
+              "The process was terminated.",
+              // Only on the death that actually ends the run. The rollback
+              // variant above is a real decision the player has to read, and
+              // every line on it is required to describe *that choice* — a
+              // joke wedged in among the three dilutes it, and the punchline
+              // wants a death that sticks anyway.
+              ...(opts?.cheated ? ["You cheated and still died. lol"] : []),
+            ],
         stats: stats ? statRows(stats) : undefined,
         buttonLabel: rollback ? "Roll back" : "Return to file tree",
         ...(rollback ? { secondary: { label: "Give up", onPick: onReturn } } : {}),
