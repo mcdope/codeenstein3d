@@ -51,6 +51,7 @@ import { Bot } from "./lib/bot.mjs";
 import { runQualifyLoop } from "./lib/qualifyLoop.mjs";
 import { assertPlanMatchesEngine } from "./lib/planEngineMatch.mjs";
 import { planRoute } from "./lib/routePlanner.mjs";
+import { assertRollbacksDisabled, installRollbacksDisabled } from "./lib/rollbacks.mjs";
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { DEV_SERVER_URL, PROFILES, devServerOptions, planLevels, waitForTestHooks, dismissOverlay, installDifficulty, installPlayerName } from "./run-balancing-telemetry.mjs";
 import { ensureDevServer } from "./lib/devServer.mjs";
@@ -289,10 +290,17 @@ async function runOneAttempt(browser, profileName, profile, levelPlans) {
     // The recorded entry's own `playerName`, so the shipped board says which
     // bot profile set each row — see `installPlayerName`'s doc comment.
     await installPlayerName(page, profileName);
+    // The board this generates is the *shipped* one, so every row must be a
+    // clean run: a profile that died, rolled back and carried on would ship
+    // an entry marked with rollbacks, and one that died with rollbacks left
+    // would never write an entry at all (the wait below would just time out
+    // after 15s with no explanation).
+    await installRollbacksDisabled(page);
     await page.goto(`${devUrl}/?testHooks=1&botRotSpeedMul=${profile.rotSpeedMultiplier}`);
     await page.click("#tab-demo");
     await page.click("#launch-demo-campaign");
     await waitForTestHooks(page);
+    await assertRollbacksDisabled(page);
     await dismissOverlay(page);
 
     const bot = new Bot(page, profile, { realtime: false, stepMs: VIRTUAL_STEP_MS, recordStepMs: RECORD_STEP_MS });

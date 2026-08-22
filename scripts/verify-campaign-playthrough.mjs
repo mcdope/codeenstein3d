@@ -89,6 +89,7 @@ import path from "node:path";
 import { loadEngineModules, REPO_ROOT } from "./lib/loadEngineModules.mjs";
 import { bfsPath, pathToWaypoints } from "./lib/pathfind.mjs";
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
+import { assertRollbacksDisabled, installRollbacksDisabled } from "./lib/rollbacks.mjs";
 
 const CAMPAIGN_DIR = path.join(REPO_ROOT, "scripts/fixtures");
 const CAMPAIGN_NAME = "playthrough-fixture";
@@ -169,6 +170,13 @@ async function main() {
   page.on("pageerror", (err) => console.log("[pageerror]", err.message));
 
   await installTestStubs(page, fileContents);
+  // Every assertion below about what death does — a highscore written, the
+  // campaign save cleared — describes a run with no rollbacks left. With them
+  // on, the first death offers the choice instead and does neither, so this
+  // script would fail on correct behaviour. Turned off here so those checks
+  // keep testing the thing they were written to test; the rollback path gets
+  // its own phase at the end, with them back on.
+  await installRollbacksDisabled(page);
 
   page.on("console", (msg) => console.log("[browser]", msg.type(), msg.text()));
 
@@ -176,6 +184,10 @@ async function main() {
   await page.waitForSelector("#select-workspace");
   await page.click("#select-workspace");
   await waitForTestHooks(page);
+  // Assert the state, not that the install call returned: a preset that is
+  // silently ignored looks exactly like one that worked, and every death
+  // assertion below would then fail for a reason this script cannot name.
+  await assertRollbacksDisabled(page);
   await dismissLevelStartOverlay(page);
 
   console.log("\n--- Phase A: clear level 1 (main.c), verify save survives reload ---");

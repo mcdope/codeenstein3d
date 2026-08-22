@@ -91,6 +91,40 @@ describe("renderHighscoreTable — populated board", () => {
     expect(cell(container, "Lines").className).not.toBe("muted");
   });
 
+  it("shows the rollback count on a run that spent some", () => {
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ rollbacksUsed: 2 })]);
+    expect(cell(container, "RB").textContent).toBe("2");
+    expect(cell(container, "RB").className).not.toBe("muted");
+    expect(cell(container, "RB").title).toContain("entry state");
+  });
+
+  it("distinguishes a clean run from one recorded before rollbacks existed", () => {
+    // The reason the field is optional rather than defaulted: "0" means the
+    // run had rollbacks and spent none, "—" means the question did not exist
+    // when it was recorded. Collapsing the two would put a claim on every
+    // entry on the shipped default board.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ rollbacksUsed: 0 }), entry()]);
+    expect(cell(container, "RB", 0).textContent).toBe("0");
+    expect(cell(container, "RB", 0).className).not.toBe("muted");
+    expect(cell(container, "RB", 0).title).toBe(""); // no "restarted a level" claim on a clean run
+    expect(cell(container, "RB", 1).textContent).toBe("—");
+    expect(cell(container, "RB", 1).className).toBe("muted");
+  });
+
+  it("keeps every row's cell count matching the header count", () => {
+    // The append order and the header list are two separate literals, so a
+    // column inserted into one and not the other silently shifts every cell
+    // after it into the wrong column.
+    const container = document.createElement("div");
+    renderHighscoreTable(container, [entry({ rollbacksUsed: 1 })]);
+    const headers = container.querySelectorAll("thead th").length;
+    for (const row of container.querySelectorAll("tbody tr")) {
+      expect(row.querySelectorAll("td")).toHaveLength(headers);
+    }
+  });
+
   it("shows a muted em-dash for absent lines-of-code and complexity", () => {
     const container = document.createElement("div");
     renderHighscoreTable(container, [entry()]);
