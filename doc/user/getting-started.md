@@ -15,9 +15,10 @@ an enemy inside, and so on), and what to expect once you're inside a level. It's
 level launches and won't reappear for the rest of the session.
 
 The very first time you open the game, a short guided tour points at the controls this page
-describes — the launch tabs, **Demos** as the path that needs no setup, **Repo** for playing code
-of your own, co-op, the file tree, the highscore board (including what **Watch** and
-**Export** do) and the console. Along the way it opens the **Settings** tab and walks
+describes — the launch tabs one by one (**Local** for a folder on your machine, **Repo** for a
+public repository you don't have a copy of, **Demos** as the path that needs no setup, and
+co-op), the file tree, the highscore board (including what **Watch** and **Export** do) and
+the console. Along the way it opens the **Settings** tab and walks
 through its controls (difficulty, gore, render quality and the rest), then returns you to the
 tab you were on. Use the arrow keys or **Back**/**Next** to move through it, **Skip** or
 **Escape** to dismiss it. It won't come back once dismissed; everything it covers is written

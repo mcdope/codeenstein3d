@@ -296,6 +296,33 @@ describe("DEFAULT_TOUR_STEPS", () => {
     expect(wad?.body).toMatch(/session/i);
   });
 
+  it("explains the Local tab, which is the one you land on", () => {
+    // It had no step at all: the overview said "from your machine" and
+    // nothing followed up, on the tab that is selected when the game opens.
+    // The facts here are the ones you cannot read off a button labelled
+    // "Local" — that it needs a Chromium browser, that nothing leaves the
+    // machine, and that it is the only source whose runs autosave.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-local");
+    expect(step).toBeDefined();
+    expect(step?.body).toMatch(/Chrome|Edge|Brave/i);
+    expect(step?.body).toMatch(/nothing is uploaded|not uploaded|stays on/i);
+    expect(step?.body).toMatch(/autosave|Continue/i);
+  });
+
+  it("does not let the Local and Repo steps describe each other", () => {
+    // The Repo step was titled "Or play your own code", which is what Local
+    // does — and the "Or" continued a step that did not exist yet. A title
+    // that would read correctly over the other tab is the bug, so neither may
+    // claim the other's territory.
+    const local = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-local");
+    const repo = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-repo");
+    expect(local?.title).not.toBe(repo?.title);
+    // "your own code" is the local folder's pitch; the repo tab is explicitly
+    // for code you do *not* have a copy of.
+    expect(repo?.title).not.toMatch(/your own code/i);
+    expect(repo?.title).not.toMatch(/^Or\b/);
+  });
+
   it("names the repo facts a newcomer otherwise learns by failing", () => {
     // All from doc/user/getting-started.md. None is guessable from a tab
     // labelled "Repo": that it takes three forges rather than just GitHub,
@@ -344,6 +371,7 @@ describe("DEFAULT_TOUR_STEPS", () => {
     // the top and bottom of a sidebar taller than the viewport would yank the
     // page around under the reader.
     const order = DEFAULT_TOUR_STEPS.map((s) => s.targetId);
+    expect(order.indexOf("tab-local")).toBeLessThan(order.indexOf("tab-repo"));
     expect(order.indexOf("tab-repo")).toBeLessThan(order.indexOf("tab-demo"));
     expect(order.indexOf("tab-settings")).toBeLessThan(order.indexOf("player-name-input"));
     expect(order.indexOf("player-name-input")).toBeLessThan(order.indexOf("difficulty-select"));

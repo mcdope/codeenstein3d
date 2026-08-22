@@ -73,15 +73,26 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
     body: "Four of these tabs load source code to play — from your machine, a saved run, a public repository, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
   },
   {
-    // Second, not later: steps follow the tab strip left to right and Repo
-    // sits before Demos in it. Anchored on the tab button rather than
-    // `#repo-input`, the same shape `tab-demo` and `tab-multiplayer` use — a
-    // step reaching into the panel would need `activateTabId` and would walk
-    // strip -> panel -> strip across three consecutive popouts, which is what
-    // the ordering rule above exists to prevent.
+    // Local is the leftmost tab and the one selected on arrival, so it leads
+    // the per-tab walk. It had no step at all until a playtest noticed: the
+    // overview mentions "from your machine" and then nothing followed it up,
+    // which also left the Repo step's old title ("Or play your own code")
+    // reading as though it were this tab's job.
+    targetId: "tab-local",
+    title: "Play a folder on this machine",
+    body: "Select Workspace opens a folder picker, and every source file inside becomes a level — a single script or a whole repository. The folder is read in your browser and nothing is uploaded anywhere. This is also the only tab whose runs autosave, so a campaign you leave halfway comes back under Continue. It needs Chrome, Edge or Brave: the folder picker it uses does not exist in other browsers, and the button says so if yours cannot.",
+  },
+  {
+    // Steps follow the tab strip left to right and Repo sits third, after
+    // Local and before Demos. Anchored on the tab button rather than
+    // `#repo-input`, the same shape `tab-local`, `tab-demo` and
+    // `tab-multiplayer` use — a step reaching into the panel would need
+    // `activateTabId` and would walk strip -> panel -> strip across
+    // consecutive popouts, which is what the ordering rule above exists to
+    // prevent.
     targetId: "tab-repo",
-    title: "Or play your own code",
-    body: "Paste a repository from GitHub, GitLab or Codeberg and its files become the levels. The address says which site it came from, and the button names the one it recognised before anything downloads — a bare owner/repo still means GitHub. Public repositories only. Below it sit four suggestions from Easy to Nightmare if you'd rather not pick one.",
+    title: "Play code you don't have locally",
+    body: "Paste a repository from GitHub, GitLab or Codeberg and its files become the levels, no download or checkout of your own needed. The address says which site it came from, and the button names the one it recognised before anything is fetched — a bare owner/repo still means GitHub. Public repositories only. Below it sit four suggestions from Easy to Nightmare if you'd rather not pick one.",
   },
   {
     targetId: "tab-demo",
