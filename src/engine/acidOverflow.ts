@@ -31,7 +31,7 @@
  * precomputed at generation time and is provably disjoint from every other
  * tile-claiming system.
  */
-import { HAZARD_TILE, type AcidOverflow, type Enemy, type Point, type Tile } from "../map/types";
+import { HAZARD_TILE, type AcidOverflow, type Enemy, type Point, type Rect, type Tile } from "../map/types";
 
 /** The only part of a `Player` this module needs — its collision box. Taken
  * structurally rather than as a full `Player` so the room-entry test stays
@@ -172,7 +172,19 @@ export function acidTiles(
  * teammate walking into a room on the far side of the level shouldn't put a
  * warning on your screen. */
 export function intersectsRoom(player: AcidOverflowActor, overflow: AcidOverflow): boolean {
-  const r = player.radius;
-  const { x, y, w, h } = overflow.room;
+  return intersectsRect(player, overflow.room);
+}
+
+/** The same test against a bare rect, optionally grown by `margin` tiles on
+ * every side.
+ *
+ * Split out of `intersectsRoom` rather than copied so the engine keeps exactly
+ * one definition of "the player is in this box" — the point of that function's
+ * comment above. `margin` is what makes it usable for *proximity* as well as
+ * containment: the key hint wants "walked past the doorway", which is the room
+ * rect plus a tile or so of the corridor outside it, not the room itself. */
+export function intersectsRect(player: AcidOverflowActor, rect: Rect, margin = 0): boolean {
+  const r = player.radius + margin;
+  const { x, y, w, h } = rect;
   return player.posX + r > x && player.posX - r < x + w && player.posY + r > y && player.posY - r < y + h;
 }

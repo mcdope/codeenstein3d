@@ -334,5 +334,4 @@ implemented, already refuted, or impossible as written.
 - [ ] add continues for singleplayer - 2 for normal, 3 for easy, 1 for hard
 - [ ] remeasure impact of level-end-summary
 - [ ] hud face from wad (when loaded)
-- [ ] ping keys when near them, to make sure they get noticed. Near in this context mean: you pass next to a reachable room containing a key. This should then ping the key like it would when triggered from standing in front of a door you dont have the key for
-- [ ] "sell" unclearable levels as "come back in coop"
+- [ ] "sell" unclearable levels as "come back in coop" in docs/tips
