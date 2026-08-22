@@ -334,3 +334,4 @@ implemented, already refuted, or impossible as written.
 - [ ] remeasure perf impact of level-end-summary
 - [ ] hud face from wad (when loaded)
 - [ ] revisit enemy dmg, seems a bit low
+- [ ] automap: rotate to match player viewing angle
