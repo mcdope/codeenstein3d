@@ -35,6 +35,7 @@ Open the **Multiplayer** tab, then the **Join** sub-tab, type in the code you we
 - **No highscores or replays.** A multiplayer run doesn't get recorded to the Highscores board and can't be watched back afterward — those stay single-player features.
 - **A shared scoreboard instead.** When the session ends, everyone sees a comparison screen with each player's score and kill count, rather than an individual highscore entry.
 - **Elite enemies scale with your team size.** The more players in the session, the tougher Elite enemies get (more HP, more damage) — a solo Elite fight doesn't get any harder, but a 4-player one does.
+- **More guns on the same level.** Everyone who joins arrives with their own weapons and their own starting ammunition, while the level's own pickups stay the single pile they always were and the ordinary roster doesn't grow with the team. On a level whose ammunition doesn't stretch to everything that spawned, that arithmetic is the whole reason to bring people — the Elites above are the one thing pulling the other way.
 - **Loot is shared.** Anything an Elite or regular enemy drops is visible to the whole team on the minimap and automap, not just whoever's standing next to it.
 
 ## If you can't connect
