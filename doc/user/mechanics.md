@@ -72,15 +72,32 @@ Any regular kill tops up your health if you're not already at full stability —
 
 ### Difficulty
 
-| Difficulty | Enemy HP | Enemy damage | Enemy aim | Pickup amounts |
-|---|---|---|---|---|
-| Easy | ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 |
-| Normal | ×1 | ×1 | Slightly off — up to ±4° | ×1 |
-| Hard | ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 |
+| Difficulty | Enemy HP | Enemy damage | Enemy aim | Pickup amounts | Rollbacks |
+|---|---|---|---|---|---|
+| Easy | ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 | 3 |
+| Normal | ×1 | ×1 | Slightly off — up to ±4° | ×1 | 2 |
+| Hard | ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 | 1 |
 
 Note Easy's damage (×0.85) doesn't mirror its HP reduction (×0.7) the way Hard's pair does — a deliberate, slightly less forgiving choice made after Easy's original mirrored curve, combined with cautious play, turned out to make it possible to sail through the whole campaign nearly unscathed.
 
+Rollbacks are the one difficulty axis that isn't about the fight at all — see [Dying](#dying) below.
+
 Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — traps and rocket self-splash are unaffected. "Dead-on" aim still means a real bolt with real travel time, not a hitscan or a homing shot — you can still dodge it, an enemy just won't miss by aiming badly.
+
+## Dying
+
+Running out of System Stability ends the level with a **Kernel Panic**. What happens next depends on whether your run still has a **rollback**.
+
+- **With one left**, the screen offers a choice: **Roll back** restarts the level you died on, or **Give up** ends the run. Roll back is the default — Enter, Space, a click on it, or **A** on a gamepad — because Space is also the fire button, and a trigger pulled in the fight that just killed you shouldn't be able to end your run by accident. **Escape**, or **B** on a gamepad, gives up.
+- **With none left**, there is no choice: the run ends and you return to the file tree, exactly as it always worked.
+
+A rollback restores the state you *entered* the level with — health, armour, every ammunition pool, the weapons you were carrying, and your score. Everything the failed attempt earned or spent is discarded along with the damage you took. Keys are not carried between levels anyway, so a rollback starts you with none, the same as walking in for the first time.
+
+**The level is the same; the fight is not.** Layout is generated from the source file and never changes, so you keep everything you learned about where the rooms and the exit are. Enemy timing and aim, loot rolls and weapon spread are all re-rolled, so the fight plays out differently — a rollback is another attempt, not a rehearsed one.
+
+The count you have left is shown above the status bar while you play, and a run that spent any is marked in the **RB** column of the Highscores dialog. Rollbacks are single-player only; a co-op session ends when the whole team is down.
+
+One detail that matters if you close the tab: a rollback is spent at the moment you die, not when you press the button. Resume that run later and you will start at the beginning of the level you died on, with the rollback already counted.
 
 ## Enemies
 
