@@ -214,7 +214,9 @@ describe("AudioManager.playShoot() dispatch", () => {
     //     as a bass note with a rattle behind it — reported as "a bit much
     //     bass" before this existed.
     const gains = ctx.createGain.mock.results.map((r) => r.value);
-    const bodyMix = gains.find((g) => g.gain.setValueAtTime.mock.calls.some(([v]) => v > 0 && v < 0.5));
+    const bodyMix = gains.find((g) =>
+      g.gain.setValueAtTime.mock.calls.some((call: unknown[]) => typeof call[0] === "number" && call[0] > 0 && call[0] < 0.5),
+    );
     expect(bodyMix).toBeDefined();
     expect(cut.type).toBe("highpass");
     expect(cut.frequency.setValueAtTime.mock.calls[0][0]).toBeGreaterThan(60);
