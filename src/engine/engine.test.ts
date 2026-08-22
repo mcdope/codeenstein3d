@@ -280,6 +280,7 @@ function makeEngine(
     input?: ScriptedInput;
     playerCount?: number;
     rotSpeedMultiplier?: number;
+    rollbacksRemaining?: number;
   } = {},
 ): { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; handlers: ReturnType<typeof makeHandlers> } {
   const canvas = makeCanvas();
@@ -298,6 +299,8 @@ function makeEngine(
     undefined,
     opts.playerCount,
     opts.rotSpeedMultiplier,
+    undefined,
+    opts.rollbacksRemaining,
   );
   return { engine, input, handlers };
 }
@@ -6696,4 +6699,45 @@ describe("RaycasterEngine — crosshair targeting vs shot resolution at Sharp re
       }
     });
   }
+});
+
+describe("RaycasterEngine — rollbacksRemaining (HUD badge only)", () => {
+  it("reports 0 when the constructor argument is omitted", () => {
+    // The three callers that omit it — a multiplayer session, replay playback
+    // and every harness — must show no badge. A difficulty-derived default
+    // would instead have all three claim a live count nothing can spend.
+    const { engine, handlers } = makeEngine(fakeMap());
+    engine.start();
+    expect(lastStats(handlers).rollbacksRemaining).toBe(0);
+    engine.stop();
+  });
+
+  it("passes the given count straight through to EngineStats", () => {
+    const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), { rollbacksRemaining: 3 });
+    engine.start();
+    expect(lastStats(handlers).rollbacksRemaining).toBe(3);
+    engine.stop();
+  });
+
+  it("never decrements it — main.ts owns the count and builds a fresh engine per level", () => {
+    const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), { rollbacksRemaining: 2 });
+    engine.start();
+    raf.flush(30, 16);
+    expect(lastStats(handlers).rollbacksRemaining).toBe(2);
+    engine.stop();
+  });
+
+  it("is not read from the carryover, so a stray field there changes nothing", () => {
+    // Guards the deliberate choice not to route this through EngineCarryover
+    // the way the sibling `cheatsUsed` badge flag is: level 1 of every
+    // campaign launches with `carryover === undefined`, so a carryover-only
+    // channel would hide the badge exactly where dying is most likely.
+    const carryover = { health: 55, swap: 0, bullets: 10, rockets: 0, smg: 0, gas: 0, rollbacksRemaining: 9 } as EngineCarryover;
+    const { engine, handlers } = makeEngine(fakeMap(), makeHandlers(), { carryover });
+    engine.start();
+    const stats = lastStats(handlers);
+    expect(stats.rollbacksRemaining).toBe(0);
+    expect(stats.health).toBe(55); // the rest of the carryover still applied
+    engine.stop();
+  });
 });

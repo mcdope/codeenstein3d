@@ -66,6 +66,7 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
     heldGates: [],
     gateColors: [],
     cheatsUsed: false,
+    rollbacksRemaining: 0,
     score: 500,
     kills: 4,
     weaponIndex: 0, // pistol -> bullets

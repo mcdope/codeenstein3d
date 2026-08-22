@@ -942,6 +942,14 @@ export interface EngineStats {
   /** True once any cheat has fired this run — drives the HUD's persistent
    * "run not recorded" badge. See `PlayerState.cheatsUsed`. */
   cheatsUsed: boolean;
+  /** Rollbacks (arcade continues) left in this single-player run — drives the
+   * HUD's persistent badge, and nothing else in the engine. 0 for multiplayer,
+   * for replay playback and for every harness, all of which omit the
+   * constructor argument it comes from; the badge then draws nothing, which is
+   * the correct reading in all three cases. Constant for a level's whole
+   * lifetime: `main.ts` owns the count and constructs a fresh engine per
+   * level, so the engine never decrements it. */
+  rollbacksRemaining: number;
   /** Index into `WEAPONS` of the currently-equipped weapon. */
   weaponIndex: number;
   /** Indices into `WEAPONS` the player currently owns/can switch to. */
@@ -1491,6 +1499,25 @@ export class RaycasterEngine {
      * inserting it where it reads best would silently reinterpret the
      * arguments of every existing call site. */
     localChosenName?: string,
+    /** How many rollbacks the run this level belongs to has left, purely so
+     * the HUD can draw its badge (`drawHud`). Read nowhere else in the engine:
+     * `main.ts` owns the count, spends it in its own `onGameOver`, and builds
+     * a fresh engine per level, so this is constant for this instance's life.
+     *
+     * Appended last for the same reason `localChosenName` above it was, and
+     * defaulting to 0 rather than the difficulty's grant on purpose: the three
+     * callers that omit it — a multiplayer session (`sessionEngine.ts`), replay
+     * playback (`buildEngineFor`) and every harness — must show no badge, and
+     * a difficulty-derived default would instead have them all claim a live
+     * rollback count that nothing can spend.
+     *
+     * Deliberately *not* carried on `EngineCarryover`, which is where the
+     * sibling `cheatsUsed` badge flag lives: level 1 of every campaign
+     * launches with `carryover === undefined`, so a carryover-only channel
+     * would hide the badge on the level a player is most likely to die on,
+     * and synthesizing a partial carryover to carry it would zero the
+     * player's health (see `createPlayerState`'s `if (carryover)` branch). */
+    private readonly rollbacksRemaining = 0,
   ) {
     // `{alpha: false}` was A/B'd in the 2026-08 frame-budget audit: no
     // measurable effect on busy or pacing on this Chrome/compositor stack
@@ -6104,6 +6131,7 @@ export class RaycasterEngine {
       ownedWeapons: [...local.ownedWeapons],
       godMode: local.godMode,
       cheatsUsed: local.cheatsUsed,
+      rollbacksRemaining: this.rollbacksRemaining,
       noClip: local.player.noClip,
       showFps: local.showFps,
       levelScoreBreakdown: local.telemetry ? levelScoreBreakdown : undefined,
