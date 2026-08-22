@@ -336,4 +336,4 @@ implemented, already refuted, or impossible as written.
 - [ ] revisit enemy dmg, seems a bit low
 - [ ] when an elite is discovered (near by, or aggro'd):
   - [ ] show a toast (to all player if coop)
-  - [ ] if coop: add a permament till killed map ping for the elite, so players know where to assist
+  - [ ] if coop: add a permament till killed map ping (like for keys) on the elite, so players know where to assist
