@@ -54,6 +54,33 @@ function fillTextCalls(): string[] {
   return ctx.fillText.mock.calls.map(([text]) => text as string);
 }
 
+/** Every `fillText` that was given a `maxWidth`, with that width kept — the
+ * one thing `fillTextCalls` throws away, and the only place the suite can see
+ * whether a string was squeezed to fit (`doc/dev/testing.md`). The font size
+ * comes from the call's own `ctx.font`, recorded per call by the mock. */
+function clampedDraws(): { text: string; fontPx: number; maxWidth: number }[] {
+  return ctx.fillText.mock.calls
+    .map((c, i) => ({
+      text: c[0] as string,
+      // The mock returns the font it drew with — see `test/mocks/canvas.ts`.
+      fontPx: Number(/(\d+(?:\.\d+)?)px/.exec(String(ctx.fillText.mock.results[i]?.value ?? "13px"))?.[1] ?? 13),
+      maxWidth: c[3] as number,
+    }))
+    .filter((d) => typeof d.maxWidth === "number");
+}
+
+/** Asserts nothing currently on the overlay had to be horizontally squeezed
+ * by `fillText`'s `maxWidth`. The 0.62 mirrors `CHAR_EM` deliberately rather
+ * than importing it: the overlay is monospace, 0.602em/char measured in
+ * Chromium across all three of its fonts, so this is an independent statement
+ * of the same physical fact. Lowering `CHAR_EM` below what glyphs actually
+ * need would fail here, which is the direction that reintroduces the bug. */
+function expectNothingSqueezed(): void {
+  for (const { text, fontPx, maxWidth } of clampedDraws()) {
+    expect(maxWidth, `"${text}" (${fontPx}px) was squeezed`).toBeGreaterThanOrEqual(text.length * fontPx * 0.62);
+  }
+}
+
 describe("GameHud — overlay content per method", () => {
   it("showKernelPanic draws the expected title/lines/button, no stats", () => {
     hud.showKernelPanic(undefined, vi.fn());
@@ -293,7 +320,7 @@ describe("GameHud — gamepad dismiss", () => {
 function panicWithRollback(remaining = 2): { onReturn: ReturnType<typeof vi.fn>; onRollback: ReturnType<typeof vi.fn> } {
   const onReturn = vi.fn();
   const onRollback = vi.fn();
-  hud.showKernelPanic(undefined, onReturn, { remaining, onRollback });
+  hud.showKernelPanic(undefined, onReturn, { rollback: { remaining, onRollback } });
   return { onReturn, onRollback };
 }
 
@@ -501,6 +528,130 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
     passLockWindow();
     window.dispatchEvent(new KeyboardEvent("keydown", { code: "Enter" }));
     expect(onRollback).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("GameHud — Kernel Panic after a cheated run", () => {
+  /** The line itself is a joke and may well get reworded; what must hold is
+   * that it appears exactly when a cheat has fired and nowhere else, so these
+   * assert the property rather than pinning the whole sentence. */
+  const stillDied = (texts: string[]): boolean => texts.some((t) => t.includes("still died"));
+
+  it("says something about it when a cheat fired this run", () => {
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true });
+    const texts = fillTextCalls();
+    expect(texts).toContain("KERNEL PANIC");
+    expect(texts).toContain("The process was terminated.");
+    expect(stillDied(texts)).toBe(true);
+  });
+
+  it("says nothing on a clean run", () => {
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: false });
+    expect(stillDied(fillTextCalls())).toBe(false);
+  });
+
+  it("says nothing when no options are passed at all", () => {
+    // The replay viewer's path, and every caller that predates the flag — a
+    // cheated run never becomes a replay in the first place (highscore
+    // recording, and with it the recorder, is disabled once a cheat fires).
+    hud.showKernelPanic(undefined, vi.fn());
+    expect(stillDied(fillTextCalls())).toBe(false);
+  });
+
+  it("stays out of the way when a rollback is on offer", () => {
+    // Deliberate, not incidental: that screen is a decision the player has to
+    // read, and every line on it is required to describe the choice and what
+    // follows it. The punchline waits for the death that actually ends the run.
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true, rollback: { remaining: 1, onRollback: vi.fn() } });
+    const texts = fillTextCalls();
+    expect(texts).toContain("Roll back");
+    expect(stillDied(texts)).toBe(false);
+  });
+
+  it("adds exactly one line and disturbs nothing else", () => {
+    hud.showKernelPanic(undefined, vi.fn());
+    const clean = fillTextCalls();
+    vi.clearAllMocks();
+    hud.showKernelPanic(undefined, vi.fn(), { cheated: true });
+    const cheated = fillTextCalls();
+    expect(cheated.length).toBe(clean.length + 1);
+    for (const t of clean) expect(cheated).toContain(t);
+  });
+});
+
+describe("GameHud — no overlay squeezes its own text", () => {
+  // `fillText`'s `maxWidth` compresses glyphs horizontally instead of
+  // overflowing, so an oversized line renders squashed and still passes any
+  // test that only asks *what* text was drawn — which is how the rollback
+  // death screen shipped with its three longest lines squeezed into a 388px
+  // box that needed 556. These assert the width every drawn string was
+  // actually given, which is what `doc/dev/testing.md` records as the blind
+  // spot this closes.
+  beforeEach(() => {
+    // Roomy on purpose: the canvas edge (`w - 48`) is the documented last
+    // resort, and a box pinned against it can still squeeze. These tests are
+    // about the sizing rule, not about that fallback.
+    canvas.width = 1600;
+    canvas.height = 900;
+  });
+
+  it("Kernel Panic fits its lines — including the longest rollback wording", () => {
+    for (const remaining of [0, 1, 2]) {
+      vi.clearAllMocks();
+      hud.showKernelPanic(undefined, vi.fn(), { rollback: { remaining, onRollback: vi.fn() } });
+      expect(clampedDraws().length, `remaining=${remaining}`).toBeGreaterThan(0);
+      expectNothingSqueezed();
+    }
+  });
+
+  it("Kernel Panic fits the cheated line, with and without stats", () => {
+    for (const stats of [undefined, fakeStatsScreenInfo()]) {
+      vi.clearAllMocks();
+      hud.showKernelPanic(stats, vi.fn(), { cheated: true });
+      expectNothingSqueezed();
+    }
+  });
+
+  it("fits the stat rows, whose grouped values are the longest strings any overlay draws", () => {
+    // "Path … · Map … · Lore … · Secrets … · Streaks …" needs 446px against
+    // the 286px each side gets in a 620-wide box — the one case that was
+    // squeezed even *with* `wide` set, so no fixed width could have fixed it.
+    hud.showCommitSummary({ linesRefactored: 1234, bugsSquashed: 567, stats: fakeStatsScreenInfo() }, vi.fn());
+    expectNothingSqueezed();
+  });
+
+  it("fits every other overlay's own copy", () => {
+    const draw: [string, () => void][] = [
+      ["build successful", () => hud.showBuildSuccessful(fakeStatsScreenInfo(), vi.fn())],
+      ["level start", () => hud.showLevelStart({ campaign: "stage06_pipeline.py", levelName: "stage06_pipeline.py", roomCount: 12, enemyCount: 34, secretRoomCount: 2 }, vi.fn())],
+      ["recording notice", () => hud.showRecordingNotice(vi.fn())],
+      // The real worst case in the repo, and by a distance: this reason
+      // interpolates a file path and needs 986px against the 388px an
+      // un-`wide` box gave it (`main.ts`'s balance-mismatch `endReplay`).
+      ["replay ended", () => hud.showReplayEnded('"src/stage06_pipeline.py" was recorded under different game balance — this replay can\'t be trusted to match its score anymore.', vi.fn())],
+      // Not a case that was ever broken — this screen always passes `wide`,
+      // so its longest title had 588px for 397. Here to keep it that way.
+      ["mp results", () => hud.showMultiplayerResults("MULTIPLAYER: HOST DISCONNECTED", "#f2c14e", [["a-very-long-player-name", "12450 pts · 87 kills (disconnected)"]], vi.fn())],
+    ];
+    for (const [name, run] of draw) {
+      vi.clearAllMocks();
+      run();
+      expect(clampedDraws().length, name).toBeGreaterThan(0);
+      expectNothingSqueezed();
+    }
+  });
+
+  it("leaves a box alone when its content already fits", () => {
+    // The regression pin for every screen that was never squeezed: content
+    // drives the width only upward, from the same two floors as before.
+    expect(overlayLayout(1600, 900, { title: "KERNEL PANIC", color: "#f00", lines: ["System stability reached 0%.", "The process was terminated."], buttonLabel: "Return to file tree" }).boxW).toBe(420);
+    expect(overlayLayout(1600, 900, { title: "COMMIT SUMMARY", color: "#f00", lines: [], stats: [["Rooms", "12"]], buttonLabel: "Continue", wide: true }).boxW).toBe(620);
+  });
+
+  it("never grows past the canvas, however long the content", () => {
+    const box = overlayLayout(640, 400, { title: "T", color: "#f00", lines: ["x".repeat(400)], buttonLabel: "OK" });
+    expect(box.boxW).toBe(640 - 48);
+    expect(box.boxX).toBe(24);
   });
 });
 

@@ -74,8 +74,18 @@ export class GameHud {
   showKernelPanic(
     stats: StatsScreenInfo | undefined,
     onReturn: () => void,
-    rollback?: { remaining: number; onRollback: () => void },
+    opts?: {
+      rollback?: { remaining: number; onRollback: () => void };
+      /** Whether any cheat has fired this run — `EngineStats.cheatsUsed`, the
+       * same latch the in-play HUD badge reads, so this screen can never
+       * contradict the badge the player was looking at a second ago. Adds one
+       * line and nothing else; a clean run takes a byte-identical path to
+       * before this existed. Deliberately ignored when a rollback is on
+       * offer — see the `lines` branch below. */
+      cheated?: boolean;
+    },
   ): void {
+    const rollback = opts?.rollback;
     // "Roll back" is the *primary* deliberately. Space is also the fire key,
     // and `DISMISS_LOCK_MS` exists precisely because players mash it — if
     // "Give up" were the default, a mashed trigger would irreversibly end the
@@ -103,7 +113,16 @@ export class GameHud {
                 : `${n} more rollback${n === 1 ? "" : "s"} after this one — the level restarts as you entered it.`,
               "This attempt's score and kills are discarded, and the run is marked.",
             ]
-          : ["System stability reached 0%.", "The process was terminated."],
+          : [
+              "System stability reached 0%.",
+              "The process was terminated.",
+              // Only on the death that actually ends the run. The rollback
+              // variant above is a real decision the player has to read, and
+              // every line on it is required to describe *that choice* — a
+              // joke wedged in among the three dilutes it, and the punchline
+              // wants a death that sticks anyway.
+              ...(opts?.cheated ? ["You cheated and still died. lol"] : []),
+            ],
         stats: stats ? statRows(stats) : undefined,
         buttonLabel: rollback ? "Roll back" : "Return to file tree",
         ...(rollback ? { secondary: { label: "Give up", onPick: onReturn } } : {}),
@@ -381,6 +400,26 @@ const PAD_AFTER_BTN = 22;
 /** Space between the two buttons of a two-choice overlay. */
 const BTN_GAP = 16;
 
+/** Advance width of one character, as a fraction of the font size. Every
+ * string on an overlay is set in `ui-monospace, monospace` — where all three
+ * of the fonts below measure the same 0.602em per glyph regardless of weight
+ * — so a character count *is* a width, and `overlayLayout` can size a box to
+ * its content without ever calling `measureText`. That is what keeps it pure
+ * (see its doc comment) and usable on a canvas with no 2D context.
+ *
+ * Rounded up from the measured 0.602 because the fallback font differs by
+ * platform. The asymmetry is deliberate: an over-estimate pads the box by a
+ * few pixels, while an under-estimate puts the squeeze back. And `fillText`'s
+ * `maxWidth` still applies underneath, so even a badly wrong estimate here
+ * degrades to the old squeezed rendering rather than letting text escape its
+ * box. */
+const CHAR_EM = 0.62;
+
+/** The width `text` needs to render unsqueezed at `fontPx` — see `CHAR_EM`. */
+function textWidth(fontPx: number, text: string): number {
+  return text.length * fontPx * CHAR_EM;
+}
+
 /** One button's rect, in canvas pixels — see `overlayLayout`. */
 export interface OverlayButtonRect {
   x: number;
@@ -410,12 +449,32 @@ export interface OverlayGeometry {
  * second hand-tuned formula (see `layout()` below).
  *
  * Pure, and deliberately so: nothing here touches the context, because the
- * content walk only accumulates constants and never calls `measureText`. That
- * lets `show()` still wire up working input on a canvas whose 2D context is
- * unavailable, which is a real case the suite covers.
+ * content walk only accumulates constants and character counts, and never
+ * calls `measureText` (the overlay is monospace throughout — see `CHAR_EM`).
+ * That lets `show()` still wire up working input on a canvas whose 2D context
+ * is unavailable, which is a real case the suite covers.
  */
 export function overlayLayout(w: number, h: number, content: OverlayContent): OverlayGeometry {
-  const boxW = Math.min(content.wide ? 620 : 420, w - 48);
+  // Grow the box to what its content needs, rather than squeezing content
+  // into a fixed box. `fillText`'s `maxWidth` (see `drawOverlay`) is a
+  // backstop, not a layout — it compresses glyphs horizontally, so an
+  // overrunning line renders legible but visibly squashed. That is what the
+  // rollback death screen did in the shipped default: no stats rows means no
+  // `wide`, leaving its 71-character lines 388px to live in and needing 556.
+  // The two fixed sizes stay as *floors*, so nothing that already fits moves.
+  const needed = Math.max(
+    textWidth(22, content.title) + 32,
+    ...content.lines.map((line) => textWidth(13, line) + 32),
+    // `drawOverlay` gives each stat side `boxW / 2 - 24`, so fitting both
+    // sides takes twice the wider one.
+    ...(content.stats ?? []).flatMap(([label, value]) => [
+      2 * (textWidth(13, label) + 24),
+      2 * (textWidth(13, value) + 24),
+    ]),
+  );
+  // `w - 48` is the last resort and stays last: past the canvas edge there is
+  // no width left to give, and `maxWidth` squeezes as it always did.
+  const boxW = Math.min(Math.max(content.wide ? 620 : 420, needed), w - 48);
 
   let contentEnd = PAD_TOP;
   for (let i = 0; i < content.lines.length; i++) contentEnd += LINE_GAP;

@@ -3536,34 +3536,44 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
               resetToFileTree();
             },
             {
-              remaining,
-              onRollback: () => {
-                pendingRollback = null;
-                console.log(
-                  `%c[rollback] ${path} — restoring the level-entry state, ${remaining} left`,
-                  "color:#e0a04a;font-weight:bold",
-                );
-                // Before relaunching: the failed attempt must leave the
-                // recording, or playback stops at the death it ended on and
-                // never reaches anything after it.
-                currentReplayRecorder?.dropCurrentLevel();
-                // Rewritten, never cleared — clearing would hide the Continue
-                // tab mid-run, and leaving the autosave alone would resume the
-                // player into the low-health state they just died in. Routed
-                // through `persistProgress` so the "is this run savable at
-                // all" question (remote/demo workspaces have no resume point)
-                // has exactly one answer, in `buildCampaignSave`. The counts
-                // it writes are the module-scope ones, already decremented
-                // above, which is precisely what a resume should find.
-                persistRollbackPoint(entry);
-                launchLevel(path, parsed, source, effectiveCarryover);
+              rollback: {
+                remaining,
+                onRollback: () => {
+                  pendingRollback = null;
+                  console.log(
+                    `%c[rollback] ${path} — restoring the level-entry state, ${remaining} left`,
+                    "color:#e0a04a;font-weight:bold",
+                  );
+                  // Before relaunching: the failed attempt must leave the
+                  // recording, or playback stops at the death it ended on and
+                  // never reaches anything after it.
+                  currentReplayRecorder?.dropCurrentLevel();
+                  // Rewritten, never cleared — clearing would hide the Continue
+                  // tab mid-run, and leaving the autosave alone would resume the
+                  // player into the low-health state they just died in. Routed
+                  // through `persistProgress` so the "is this run savable at
+                  // all" question (remote/demo workspaces have no resume point)
+                  // has exactly one answer, in `buildCampaignSave`. The counts
+                  // it writes are the module-scope ones, already decremented
+                  // above, which is precisely what a resume should find.
+                  persistRollbackPoint(entry);
+                  launchLevel(path, parsed, source, effectiveCarryover);
+                },
               },
             },
           );
           return;
         }
         endRun(parsed, path, stats);
-        hud.showKernelPanic(statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats), resetToFileTree);
+        hud.showKernelPanic(
+          statsScreenInfo(stats.runScoreBreakdown, stats.runPlayerStats),
+          resetToFileTree,
+          // `stats.cheatsUsed`, not the module-scope `cheatsUsed` above: it is
+          // the flag the HUD badge reads, so the death screen cannot say
+          // something the badge just contradicted. Only reached on the death
+          // that ends the run — the rollback branch above never passes it.
+          { cheated: stats.cheatsUsed },
+        );
       },
       onWin: (stats) => {
         setGameRunning(false); // same as `onGameOver` — nothing advances under the summary

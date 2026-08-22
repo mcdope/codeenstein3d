@@ -333,5 +333,5 @@ implemented, already refuted, or impossible as written.
 
 - [ ] remeasure perf impact of level-end-summary
 - [ ] hud face from wad (when loaded)
-- [ ] add a pun to the gameover screen if cheats were used: "You used cheats and still died? lol"
 - [ ] revisit enemy dmg, seems a bit low
+- [ ] coop: give players a hotkey to trigger a map ping on themself, to get help. should last for some seconds.
