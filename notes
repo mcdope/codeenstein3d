@@ -332,6 +332,6 @@ implemented, already refuted, or impossible as written.
 - [ ] coop multiplayer should spawn additional boss enemies, requiring actual coop to kill. having a distinct color, roaming the whole map (not limitted to their room) and having more aggro, movement speed like normal enemies, should be visually larger as well. unique abilities like "casting mines" or weapon usage? possible names: "VPN down", "CI failed", "Useless Meeting", "Git down", "CloudFlare", "AWS", "GCP", "Azure"
 
 - [ ] add continues for singleplayer - 2 for normal, 3 for easy, 1 for hard
-- [ ] remeasure impact of level-end-summary
+- [ ] remeasure perf impact of level-end-summary
 - [ ] hud face from wad (when loaded)
 - [ ] "sell" unclearable levels as "come back in coop" in docs/tips
