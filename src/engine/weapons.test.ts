@@ -64,6 +64,30 @@ describe("WEAPONS data", () => {
     expect(dps(shotgun)).toBeGreaterThan(dps(pistol) * 1.25);
   });
 
+  it("keeps gdb's damage between the pistol and the shotgun, and its ammo the least efficient", () => {
+    const pistol = WEAPONS[PISTOL_WEAPON_INDEX];
+    const shotgun = WEAPONS[SHOTGUN_WEAPON_INDEX];
+    const gdb = WEAPONS[GDB_WEAPON_INDEX];
+    const dps = (w: (typeof WEAPONS)[number]) => (w.pellets * w.damagePerPellet) / w.fireIntervalSec!;
+    // gdb is a campaign-level-4 unlock. Sitting at or below the level-1
+    // pistol's damage-per-second left it strictly dominated — slower to kill,
+    // worse per round, and the longest reload of the three bullet weapons —
+    // with nothing to offer but a held trigger. That inversion is what its
+    // 12 -> 16 bump fixed, so assert the ordering rather than the number.
+    expect(dps(gdb)).toBeGreaterThan(dps(pistol));
+    // ...but the shotgun keeps the burst crown. Point-blank devastation is
+    // the whole reason to accept its 0.85s pump and two-shell magazine; a
+    // full-auto weapon matching it would collapse the two into one.
+    expect(dps(gdb)).toBeLessThan(dps(shotgun));
+    // The other half of the trade, and the reason `SMG_DROP_AMOUNT` is 21
+    // rounds where bullets drop 4: gdb buys its rate of fire with the worst
+    // damage-per-round in the game. A future buff that erased this would make
+    // its own ammo pool pointless — see `game-design.md`'s economy intent.
+    const damagePerAmmo = (w: (typeof WEAPONS)[number]) => (w.pellets * w.damagePerPellet) / w.ammoPerShot;
+    expect(damagePerAmmo(gdb)).toBeLessThan(damagePerAmmo(pistol));
+    expect(damagePerAmmo(gdb)).toBeLessThan(damagePerAmmo(shotgun));
+  });
+
   it("UNLOCKABLE_WEAPONS is exactly gdb/ghidra/Friday Hotfix, never Toolchain", () => {
     expect(UNLOCKABLE_WEAPONS).toEqual([GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX, FRIDAY_HOTFIX_WEAPON_INDEX]);
     expect(UNLOCKABLE_WEAPONS).not.toContain(TOOLCHAIN_WEAPON_INDEX);

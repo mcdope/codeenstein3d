@@ -1435,7 +1435,7 @@ export const WEAPON_STATS = {
   [SHOTGUN_WEAPON_INDEX]: { pellets: 7, damagePerPellet: 25, ammoPerShot: 1, ammoType: "shells", spreadPx: 70, fireIntervalSec: 0.85, magazineSize: 2, reloadSec: 1.2 },
   // gdb tightens the shared cone deliberately, so it stays usable at range
   // despite low per-shot damage (`maxConeDeviationPx` in weapons.ts).
-  [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 12, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20, magazineSize: 45, reloadSec: 2.0 },
+  [GDB_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 16, ammoPerShot: 1, ammoType: "smg", spreadPx: 0, fireIntervalSec: 0.09, maxConeDeviationPx: 20, magazineSize: 45, reloadSec: 2.0 },
   [GHIDRA_WEAPON_INDEX]: { pellets: 1, damagePerPellet: 150, ammoPerShot: 1, ammoType: "rockets", spreadPx: 0, fireIntervalSec: 1.1, magazineSize: 1, reloadSec: 1.6 },
   // `maxRange`/`fullDamageRange` mirror `src/engine/weapons.ts` — Friday Hotfix
   // is the only weapon with a range curve. Full damage to the plateau, decaying

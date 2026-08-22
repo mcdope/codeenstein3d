@@ -190,6 +190,13 @@ Four decisions worth not rediscovering:
 
 The cadence cap and per-pellet damage are coupled and must be tuned together — see [Game Design](game-design.md#weapon-and-economy-intent) for the DPS arithmetic that forced the shotgun's 18 → 25 damage bump in the same change.
 
+**Damage is the lever for a weapon that reads as weak; cadence is not.** gdb's 12 → 16 bump came from a playtest one-liner ("smg dmg too low") that turned out to name a real ordering problem rather than a feel: at 12 it produced 133 DPS against the starting pistol's 147, so a campaign-level-4 unlock killed *slower* than the level-1 weapon while also carrying the longest reload of the three bullet weapons and the worst damage per round. The enemy-health pass (`HP_PER_COMPLEXITY` 25 → 35) widened the gap rather than causing it. Two levers could have closed it and only one was right:
+
+- **Cadence was rejected.** `fireIntervalSec` 0.09 is what makes the 45-round magazine "about four seconds of held trigger" — the weapon's stated identity. Shortening it would have bought DPS by spending exactly the property the number exists to produce, and drained the pool faster on top.
+- **The ammo economy was deliberately left alone.** `SMG_DROP_AMOUNT` (21), `STARTING_SMG_AMMO` (40), `VENDOR_SMG_AMOUNT` (30) and the smg loot weights are all unchanged, so a round being worth a third more is a straight buff rather than a redistribution. Cutting supply in the same change would have made the result unattributable — the recurring failure mode where a lever moves damage around without reducing it.
+
+The ordering the bump establishes is now asserted rather than commented: `weapons.test.ts` pins `dps(gdb)` between the pistol's and the shotgun's, and gdb's damage-per-ammo below both. This was measured offline only — the inversion is arithmetic, and gdb is ~64% of every shot in the telemetry archive, so a bot A/B would have moved every aggregate at once without being able to refute it.
+
 ## Difficulty Axes
 
 Easy/Normal/Hard originally scaled three axes in lockstep: enemy HP, enemy-dealt damage, and `ammoDropRate` (Hard tougher/scarcer, Easy the reverse). A 450-run balance-telemetry campaign (2026-07-15) found this produced two real problems, both fixed the same day:
