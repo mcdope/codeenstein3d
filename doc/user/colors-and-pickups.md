@@ -10,7 +10,7 @@ Everything here is fixed. It never changes with the level's styleset, the diffic
 
 The always-on panel in the corner. No fog-of-war: the layout is all there from the moment the level loads.
 
-![The corner minimap, with four gold key markers, an orange acid pool at the top left, violet teleporter pads, cyan lore terminals, coloured door tiles, the green exit at the bottom right, and the compass badge on its corner](img/minimap.png)
+![The corner minimap, with four gold key markers, an orange acid pool at the top left, violet teleporter pads, cyan lore terminals, coloured door tiles, the green exit at the bottom right, the compass badge on its corner, a blue teammate dot beside the white player triangle, and a pink teammate wrapped in a sweeping ring because they are calling for help](img/minimap.png)
 
 | What you see | Colour | Meaning |
 |---|---|---|
@@ -25,6 +25,8 @@ The always-on panel in the corner. No fog-of-war: the layout is all there from t
 | Lore terminal | pulsing cyan | stops pulsing once you've read it |
 | Exit | pulsing green | always visible, from the moment the level loads |
 | You | near-white triangle | the point of the triangle is the way you're facing |
+| Teammates | their own player colour, on a dark surround | multiplayer only; the same colour their name floats in above them in the world |
+| A teammate calling for help | their colour, brightened, with a sweeping ring | multiplayer only — see [Multiplayer](multiplayer.md) |
 | Enemies | their own body colour | gold Elite, cyan Edge Case — but only once spotted |
 
 Two of those will catch you out, so they're worth stating plainly:
@@ -33,7 +35,11 @@ Two of those will catch you out, so they're worth stating plainly:
 
 **A key marker is gold no matter which key it is.** All four colours show up identically here, so the panel tells you *where* a key is, not *which* one. The colour you're missing is on the HUD key pips, and on the door itself.
 
+The dark surround behind a teammate dot is doing real work: the player colours include a green very close to the exit marker's and an amber very close to the key gold, so the outline is what stops a person reading as a place you can walk to.
+
 Keys **ping** on the minimap: the marker brightens and a sonar ring sweeps out of it for a few seconds. Two things set that off — walking into a locked door you have no key for, and simply passing a room that still holds a key you can reach. "Reachable" means by walking distance, counting doors you already hold the key for. When the key you were asked for is itself locked away, the ping deliberately points at the key that unblocks it instead, so what pings is always somewhere you can go next.
+
+A teammate calling for help pings the same way but is never confusable with it: a key ping is gold and sits still on a key, a help ping is that player's own colour and moves with them, and it comes with a siren instead of the key ping's soft chime.
 
 ## Reading the automap
 
@@ -41,7 +47,7 @@ Keys **ping** on the minimap: the marker brightens and a sonar ring sweeps out o
 
 Structural things go greyscale here so the map doesn't fight the live game still rendering behind it; danger and goals keep their accent colours.
 
-![The Tab automap, drawn in greyscale over the live 3D view: the level's rooms and corridors in light grey, an orange acid pool at the top left, the gold player arrow in the middle, and red, blue and green locked-door tiles](img/automap.png)
+![The Tab automap, drawn in greyscale over the live 3D view: the level's rooms and corridors in light grey, an orange acid pool at the top left, the gold player arrow in the middle, red, blue and green locked-door tiles, a blue teammate dot next to the player and a pink teammate ringed because they are calling for help](img/automap.png)
 
 That shot is of a level that has been walked from end to end. Early on you'd see far less of it — and the game showing through behind is not an artefact of the picture: the automap really is translucent, and really does leave you able to walk and fight while it's up.
 
@@ -58,6 +64,7 @@ That shot is of a level that has been walked from end to end. Early on you'd see
 | Proximity mine | bright red `#ff5050` | |
 | Exit | green `#41ff6e` | once discovered |
 | You | warm gold `#ffd23f` | the one warm colour, so it never blends into terrain or accents |
+| Teammates | their own player colour, on a dark surround | multiplayer only; brightened and ringed while one is calling for help |
 
 The two differences from the corner minimap:
 

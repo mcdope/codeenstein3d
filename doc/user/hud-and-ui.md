@@ -22,7 +22,7 @@ If you enter a cheat code, a badge appears here and stays for the rest of the ca
 
 A second badge, in amber, counts the **rollbacks** your run has left (see [Dying](mechanics.md#dying)); it disappears once you've spent them all, since a bar reading "0 rollbacks" is just noise — so on Hard, which gets none, it never appears. If a run somehow has both — cheats entered *and* rollbacks in hand — the two stack rather than overlapping, with the rollback count sitting above the cheat warning.
 
-Three warning toasts share the top of the screen, each on its own row so they never cover each other when more than one fires at once: "Out of ammo!" on the first, "Memory leak — acid rising!" on the second, and "You need the red key!" — walking into a key-locked door empty-handed — on the third, naming the colour you're missing and drawn in that door's own colour.
+Three warning toasts share the top of the screen, each on its own row so they never cover each other when more than one fires at once: "Out of ammo!" on the first, "Memory leak — acid rising!" on the second, and "You need the red key!" — walking into a key-locked door empty-handed — on the third, naming the colour you're missing and drawn in that door's own colour. A fourth message, "<name> NEEDS HELP", sits on its own under the minimap in the top-left rather than joining that stack — see [Multiplayer](multiplayer.md).
 
 ## Minimap & Compass
 
@@ -31,6 +31,8 @@ An always-on minimap sits in the corner, showing the full layout of the current 
 Every colour on this panel is listed in [Colours & Pickups](colors-and-pickups.md#reading-the-corner-minimap) — including the two that surprise people: acid reads orange here but green in the world, and an uncollected key is gold whichever key it is.
 
 Walking into a key-locked door with no key **pings** a key here for a few seconds: its marker brightens and a sonar ring sweeps outward from it, with a soft ping per beat, so you can tell which of several uncollected keys the game is pointing you at. **It always points at something you can actually get to.** If the key you asked for is behind another locked door — which it often is, because keys come in a chain — it pings the key that unblocks it instead, and the banner names that colour. The ring is clipped to the panel, so a key near an edge doesn't sweep out over the view.
+
+In multiplayer the panel also shows your teammates, each a dot in their own colour, and a **second kind of ping**: when somebody presses `G` to call for help, *their* dot brightens and sweeps a ring in their own colour, with a siren rather than the key ping's soft chime and a banner naming them under the panel. Two things tell them apart at a glance — a key ping is always gold and always sits on a key, a help ping is whatever colour that player is and moves with them.
 
 ## Automap
 

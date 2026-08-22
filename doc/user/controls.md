@@ -27,6 +27,7 @@
 |---|---|
 | `R` | Reload the equipped weapon |
 | `F` | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
+| `G` | **Multiplayer only** — call for help. Marks you on every teammate's minimap and automap for about five seconds, with a sonar ring, a siren and a banner naming you. About an eight-second wait before you can call again, and it does nothing in single-player |
 | `W` / `S` (while reading) | Scroll a lore terminal's text if it overflows the box |
 | `Tab` | Toggle the automap (does not pause — you can keep moving and fighting while it's open) |
 | `Alt`+`Enter` | Toggle fullscreen |
@@ -63,6 +64,7 @@ Standard Xbox-style layout:
 | R3 (right stick click) or B | Quick-melee |
 | X | Reload the equipped weapon |
 | A | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
+| Y | Call for help (multiplayer only) — the same as `G` |
 | L3 (left stick click) | Sprint, held — the same 2× move speed as `Shift` |
 | Any button | Dismiss level-start/commit-summary/end overlays (after the 1.2s lock) |
 

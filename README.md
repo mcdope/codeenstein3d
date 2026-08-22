@@ -217,6 +217,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 ### Interaction & Navigation
 - **R** — Reload the equipped weapon (also happens automatically when a magazine runs dry)
 - **F** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
+- **G** — Call for help (multiplayer only): marks you on every teammate's map for ~5s with a ring, a siren and a banner; ~8s cooldown
 - **Tab** — Toggle automap (non-blocking — keep moving/fighting while open; only reveals explored areas)
 - **Alt+Enter** — Toggle fullscreen
 - **Esc** — Pause (freezes action under "PAUSED" overlay)
@@ -231,6 +232,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 - **R3 or B** — Quick-melee
 - **X** — Reload
 - **A** — Read a lore terminal / open a fake wall
+- **Y** — Call for help (multiplayer only)
 - **L3 (left-stick click)** — Sprint, held (same 2× speed as `Shift`)
 - **Any button** — Dismiss level-start/commit-summary overlays (after ~1.2s lock)
 
