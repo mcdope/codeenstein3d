@@ -25,7 +25,8 @@ import {
 import { gateIdAt } from "../map/gates";
 import { activeSpikeTileKeys } from "./traps";
 import type { Player } from "./player";
-import { drawRotatedGlyph, type Glyph } from "./pathSprites";
+import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
+import type { TeammateMapMarker } from "./sprites";
 import { HUD_HEIGHT } from "./hud";
 
 /** Fixed tile size in canvas pixels — independent of map size, so large maps
@@ -81,6 +82,16 @@ const PLAYER_COLOR = "#ffd23f";
  * other color here). A muted gold/amber, distinct from `PLAYER_COLOR`'s
  * brighter gold. */
 const LOOT_DROP_COLOR = "#b8860b";
+/** Backing tone drawn behind every teammate dot. Not decoration: `PLAYER_COLORS`
+ * includes an amber (`#fbbf24`) almost exactly this map's own `PLAYER_COLOR`
+ * (`#ffd23f`) and a green (`#4ade80`) near its `EXIT_COLOR`, so the surround is
+ * what keeps "a teammate" from reading as "you" or as the exit. */
+const TEAMMATE_OUTLINE_COLOR = "rgba(0,5,2,0.85)";
+/** One outward sweep of a help ping's ring, in milliseconds, and how far it
+ * grows over that sweep. Wall clock like the minimap's, and by value rather
+ * than shared import — same convention as every colour in this file. */
+const HELP_PING_SWEEP_MS = 900;
+const HELP_PING_RING_GROWTH_PX = 16;
 
 /**
  * Draw the automap as a translucent viewport overlay filling the available
@@ -100,6 +111,10 @@ export function drawAutomap(
    * parameter not existing at all. Gated by the caller
    * (`engine.ts`'s `isMultiplayerSession()` check), not here. */
   lootDrops: readonly LootDrop[] = [],
+  /** Every other living player, with their marker colour and whether they are
+   * calling for help — see `renderMinimap`'s own parameter. `[]` for
+   * single-player, so an omitted argument changes nothing. */
+  teammates: readonly TeammateMapMarker[] = [],
 ): void {
   const width = ctx.canvas.width;
   const height = ctx.canvas.height;
@@ -217,6 +232,44 @@ export function drawAutomap(
     const ex = vx0 + (map.exit.x - camX) * CELL_PX;
     const ey = vy0 + (map.exit.y - camY) * CELL_PX;
     ctx.fillRect(ex, ey, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
+  }
+
+  // Teammates, in their own per-player colour. Deliberately *not* gated on
+  // `map.visited`, unlike every other marker above: fog of war exists here to
+  // keep the level's own contents secret until you have walked them, and a
+  // teammate is a person rather than a piece of the level — their dot reveals
+  // nothing about the tiles around it. A coop map that hides your team is not
+  // doing its job. `[]` in single-player, so this loop is a no-op there.
+  for (const mate of teammates) {
+    const mx = vx0 + (mate.x - camX) * CELL_PX;
+    const my = vy0 + (mate.y - camY) * CELL_PX;
+    const dot = Math.max(4, CELL_PX + 1);
+    ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
+    ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
+    ctx.fillStyle = mate.color;
+    ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
+  }
+
+  // The sonar ring for anyone currently calling for help. The viewport is
+  // already clipped above, so unlike the minimap's this needs no clip of its
+  // own. `outlineRect` (four `fillRect`s), never `strokeRect` — this renderer
+  // is covered by `renderCost.test.ts` too.
+  const now = performance.now();
+  const helpPulse = 0.5 + 0.5 * Math.sin(now / 150);
+  const helpSweep = (now % HELP_PING_SWEEP_MS) / HELP_PING_SWEEP_MS;
+  ctx.lineWidth = 1;
+  for (const mate of teammates) {
+    if (!mate.helpPing) continue;
+    const cx = vx0 + (mate.x - camX) * CELL_PX;
+    const cy = vy0 + (mate.y - camY) * CELL_PX;
+    const base = Math.max(4, CELL_PX + 1) * (1 + 0.3 * helpPulse);
+    ctx.fillStyle = mate.color;
+    ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
+    const ring = base + 2 + helpSweep * HELP_PING_RING_GROWTH_PX;
+    ctx.strokeStyle = mate.color;
+    ctx.globalAlpha = 0.7 * (1 - helpSweep);
+    outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
+    ctx.globalAlpha = 1;
   }
 
   drawPlayerMarker(ctx, player, vx0, vy0, camX, camY, CELL_PX);

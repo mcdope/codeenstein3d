@@ -43,6 +43,18 @@ describe("buildControlsLegend", () => {
     expect(moveChip.classList.contains("controls-chip--gap")).toBe(false);
   });
 
+  it("lists the coop help ping on both the keyboard and the gamepad line", () => {
+    // Two separate places: the A/S/D/F Chip row, and the freeform gamepad
+    // string, which is a plain sentence rather than part of the ROWS table —
+    // easy to add a binding to one and forget the other.
+    const legend = buildControlsLegend();
+    const chips = Array.from(legend.querySelectorAll(".vkeyboard .controls-chip"));
+    const helpChip = chips.find((c) => c.textContent?.includes("call for help"))!;
+    expect(helpChip).toBeDefined();
+    expect(helpChip.querySelector(".key")!.textContent).toBe("G");
+    expect(legend.children[2].textContent).toContain("Y call for help");
+  });
+
   it("builds a fresh, independent element on every call", () => {
     const a = buildControlsLegend();
     const b = buildControlsLegend();

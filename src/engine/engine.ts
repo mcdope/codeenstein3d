@@ -52,6 +52,7 @@ import {
   projectVisibleMines,
   type BillboardJob,
   type OtherPlayerBillboard,
+  type TeammateMapMarker,
 } from "./sprites";
 import {
   drawCheatToast,
@@ -63,6 +64,7 @@ import {
   drawKillStreakToast,
   drawLoreOverlay,
   drawAcidOverflowToast,
+  drawHelpPingToast,
   drawLockedDoorToast,
   drawOutOfAmmoToast,
   drawPauseOverlay,
@@ -343,6 +345,22 @@ const KEY_PING_BEAT_FRAMES = 42;
  * denial thunk has finished rather than on top of it. The two are a sequence,
  * not a chord: the denial names what happened, the ping answers it. ~0.3s. */
 const KEY_PING_LEAD_FRAMES = 18;
+/** How long a coop help ping stays up on every teammate's map — the "should
+ * last for some seconds" of the request. A touch longer than the key ping's
+ * 4s: that one answers "which key", which is read at a glance, while this one
+ * is a summons somebody has to actually navigate to. ~5s at 60fps. */
+const HELP_PING_FRAMES = 300;
+/** Gap between audible calls while `helpPingFrames` runs. ~1s at 60fps —
+ * deliberately slower than `KEY_PING_BEAT_FRAMES` so a help ping and a key
+ * ping running at once read as two separate things rather than one stutter. */
+const HELP_PING_BEAT_FRAMES = 60;
+/** How long after calling for help before a player may call again. Outlives
+ * `HELP_PING_FRAMES` on purpose, so the cooldown is a real gap rather than
+ * merely "no overlapping pings" — this is a broadcast to everybody else's
+ * screen, and the one thing it must never become is spammable. ~8s at 60fps.
+ *
+ * Load-bearing for a second, less obvious reason: see `armHelpPings`. */
+const HELP_PING_COOLDOWN_FRAMES = 480;
 /**
  * How far outside a room's own rect still counts as "walked past it", for the
  * proximity key hint — in tiles, on every side.
@@ -843,6 +861,27 @@ interface PlayerState {
    * door one.
    */
   keyPingIsDoorHint: boolean;
+  /**
+   * Frames left on this player's coop "I need help" ping, the countdown to its
+   * next audible call, and the re-arm lockout.
+   *
+   * The one map marker in the game that is deliberately *not* local: unlike
+   * the `keyPing*` block above, these are armed on every peer's copy of every
+   * player, because a summons only nobody else can see is not a summons. They
+   * still stay out of `reconciliationSnapshot.ts`/`rosterSnapshot` like every
+   * other counter here — they are derived from the same `helpPing` input bit
+   * every peer already receives in the tick bundle, so all peers compute them
+   * identically without anything having to correct them.
+   */
+  helpPingFrames: number;
+  helpPingBeatFrames: number;
+  helpPingCooldownFrames: number;
+  /**
+   * Whether this player's `helpPing` input bit was set last tick — the edge
+   * latch that turns a level into a press. See `armHelpPings` for why reading
+   * the bit is not enough on its own.
+   */
+  helpPingWasDown: boolean;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -1801,6 +1840,25 @@ export class RaycasterEngine {
             }
           }
         },
+        /**
+         * Poses a teammate marker on the minimap and automap, optionally
+         * mid-help-ping.
+         *
+         * Exists because the two committed map screenshots in `doc/user/img/`
+         * are captured from a *single-player* engine, where the real roster
+         * has exactly one member — the viewer — and so
+         * `collectTeammateMapMarkers` correctly returns nothing. Standing up a
+         * whole WebRTC session inside a screenshot script to photograph two
+         * coloured dots would be far more machinery than the picture is worth.
+         *
+         * These markers are appended to the real ones rather than replacing
+         * them, and the array is only ever non-empty behind
+         * `isTestHooksActive()`, so a built bundle has neither the hook nor a
+         * branch testing for it.
+         */
+        debugSpawnTeammate: (mate: { x: number; y: number; color: string; helpPing?: boolean }) => {
+          this.debugTeammates.push({ x: mate.x, y: mate.y, color: mate.color, helpPing: mate.helpPing ?? false });
+        },
         /** Clears the level so a framed shot has no enemy wandering through it.
          * Composition, not determinism — the sim is already deterministic. */
         debugClearEnemies: () => {
@@ -1935,6 +1993,10 @@ export class RaycasterEngine {
       proximityHintedGates: new Set<number>(),
       proximityScanFrames: 0,
       keyPingIsDoorHint: false,
+      helpPingFrames: 0,
+      helpPingBeatFrames: 0,
+      helpPingCooldownFrames: 0,
+      helpPingWasDown: false,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -3058,6 +3120,14 @@ export class RaycasterEngine {
     // state too, same reasoning as the FPS toggle above.
     const cheat = local.input.consumeCheat();
     if (cheat) this.applyCheat(local, cheat);
+
+    // Coop help pings, for *every* player, drained here rather than down in
+    // the `state === "playing"` block below: the branches between here and
+    // there (`ablate=sim`, pause, an open lore overlay) all return early, and
+    // a `G` pressed during any of them would otherwise never be cleared from
+    // the local `InputController` — sticking `true` into every subsequent
+    // `captureSnapshot()` for the rest of the run.
+    this.armHelpPings();
     this.perf?.mark("input-poll");
 
     // `?ablate=sim`: the audit ladder's sim-off rung — input polling and
@@ -3672,6 +3742,7 @@ export class RaycasterEngine {
         acidTiles(this.map.acidOverflows, this.acidStates),
         textures.getStyle(this.map.styleSet).automapWall,
         local.keyPingFrames > 0 ? local.keyPingTarget : null,
+        this.collectTeammateMapMarkers(this.localPlayerId),
       );
       drawCompass(
         this.ctx,
@@ -3687,7 +3758,14 @@ export class RaycasterEngine {
     // Diablo-style automap overlay: drawn on top of the still-live 3D scene
     // (sim never stops for it, unlike `isPaused`/`loreText`) — see automap.ts.
     if (local.isMapActive && !this.ablated("hud")) {
-      drawAutomap(this.ctx, this.map, camera, this.levelTime, this.isMultiplayerSession() ? this.drops : []);
+      drawAutomap(
+        this.ctx,
+        this.map,
+        camera,
+        this.levelTime,
+        this.isMultiplayerSession() ? this.drops : [],
+        this.collectTeammateMapMarkers(this.localPlayerId),
+      );
     }
 
     // Crosshair stays visible (and on top of the automap, not dimmed by its
@@ -3751,6 +3829,13 @@ export class RaycasterEngine {
         this.map.gates[local.lockedDoorGateId]?.colorIndex ?? 1,
         local.lockedDoorBlockerGateId >= 0 ? (this.map.gates[local.lockedDoorBlockerGateId]?.colorIndex ?? -1) : -1,
       );
+    }
+    // A teammate calling for help. Top-left rather than a fourth centered
+    // toast row — see `drawHelpPingToast`. Only ever non-null in a coop
+    // session, since nothing arms a help ping outside one.
+    const caller = this.activeHelpPingCaller();
+    if (caller && !this.ablated("hud")) {
+      drawHelpPingToast(this.ctx, caller.name, caller.color, caller.frames / HELP_PING_FRAMES);
     }
     // Multiplayer-only (see `checkExit()`) — a quiet, standing readout
     // (unlike the transient toasts above) while any player counts down to
@@ -3848,6 +3933,62 @@ export class RaycasterEngine {
       "color:#e06aff;font-weight:bold",
     );
     return true;
+  }
+
+  /**
+   * Teammate markers staged by `debugSpawnTeammate`, for the doc screenshots.
+   * Always empty in real play — the hook that fills it does not exist outside
+   * a dev build. See that hook's doc comment.
+   */
+  private readonly debugTeammates: TeammateMapMarker[] = [];
+
+  /**
+   * Every other living, connected player, as a flat marker for the two map
+   * renderers.
+   *
+   * Needs no `isMultiplayerSession()` gate, unlike the loot drops next to it
+   * at the call site: in single-player `this.players` holds only the viewer,
+   * who is skipped, so this naturally returns an empty array — the same way
+   * `collectOtherPlayerBillboards` has always been called unconditionally.
+   *
+   * Colour comes from the same `colorForPlayer` the 3D billboard uses, which
+   * is the point: one player, one colour, whether you are looking at them
+   * across a room or at their dot on the map.
+   */
+  private collectTeammateMapMarkers(viewerId: PlayerId): TeammateMapMarker[] {
+    const markers: TeammateMapMarker[] = [];
+    for (const id of this.sortedPlayerIds()) {
+      if (id === viewerId) continue;
+      const p = this.players.get(id)!;
+      if (p.status !== "alive") continue;
+      markers.push({
+        x: p.player.posX,
+        y: p.player.posY,
+        color: colorForPlayer(id),
+        helpPing: p.helpPingFrames > 0,
+      });
+    }
+    for (const staged of this.debugTeammates) markers.push(staged);
+    return markers;
+  }
+
+  /**
+   * The teammate whose help ping the local player should be told about — the
+   * first one in id order, so every peer picks the same person when two call
+   * at once. `null` when nobody is calling, which is almost every frame and
+   * always in single-player.
+   *
+   * Never the local player themselves: you already know you pressed the key,
+   * and your own name on a "needs help" banner reads as a bug.
+   */
+  private activeHelpPingCaller(): { name: string; color: string; frames: number } | null {
+    for (const id of this.sortedPlayerIds()) {
+      if (id === this.localPlayerId) continue;
+      const p = this.players.get(id)!;
+      if (p.helpPingFrames <= 0) continue;
+      return { name: p.displayName, color: colorForPlayer(id), frames: p.helpPingFrames };
+    }
+    return null;
   }
 
   /** A living, connected teammate `viewerId` can see — never the viewer
@@ -3991,6 +4132,8 @@ export class RaycasterEngine {
       // this frame rather than idling one.
       this.cueNearbyKeyHint(p);
       this.tickKeyPing(p);
+      if (p.helpPingCooldownFrames > 0) p.helpPingCooldownFrames -= 1;
+      this.tickHelpPing(p);
     }
     tickBulletTraces(this.traces);
     tickFlameStreams(this.flameStreams);
@@ -5047,6 +5190,68 @@ export class RaycasterEngine {
     p.keyPingTarget = { x: candidate.x, y: candidate.y };
     p.keyPingBeatFrames = 0;
     p.keyPingIsDoorHint = false;
+  }
+
+  /**
+   * Arm the coop "I need help" ping for any player who pressed `G` this tick.
+   *
+   * Deliberately **not** gated on `p.id === this.localPlayerId`, which is the
+   * one thing separating this from `cueLockedDoorHint`/`cueNearbyKeyHint`
+   * above. Those are private hints and must never fire off a teammate's
+   * actions; this one exists precisely to reach everybody else's screen, and
+   * every peer arms every player from the same `helpPing` bit in the tick
+   * bundle, so all of them light up identically without a message of their
+   * own. Don't "fix" the missing gate back in.
+   *
+   * **Why the edge latch rather than just reading the bit.** In a multiplayer
+   * session every player's input — the local one included — is a
+   * `NetworkInputSource`, whose `consume*()` methods are non-clearing reads of
+   * the current frame rather than true consumers. On top of that,
+   * `InputDelayBuffer.finalize()` re-delivers the previous snapshot verbatim
+   * whenever a real packet is missing, so a single press genuinely arrives as
+   * `helpPing: true` on every held-fallback tick that follows it. Latching on
+   * the false->true transition makes one press one ping regardless;
+   * `HELP_PING_COOLDOWN_FRAMES` is then a design choice about spam rather than
+   * the only thing standing between a dropped packet and a siren that never
+   * stops.
+   */
+  private armHelpPings(): void {
+    for (const id of this.sortedPlayerIds()) {
+      const p = this.players.get(id)!;
+      // Read (and, in single-player, actually clear) before any of the skips
+      // below, so the flag can never bank across a pause or a dead spell.
+      const down = p.input.consumeHelpPing();
+      const pressed = down && !p.helpPingWasDown;
+      p.helpPingWasDown = down;
+      if (!pressed) continue;
+      // Single-player has nobody to call, so the press is drained and
+      // discarded rather than lighting up your own map.
+      if (!this.isMultiplayerSession()) continue;
+      if (this.state !== "playing" || p.status !== "alive") continue;
+      if (p.helpPingCooldownFrames > 0) continue;
+      p.helpPingFrames = HELP_PING_FRAMES;
+      p.helpPingBeatFrames = 0;
+      p.helpPingCooldownFrames = HELP_PING_COOLDOWN_FRAMES;
+    }
+  }
+
+  /** One frame of a live help ping: expiry, then the audible call on its own
+   * beat. Mirrors `tickKeyPing`, but runs for whichever player owns the ping
+   * rather than only the local one — a teammate's call is the whole point, and
+   * every peer has already armed the same player identically. */
+  private tickHelpPing(p: PlayerState): void {
+    if (p.helpPingFrames <= 0) return;
+    p.helpPingFrames -= 1;
+    if (p.helpPingFrames <= 0) {
+      p.helpPingBeatFrames = 0;
+      return;
+    }
+    if (p.helpPingBeatFrames > 0) {
+      p.helpPingBeatFrames -= 1;
+      return;
+    }
+    audio.playHelpPing();
+    p.helpPingBeatFrames = HELP_PING_BEAT_FRAMES;
   }
 
   private tickKeyPing(p: PlayerState): void {

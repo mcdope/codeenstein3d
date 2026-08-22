@@ -67,8 +67,11 @@ export class LocalInputSampler {
     this.controller.consumeInteract();
     // Drained but NOT neutralized below: a reload is a real simulation input,
     // so it has to reach every peer the same way `interact` does. Only the
-    // local-only concerns (escape/blur/pointerUnlock/click) get zeroed.
+    // local-only concerns (escape/blur/pointerUnlock/click) get zeroed. The
+    // coop help ping is the most shared input of the lot — its entire purpose
+    // is to appear on the *other* peers' maps — so it belongs here too.
     this.controller.consumeReload();
+    this.controller.consumeHelpPing();
     this.controller.consumeMelee();
     this.controller.consumeWheelSteps();
     this.controller.consumeFpsToggle();

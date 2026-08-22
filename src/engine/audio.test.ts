@@ -529,6 +529,7 @@ describe("AudioManager simple one-shot effects", () => {
     ["playAlarm", () => audio.playAlarm()],
     ["playLockedDoor", () => audio.playLockedDoor()],
     ["playKeyPing", () => audio.playKeyPing()],
+    ["playHelpPing", () => audio.playHelpPing()],
     ["playTeleport", () => audio.playTeleport()],
     ["playLevelComplete", () => audio.playLevelComplete()],
     ["playExplosion", () => audio.playExplosion()],
@@ -623,6 +624,28 @@ describe("AudioManager simple one-shot effects", () => {
     );
     expect(freqs[1]).toBeGreaterThan(freqs[0]); // rises, unlike the denial
     expect(freqs[0]).toBeGreaterThan(350); // and sits well above it
+  });
+
+  it("plays playHelpPing as an alternating square siren, out of the crowded falling-triangle band", () => {
+    // The separation that matters is from `playHit` (triangle, 165->55Hz, and
+    // by far the most frequent cue in the game), `playAcidOverflow` and
+    // `playLockedDoor` — all three are falling triangle glides down low. This
+    // one is squares that alternate back and down and back again, which
+    // nothing else here does.
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.playHelpPing();
+    expect(ctx.createOscillator).toHaveBeenCalledTimes(3);
+    const notes = ctx.createOscillator.mock.results.map((r) => r.value);
+    expect(notes.every((o: { type: string }) => o.type === "square")).toBe(true);
+    const freqs = notes.map((o: { frequency: { setValueAtTime: { mock: { calls: number[][] } } } }) =>
+      o.frequency.setValueAtTime.mock.calls.at(-1)![0],
+    );
+    expect(freqs[1]).toBeLessThan(freqs[0]); // down…
+    expect(freqs[2]).toBeGreaterThan(freqs[1]); // …and back up: an alternation, not a glide
+    expect(freqs[0]).toBe(freqs[2]);
+    expect(Math.min(...freqs)).toBeGreaterThan(165); // clear of playHit's top
+    expect(Math.max(...freqs)).toBeLessThan(659); // and of playKeyPing's bottom
   });
 
   it("plays a bigger arpeggio plus a noise burst for playUltraKill than playMultiKill", () => {

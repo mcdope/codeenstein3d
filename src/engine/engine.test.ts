@@ -131,6 +131,7 @@ class ScriptedInput implements InputSource {
   mapToggle = false;
   interact = false;
   reload = false;
+  helpPing = false;
   melee = false;
   meleeHeld = false;
   wheelSteps = 0;
@@ -182,6 +183,11 @@ class ScriptedInput implements InputSource {
   consumeReload(): boolean {
     const v = this.reload;
     this.reload = false;
+    return v;
+  }
+  consumeHelpPing(): boolean {
+    const v = this.helpPing;
+    this.helpPing = false;
     return v;
   }
   consumeMelee(): boolean {
@@ -511,6 +517,18 @@ describe("RaycasterEngine — construction", () => {
       expect(map.visited[3][3]).toBe(true); // the wall right against it
       expect(map.visited[0][0]).toBe(false); // untouched rock, two tiles clear
       expect(map.visited[11][11]).toBe(false);
+
+      // Poses a teammate for the two committed map screenshots. Same reason
+      // as the mine above: the real route needs a live coop session, which a
+      // screenshot script has no business standing up. `helpPing` defaults off
+      // so the plain dot and the calling one are both stageable.
+      hooks!.debugSpawnTeammate({ x: 5.5, y: 4.5, color: "#60a5fa" });
+      hooks!.debugSpawnTeammate({ x: 4.5, y: 5.5, color: "#f472b6", helpPing: true });
+      const staged = (engine as unknown as { debugTeammates: { helpPing: boolean }[] }).debugTeammates;
+      expect(staged).toEqual([
+        { x: 5.5, y: 4.5, color: "#60a5fa", helpPing: false },
+        { x: 4.5, y: 5.5, color: "#f472b6", helpPing: true },
+      ]);
 
       expect((hooks!.getEnemies() as { alive: boolean }[]).some((e) => e.alive)).toBe(true);
       hooks!.debugClearEnemies();
@@ -6739,5 +6757,169 @@ describe("RaycasterEngine — rollbacksRemaining (HUD badge only)", () => {
     expect(stats.rollbacksRemaining).toBe(0);
     expect(stats.health).toBe(55); // the rest of the carryover still applied
     engine.stop();
+  });
+});
+
+describe("RaycasterEngine — coop help ping", () => {
+  type PingState = {
+    helpPingFrames: number;
+    helpPingBeatFrames: number;
+    helpPingCooldownFrames: number;
+    helpPingWasDown: boolean;
+    status: string;
+  };
+
+  function players(engine: InstanceType<typeof RaycasterEngine>): Map<string, PingState> {
+    return (engine as unknown as { players: Map<string, PingState> }).players;
+  }
+
+  /** A coop engine: a non-default `localPlayerId` is what makes
+   * `isMultiplayerSession()` true — see its own doc comment. */
+  function coopEngine(input = new ScriptedInput()) {
+    const engine = new RaycasterEngine(
+      makeCanvas(),
+      fakeMap(),
+      makeHandlers(),
+      undefined,
+      undefined,
+      undefined,
+      1,
+      input,
+      undefined,
+      "host",
+    );
+    return { engine, input };
+  }
+
+  function silenceHelp() {
+    return vi.spyOn(audio, "playHelpPing").mockImplementation(() => {});
+  }
+
+  it("arms a ping for the player who pressed G, for HELP_PING_FRAMES", () => {
+    silenceHelp();
+    const { engine, input } = coopEngine();
+    input.helpPing = true;
+    engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingFrames).toBeGreaterThan(0);
+
+    for (let i = 0; i < 320; i++) engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingFrames).toBe(0);
+  });
+
+  it("arms a TEAMMATE's ping on this peer — the whole point, and the opposite of the key hint", () => {
+    // `cueLockedDoorHint` deliberately returns early for any non-local player,
+    // so a teammate's private hint never reaches your screen. A help ping must
+    // do exactly the reverse: every peer arms the caller identically, from the
+    // same input bit in the tick bundle.
+    silenceHelp();
+    const { engine } = coopEngine();
+    const mate = new ScriptedInput();
+    engine.addPlayer("guest", mate);
+
+    mate.helpPing = true;
+    engine.advance(0.016);
+
+    expect(players(engine).get("guest")!.helpPingFrames).toBeGreaterThan(0);
+    expect(players(engine).get("host")!.helpPingFrames).toBe(0);
+  });
+
+  it("plays the audible call on its own beat while the ping runs", () => {
+    const call = silenceHelp();
+    const { engine, input } = coopEngine();
+    input.helpPing = true;
+    engine.advance(0.016);
+    expect(call).toHaveBeenCalledTimes(1); // the first beat lands immediately
+
+    // 61 more, not 60: the beat counter is *reset* to HELP_PING_BEAT_FRAMES on
+    // the frame that fires, so the gap is 61 frames rather than 60.
+    for (let i = 0; i < 61; i++) engine.advance(0.016);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
+
+  it("edge-latches: a bit held true past the cooldown still only pings once", () => {
+    // The real hazard this guards. In multiplayer `consumeHelpPing()` is a
+    // non-clearing read of the current frame, and `InputDelayBuffer.finalize()`
+    // re-delivers the previous snapshot verbatim whenever a packet is missing —
+    // so one press genuinely arrives as `helpPing: true` on every held-fallback
+    // tick that follows. Re-setting the flag each frame reproduces that. The
+    // cooldown alone would not catch it: it expires at 480 frames, so without
+    // the latch the siren would simply restart there and never stop.
+    const call = silenceHelp();
+    const { engine, input } = coopEngine();
+
+    for (let i = 0; i < 600; i++) {
+      input.helpPing = true; // never released, exactly like a held fallback
+      engine.advance(0.016);
+    }
+
+    expect(players(engine).get("host")!.helpPingFrames).toBe(0);
+    // One ping's worth of beats (~300 frames at one per 60), not two pings'.
+    expect(call.mock.calls.length).toBeLessThanOrEqual(6);
+  });
+
+  it("re-arms on a genuine second press once the cooldown has expired", () => {
+    silenceHelp();
+    const { engine, input } = coopEngine();
+    input.helpPing = true;
+    engine.advance(0.016);
+
+    // Released, then pressed again while the lockout is still running.
+    for (let i = 0; i < 100; i++) engine.advance(0.016);
+    input.helpPing = true;
+    engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingCooldownFrames).toBeGreaterThan(0);
+    const midway = players(engine).get("host")!.helpPingFrames;
+
+    for (let i = 0; i < 500; i++) engine.advance(0.016);
+    expect(players(engine).get("host")!.helpPingCooldownFrames).toBe(0);
+    input.helpPing = true;
+    engine.advance(0.016);
+    const after = players(engine).get("host")!.helpPingFrames;
+    expect(after).toBeGreaterThan(midway);
+  });
+
+  it("does nothing in single-player, but still drains the flag", () => {
+    // Nobody to call. The press must not light up your own map — and must not
+    // bank either, or `captureSnapshot()` would report it true forever after.
+    const call = silenceHelp();
+    const { engine, input } = makeEngine(fakeMap());
+    input.helpPing = true;
+    engine.advance(0.016);
+
+    expect(input.helpPing).toBe(false);
+    expect(players(engine).get("local")!.helpPingFrames).toBe(0);
+    expect(call).not.toHaveBeenCalled();
+  });
+
+  it("still reaches the flag while paused, rather than banking it", () => {
+    // Why `armHelpPings()` runs before `simulate()`'s early returns: the pause
+    // branch returns before the `state === "playing"` block, so a G pressed
+    // while paused would otherwise never be cleared from the controller and
+    // would sit `true` in every later `captureSnapshot()`.
+    //
+    // Pausing is deliberately not treated as a reason to refuse the call. It
+    // cannot arise in a real coop session anyway — the input layer neutralizes
+    // `escape` for a networked peer (multiplayer-netcode-spec.md §6) — so a
+    // branch for it would be untestable dead weight in shipped play.
+    silenceHelp();
+    const { engine, input } = coopEngine();
+    input.escape = true;
+    engine.advance(0.016); // now paused
+
+    input.helpPing = true;
+    engine.advance(0.016);
+    expect(input.helpPing).toBe(false);
+  });
+
+  it("does not arm for a dead player", () => {
+    silenceHelp();
+    const { engine } = coopEngine();
+    const mate = new ScriptedInput();
+    engine.addPlayer("guest", mate);
+    players(engine).get("guest")!.status = "dead";
+
+    mate.helpPing = true;
+    engine.advance(0.016);
+    expect(players(engine).get("guest")!.helpPingFrames).toBe(0);
   });
 });

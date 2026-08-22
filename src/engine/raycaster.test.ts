@@ -19,6 +19,7 @@ import {
   type Tile,
 } from "../map/types";
 import { Player } from "./player";
+import type { TeammateMapMarker } from "./sprites";
 import type { LevelStyle, TextureBitmap, TextureSet } from "./textures";
 
 // raycaster.ts imports a real *value* (LORE_BASE) from textures.ts, whose
@@ -719,6 +720,70 @@ describe("renderMinimap", () => {
       };
       expect(ringWidthAt(0)).not.toBeCloseTo(ringWidthAt(450), 3);
       vi.restoreAllMocks();
+    });
+  });
+
+  describe("teammate markers", () => {
+    /** Everything defaulted except the trailing `teammates`. */
+    function render(c: MockCanvasContext, map: GameMap, player: Player, mates: TeammateMapMarker[]): void {
+      renderMinimap(asCtx(c), map, player, 0, 70, new Set(), 0, [], [], undefined, null, mates);
+    }
+
+    const mate = (over: Partial<TeammateMapMarker> = {}): TeammateMapMarker => ({
+      x: 6,
+      y: 5,
+      color: "#60a5fa",
+      helpPing: false,
+      ...over,
+    });
+
+    it("draws nothing extra with no teammates — an omitted argument is single-player", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+
+      const cNone = ctx();
+      render(cNone, map, player, []);
+      const cOmitted = ctx();
+      renderMinimap(asCtx(cOmitted), map, player);
+
+      expect(cNone.fillRect.mock.calls.length).toBe(cOmitted.fillRect.mock.calls.length);
+    });
+
+    it("draws a dot plus its dark surround for each teammate", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+
+      const cNone = ctx();
+      render(cNone, map, player, []);
+      const cOne = ctx();
+      render(cOne, map, player, [mate()]);
+
+      // Surround + dot, so two fills per teammate — the surround is what keeps
+      // a green teammate from reading as the exit marker.
+      expect(cOne.fillRect.mock.calls.length).toBe(cNone.fillRect.mock.calls.length + 2);
+    });
+
+    it("wraps a help-pinging teammate in a four-sided ring, clipped to the panel", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+
+      const cQuiet = ctx();
+      render(cQuiet, map, player, [mate()]);
+      const cCalling = ctx();
+      render(cCalling, map, player, [mate({ helpPing: true })]);
+
+      // One brightened re-fill + `outlineRect`'s four edge bars.
+      expect(cCalling.fillRect.mock.calls.length).toBe(cQuiet.fillRect.mock.calls.length + 5);
+      expect(cCalling.strokeRect).not.toHaveBeenCalled();
+      expect(cCalling.clip).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not clip when nobody is calling — no ring, no cost", () => {
+      const map = fullMap();
+      const player = centeredPlayer(map);
+      const c = ctx();
+      render(c, map, player, [mate()]);
+      expect(c.clip).not.toHaveBeenCalled();
     });
   });
 });

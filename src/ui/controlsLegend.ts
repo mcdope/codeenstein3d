@@ -81,6 +81,7 @@ const ROWS: Chip[][] = [
     { keys: ["S"], label: "move" },
     { keys: ["D"], label: "strafe" },
     { keys: ["F"], label: "read / open", gapBefore: true },
+    { keys: ["G"], label: "call for help (coop)" },
   ],
   [
     { keys: ["Shift"], label: "sprint" },
@@ -112,7 +113,7 @@ export function buildControlsLegend(): HTMLElement {
   const gamepad = document.createElement("span");
   gamepad.className = "controls-chip controls-chip--freeform";
   gamepad.textContent =
-    "🎮 sticks move/turn · RT fire · bumpers cycle · R3/B melee · X reload · A interact · L3 sprint";
+    "🎮 sticks move/turn · RT fire · bumpers cycle · R3/B melee · X reload · A interact · Y call for help · L3 sprint";
   legend.appendChild(gamepad);
 
   return legend;

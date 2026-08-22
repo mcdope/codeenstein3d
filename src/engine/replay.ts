@@ -333,6 +333,7 @@ export const EMPTY_SNAPSHOT: InputSnapshot = {
   mapToggle: false,
   interact: false,
   reload: false,
+  helpPing: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,
@@ -397,6 +398,10 @@ export class ReplayPlaybackInput implements InputSource {
 
   consumeMapToggle(): boolean {
     return this.current.mapToggle;
+  }
+
+  consumeHelpPing(): boolean {
+    return this.current.helpPing;
   }
 
   consumeInteract(): boolean {

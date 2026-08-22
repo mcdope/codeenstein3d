@@ -238,6 +238,27 @@ export interface OtherPlayerBillboard {
   name: string;
 }
 
+/**
+ * The same teammate, reduced to what the two map renderers need: a position in
+ * tile space, their marker colour, and whether they are currently calling for
+ * help.
+ *
+ * Deliberately a flat value type rather than a `PlayerState`: `renderMinimap`
+ * and `drawAutomap` are pure drawing functions that know nothing about the
+ * roster, and handing them engine state would be the first time either did.
+ * The `color` is the same one `OtherPlayerBillboard` carries, from the same
+ * `colorForPlayer` call — which is what makes the comment above true rather
+ * than aspirational.
+ */
+export interface TeammateMapMarker {
+  x: number;
+  y: number;
+  color: string;
+  /** True while this player's coop help ping is live — the marker is drawn
+   * brightened and wrapped in a sonar ring, rather than as a plain dot. */
+  helpPing: boolean;
+}
+
 /** Collect every other connected, living player as a billboard draw job,
  * occluded by the wall z-buffer — the same vertical-stripe fill
  * `collectEnemyBillboards` uses, tinted per player instead of by hit-flash/

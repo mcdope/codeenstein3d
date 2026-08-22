@@ -23,7 +23,7 @@ import {
 } from "../map/types";
 import type { Player } from "./player";
 import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
-import { EDGE_CASE_COLOR, enemyColor } from "./sprites";
+import { EDGE_CASE_COLOR, enemyColor, type TeammateMapMarker } from "./sprites";
 import { gateIdAt } from "../map/gates";
 import { LORE_BASE, type LevelStyle, type TextureBitmap } from "./textures";
 import { activeSpikeTileKeys } from "./traps";
@@ -966,6 +966,20 @@ const PING_SWEEP_MS = 900;
  * busiest. */
 const PING_RING_GROWTH_PX = 10;
 
+/** How far a *help* ping's ring grows over one sweep. Larger than the key
+ * ping's, because the two are not equals: a key ping answers a question you
+ * asked, while this is another player shouting. The wider sweep is what makes
+ * it read as louder at a glance on a panel this small. */
+const HELP_PING_RING_GROWTH_PX = 16;
+
+/** Outline drawn around every teammate dot, in the panel's own backing tone.
+ * Load-bearing rather than decorative: `PLAYER_COLORS` contains a green
+ * (`#4ade80`) sitting right next to the exit marker's `#41ff6e`, and an amber
+ * (`#fbbf24`) next to the uncollected-key gold `#f2d64b`. Hue alone therefore
+ * cannot be trusted to say "that is a person, not a place" — the surround is
+ * what separates them, so a teammate never reads as an exit you can walk to. */
+const TEAMMATE_OUTLINE_COLOR = "rgba(4,8,10,0.85)";
+
 /**
  * Small top-left minimap: walls, discovered enemies, traps, and the player's
  * exact position and facing. Useful for confirming movement, collision, and
@@ -1005,6 +1019,11 @@ export function renderMinimap(
    * the overwhelming majority of frames, and for every caller that doesn't
    * care, so an omitted argument is indistinguishable from no ping running. */
   pingedKey: Point | null = null,
+  /** Every other living player, with their marker colour and whether they are
+   * calling for help. Multiplayer-only in practice — the engine's collector
+   * returns `[]` when the roster is just the viewer — so an omitted argument
+   * is indistinguishable from a single-player run. */
+  teammates: readonly TeammateMapMarker[] = [],
 ): MinimapPanelRect {
   const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
   const w = map.width * cell;
@@ -1213,6 +1232,54 @@ export function renderMinimap(
   }
 
   ctx.globalAlpha = 1;
+
+  // Teammates, in their own per-player colour — the same one their billboard
+  // and name label use in the 3D view. Drawn after the `globalAlpha` reset
+  // above deliberately: these are people, not scenery, and must not inherit
+  // the enemy loop's fade. Ungated by `map.visited`, unlike the loot drops
+  // above — the fog rule is there to stop the *level* leaking (a disconnect's
+  // loot advertising a room nobody has entered), and a teammate's own position
+  // says nothing about the tiles around them. `[]` in single-player.
+  for (const mate of teammates) {
+    const mx = pad + mate.x * cell;
+    const my = pad + mate.y * cell;
+    const dot = Math.max(3, cell + 1);
+    ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
+    ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
+    ctx.fillStyle = mate.color;
+    ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
+  }
+
+  // …and the sonar ring for whichever of them is calling for help. Same shape
+  // as the key ping above (bright fill, sawtooth outward sweep, clipped to the
+  // panel) but in the caller's colour and sweeping wider, so "somebody needs
+  // you" and "the key is over there" never read as the same event.
+  const helpCallers = teammates.filter((mate) => mate.helpPing);
+  if (helpCallers.length > 0) {
+    const now = performance.now();
+    const pulse = 0.5 + 0.5 * Math.sin(now / 150);
+    const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(panel.x, panel.y, panel.w, panel.h);
+    ctx.clip();
+    ctx.lineWidth = 1;
+    for (const mate of helpCallers) {
+      const cx = pad + mate.x * cell;
+      const cy = pad + mate.y * cell;
+      const base = Math.max(3, cell + 1) * (1 + 0.3 * pulse);
+      ctx.fillStyle = mate.color;
+      ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
+      const ring = base + 2 + sweep * HELP_PING_RING_GROWTH_PX;
+      // `outlineRect` (four `fillRect`s), never `strokeRect` — see
+      // `renderCost.test.ts`.
+      ctx.strokeStyle = mate.color;
+      ctx.globalAlpha = 0.7 * (1 - sweep);
+      outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+  }
 
   // Player: a solid, bright triangle at the exact position pointing along the
   // facing direction — unmistakably distinct from every other marker color.

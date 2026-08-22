@@ -17,6 +17,7 @@ class ScriptedInput implements InputSource {
   mapToggle = false;
   interact = false;
   reload = false;
+  helpPing = false;
   melee = false;
   meleeHeld = false;
   wheelSteps = 0;
@@ -68,6 +69,11 @@ class ScriptedInput implements InputSource {
   consumeReload(): boolean {
     const v = this.reload;
     this.reload = false;
+    return v;
+  }
+  consumeHelpPing(): boolean {
+    const v = this.helpPing;
+    this.helpPing = false;
     return v;
   }
   consumeMelee(): boolean {
@@ -132,6 +138,7 @@ class ScriptedInput implements InputSource {
       mapToggle: this.mapToggle,
       interact: this.interact,
       reload: this.reload,
+      helpPing: this.helpPing,
       melee: this.melee,
       meleeHeld: this.meleeHeld,
       wheelSteps: this.wheelSteps,
@@ -183,6 +190,23 @@ describe("LocalInputSampler", () => {
     expect(second.mouseDX).toBe(0);
     expect(second.wheelSteps).toBe(0);
     expect(second.interact).toBe(false);
+  });
+
+  it("drains helpPing but keeps it in the shared stream, like interact and reload", () => {
+    // If the sampler forgot to drain it, a single G press would be re-sent as
+    // `true` on every subsequent tick and the siren would never stop; if it
+    // neutralized it the way it does escape/blur/click, the ping would never
+    // leave the caller's own machine, which is the entire feature.
+    const controller = new ScriptedInput();
+    controller.helpPing = true;
+    const sampler = new LocalInputSampler(controller);
+
+    const { snapshot: first } = sampler.sampleAndReset();
+    expect(first.helpPing).toBe(true);
+    expect(controller.helpPing).toBe(false);
+
+    const { snapshot: second } = sampler.sampleAndReset();
+    expect(second.helpPing).toBe(false);
   });
 
   it("forces escape/blur/pointerUnlock/click to false even when the controller reports them true", () => {
