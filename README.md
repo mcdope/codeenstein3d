@@ -141,7 +141,7 @@ Each stage only consumes the data structure from the previous stage — language
 - **Guarded rooms** — a private/protected method's pack puts a heavier gatekeeper up front with lighter escorts behind, at the same total room HP
 
 ### Player Combat
-- **7 weapons** — echo pistol (hitscan), Regex Shotgun (pellet cone), gdb (auto, low damage), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, full damage to 2.5 tiles decaying to nothing at 6.5), SIGKILL Knife (instant melee, infinite ammo), Toolchain (unlockable full-auto chainsaw that permanently replaces the knife)
+- **7 weapons** — echo pistol (hitscan), Regex Shotgun (pellet cone), gdb (full-auto, highest sustained rate of fire, least damage per round), ghidra (slow rocket, splash damage), Friday Hotfix (auto flamethrower, full damage to 2.5 tiles decaying to nothing at 6.5), SIGKILL Knife (instant melee, infinite ammo), Toolchain (unlockable full-auto chainsaw that permanently replaces the knife)
 - **Ammo pools** — Bullets (echo pistol), Shells (Regex Shotgun), SMG (gdb), Rockets (ghidra), and Gas (Friday Hotfix), with sparse map pickups as a backup; gdb/ghidra/Friday Hotfix's own pools only drop/spawn once each weapon is unlocked
 - **Magazines & reloading** — every gun but the flamethrower holds a magazine (9 pistol, 2 shells, 45 gdb, 1 rocket) and reloads on `R` or automatically when it runs dry; a reload only ever *moves* ammo, and switching weapons cancels it
 - **Swap buffer** — absorbs damage 1:1 before health, capped at 100

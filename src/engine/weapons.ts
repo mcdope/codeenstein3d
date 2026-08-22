@@ -272,7 +272,35 @@ export const WEAPONS: readonly Weapon[] = [
     // inert nonzero value implying a pellet cone that was never actually
     // applied.
     spreadPx: 0,
-    damagePerPellet: 12,
+    // 12 -> 16. At 12 this weapon was strictly dominated by the pistol you
+    // start the campaign with: 12/0.09s = 133 DPS against the pistol's
+    // 22/0.15s = 147, out of a *later* unlock, while also carrying the longest
+    // reload of the three bullet weapons and the worst damage-per-round in the
+    // game. A level-4 unlock that kills slower than the level-1 weapon has
+    // nothing left to offer but trigger convenience. The enemy HP pass
+    // (`HP_PER_COMPLEXITY` 25 -> 35, Edge Cases 25-35 instead of 10-15) widened
+    // it further: gdb needs three rounds on every Edge Case in the 25-35 band,
+    // where the pistol needs two.
+    //
+    // At 16 it lands 178 DPS, ~1.21x the pistol and ~0.86x the shotgun's 206,
+    // which puts it ahead of the pistol in time-to-kill at every HP band
+    // without reaching the shotgun's point-blank burst: a 105 HP regular drops
+    // in 7 rounds instead of 9, a 175 HP one in 11 instead of 15. Note the
+    // Edge Case band is only partly fixed — 16 two-shots 25-32 HP but the top
+    // three values still take three rounds. Closing that entirely would need
+    // 18, which lands within 3% of the shotgun's DPS and collapses the two
+    // weapons into one. Same shape as the shotgun's 18 -> 25 above, and for
+    // the same reason: a cadence-capped weapon sitting at pistol parity has no
+    // reason to be picked.
+    //
+    // The lever is damage, not `fireIntervalSec` — the 0.09s cadence is what
+    // makes the 45-round magazine "about four seconds of held trigger" (see
+    // `magazineSize` below), so speeding it up would spend that identity to
+    // fix a damage complaint. Ammo economy is deliberately untouched too:
+    // 16 damage per round is still the least efficient in the game (pistol 22,
+    // shotgun 175 a shell), which is exactly what the 21-round `SMG_DROP_AMOUNT`
+    // is sized against.
+    damagePerPellet: 16,
     ammoPerShot: 1,
     ammoType: "smg",
     // 45 rounds at ~11/sec is about four seconds of held trigger, against the

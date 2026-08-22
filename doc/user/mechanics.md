@@ -45,7 +45,7 @@ Corridors aren't left as bare tubes. Rooms are placed next to each other, so the
 | echo pistol | 1 | Hitscan, ~6.6 shots/sec | 9 rounds | Starting weapon |
 | Regex Shotgun | 2 | 7-pellet cone, pump-action (one blast per 0.85s) | 2 shells | Starting weapon |
 | SIGKILL Knife | `Space` only | Melee | — | Starting weapon, infinite ammo, heals 1 HP per kill, not on the number row |
-| gdb | 3 | Full-auto hitscan | 45 rounds | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
+| gdb | 3 | Full-auto hitscan, ~11 shots/sec — out-damages the pistol per second, but takes far more rounds to do it | 45 rounds | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 4 |
 | ghidra | 4 | Rocket / splash damage | 1 rocket | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 8 |
 | Friday Hotfix | 5 | Full-auto 6-pellet cone; full damage to 2.5 tiles, thinning out to nothing by 6.5 | none — it never reloads | Unlocked by an Elite kill's high-odds bonus drop, a rare drop from any kill, or forced at campaign level 12 |
 | Toolchain | `Space` only | Full-auto melee | — | Infinite ammo, 2× the knife's damage, a bigger lifesteal heal, fires as long as you hold the key — permanently replaces the knife on Space once picked up. Found in a secret room, dropped by an Elite kill, or a small chance on any regular kill whose loot roll comes up empty — all gated to campaign level 4 on; **no forced unlock** — a loot-unlucky run can still finish without ever finding it |

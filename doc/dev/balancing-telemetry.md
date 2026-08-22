@@ -624,7 +624,7 @@ so "wholesale" is enforced rather than claimed. See
 | 0 | echo pistol | 22 | 1 | 0 | 0.15 s | — | 1 | bullets | 9 / 1.1 s | hitscan | — | — |
 | 1 | Regex Shotgun | 25 | 7 | 70 | 0.85 s | — | 1 | **shells** | 2 / 1.2 s | hitscan | — | — |
 | 2 | SIGKILL Knife | 40 | 1 | 0 | (default 0.15 s) | — | 0 | *none* | — | melee | `meleeRange` 1.5 | 1 |
-| 3 | gdb | 12 | 1 | 0 | 0.09 s | yes | 1 | smg | 45 / 2.0 s | hitscan | — | — |
+| 3 | gdb | 16 | 1 | 0 | 0.09 s | yes | 1 | smg | 45 / 2.0 s | hitscan | — | — |
 | 4 | ghidra | 150 | 1 | 0 | 1.1 s | — | 1 | rockets | 1 / 1.6 s | **projectile** | blast 2.6 | — |
 | 5 | Friday Hotfix | 8 | 6 | 45 | 0.1 s | yes | 2.5 | gas | *none* | hitscan | full to 2.5, zero at `maxRange` 6.5 | — |
 | 6 | Toolchain | 80 | 1 | 0 | 0.35 s | yes | 0 | *none* | — | melee | `meleeRange` 1.5 | 3 |
@@ -934,16 +934,20 @@ it is worth precomputing here because the current values are not intuitive:
 | Weapon | dmg/trigger | ammo/shot | **dmg per ammo unit** | dps |
 |---|---|---|---|---|
 | echo pistol | 22 | 1 | **22.0** | 147 |
-| Regex Shotgun | 175 (7×25) | 4 | **43.8** | 206 |
-| gdb | 12 | 1 | **12.0** | 133 |
+| Regex Shotgun | 175 (7×25) | 1 | **175.0** | 206 |
+| gdb | 16 | 1 | **16.0** | 178 |
 | ghidra | 150 | 1 | **150.0** | 136 |
 | Friday Hotfix | 48 (6×8) | 2.5 | **19.2** | 480 |
 
 Read against §1.3's drop weights this already predicts something the solver should
-confirm per level: the shotgun is twice as ammo-efficient as the pistol *out of the
-same pool*, so a bullets-starved level should be shot-gunned, while gdb's own pool
-is fed by 21-round drops precisely because it is the least efficient per round.
-These are the perfect-accuracy figures — §4.4.
+confirm per level: every weapon now draws its own pool, so efficiency no longer
+decides *which* pool to spend — it decides how far a given pool goes. gdb is the
+least efficient per round in the game by a wide margin, which is exactly why its
+own pool is fed by 21-round drops where bullets drop 4. Its 16 damage a round
+also sits deliberately between the pistol's 22 and the shotgun's 175 a shell:
+enough rate of fire to out-damage the pistol per second (178 dps against 147),
+paid for by needing far more rounds to do it. These are the perfect-accuracy
+figures — §4.4.
 
 ### 2.2 Loot economy
 
@@ -1573,8 +1577,8 @@ Three things fall straight out, and all three are actionable:
 ```
 weapon           dmg/trigger   ammo   dmg/ammo   dps     pool
 echo pistol           22        1.0      22.0    147     bullets
-Regex Shotgun        175        4.0      43.8    206     bullets   ← 2.0x the pistol, same pool
-gdb                   12        1.0      12.0    133     smg
+Regex Shotgun        175        1.0     175.0    206     shells    ← 8.0x the pistol, own pool
+gdb                   16        1.0      16.0    178     smg       ← least efficient per round, by design
 ghidra               150        1.0     150.0    136     rockets
 Friday Hotfix         48        2.5      19.2    480     gas
 SIGKILL Knife         40         --        inf   267     --
