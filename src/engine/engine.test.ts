@@ -1760,7 +1760,10 @@ describe("RaycasterEngine — locked-door hint", () => {
   /** A locked door directly east of spawn, so plain `KeyW` walks into it. The
    * door belongs to gate 0, which is what the hint now names and pings. */
   function lockedDoorMap(overrides: Partial<GameMap> = {}): GameMap {
-    const size = 12;
+    // Larger than the 12 these started at: `FAR_KEY` has to sit outside
+    // `KEY_HINT_RADIUS` so the proximity trigger stays out of tests that are
+    // about the door, and 9 tiles of clearance does not fit in a 12x12 room.
+    const size = 32;
     const g = walledRoom(size);
     g[5][7] = DOOR_TILE;
     return fakeMap(
@@ -1777,9 +1780,9 @@ describe("RaycasterEngine — locked-door hint", () => {
   /** Far enough from spawn that `collectKeys` never picks it up mid-test, and
    * — since the proximity hint shipped — far enough that walking past it does
    * not arm a ping of its own. These tests isolate the *door* trigger; the
-   * proximity one has its own describe block below. 5.66 tiles out, against a
-   * `KEY_HINT_RADIUS` of 4.5. */
-  const FAR_KEY: KeyItem = { x: 1.5, y: 1.5, collected: false, gateId: 0 };
+   * proximity one has its own describe block below. ~20 tiles out, against a
+   * `KEY_HINT_RADIUS` of 9. */
+  const FAR_KEY: KeyItem = { x: 1.5, y: 25.5, collected: false, gateId: 0 };
 
   function doorLogs(log: { mock: { calls: unknown[][] } }): unknown[][] {
     return log.mock.calls.filter((c: unknown[]) => typeof c[0] === "string" && c[0].includes("[door] locked"));
@@ -2183,8 +2186,11 @@ describe("RaycasterEngine — proximity key hint", () => {
   });
 
   it("stays silent for a key that is too far away to have been noticed", () => {
-    const key: KeyItem = { x: 1.5, y: 1.5, collected: false, gateId: 0 };
-    const { engine } = makeEngine(openMap({ keys: [key], rooms: [] }));
+    // Needs a map with more than `KEY_HINT_RADIUS` of clearance in it.
+    const size = 32;
+    const key: KeyItem = { x: 1.5, y: 25.5, collected: false, gateId: 0 };
+    const map = fakeMap({ grid: walledRoom(size), spawn: { x: 5, y: 5 }, keys: [key], rooms: [] }, size);
+    const { engine } = makeEngine(map);
     silencePing();
 
     engine.advance(0.016);

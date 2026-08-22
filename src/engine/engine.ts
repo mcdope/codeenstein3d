@@ -350,9 +350,10 @@ const KEY_PING_LEAD_FRAMES = 18;
  * The hint is for the key you never saw, so the trigger has to fire from the
  * corridor *outside* the room rather than only once you are standing in it: by
  * the time you have walked in, you have already seen the thing. Roughly a tile
- * of corridor plus the doorway.
+ * of corridor plus the doorway — doubled from 1.5 after playtesting, which found
+ * the original fired only once you were nearly in the doorway already.
  */
-const KEY_HINT_ROOM_MARGIN = 1.5;
+const KEY_HINT_ROOM_MARGIN = 3;
 /**
  * Straight-line fallback radius, in tiles, for a key that is not inside any
  * `map.rooms` rect.
@@ -360,11 +361,14 @@ const KEY_HINT_ROOM_MARGIN = 1.5;
  * Measured across the demo campaign, 20 of 25 keys sit in a room, 4 in
  * corridors and 1 in another rect type — so this branch is the minority case,
  * but without it a level like `stage16_hardware.h`, whose only key lies in a
- * corridor, would never hint at all. Comparable to the range at which a mine
- * reveals itself (4.5), for the same reason: it is about what you could
- * plausibly have noticed in passing.
+ * corridor, would never hint at all.
+ *
+ * Doubled from 4.5 after playtesting: a key with no room around it has no
+ * doorway to walk past either, so the only thing that can announce it is
+ * distance, and half a corridor's length turned out to be too late to read as
+ * "you went by this".
  */
-const KEY_HINT_RADIUS = 4.5;
+const KEY_HINT_RADIUS = 9;
 /**
  * Frames between proximity scans — 15, i.e. four a second.
  *
