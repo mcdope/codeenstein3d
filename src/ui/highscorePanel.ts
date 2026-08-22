@@ -52,7 +52,7 @@ export function renderHighscoreTable(
 
   const thead = document.createElement("thead");
   thead.innerHTML =
-    '<tr><th>#</th><th class="wrap">Player</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
+    '<tr><th>#</th><th class="wrap">Player</th><th>Score</th><th class="wrap">Campaign</th><th>Lines</th><th>Complexity</th><th>Levels</th><th title="Rollbacks spent">RB</th><th class="wrap">Ended On</th><th>Hash</th><th>Replay</th></tr>';
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -95,6 +95,21 @@ export function renderHighscoreTable(
 
     const levels = document.createElement("td");
     levels.textContent = String(entry.levelsCleared);
+
+    // Marks a continued run rather than ranking it: the board has never
+    // carried a difficulty, so it cannot claim two rows are comparable — this
+    // says what a row did, and leaves the judging to whoever reads it. Same
+    // absent-vs-zero split as the two codebase columns above, and it matters
+    // more here: "—" means recorded before rollbacks existed, "0" means the
+    // run had them and spent none.
+    const rollbacks = document.createElement("td");
+    if (typeof entry.rollbacksUsed === "number") {
+      rollbacks.textContent = String(entry.rollbacksUsed);
+      if (entry.rollbacksUsed > 0) rollbacks.title = "Restarted a level from its entry state";
+    } else {
+      rollbacks.className = "muted";
+      rollbacks.textContent = "—";
+    }
 
     const level = document.createElement("td");
     level.className = "wrap";
@@ -139,7 +154,7 @@ export function renderHighscoreTable(
       if (hasReplay) replay.title = "Recorded before a gameplay change — it would no longer match this score.";
     }
 
-    row.append(rank, player, score, campaign, loc, complexity, levels, level, hash, replay);
+    row.append(rank, player, score, campaign, loc, complexity, levels, rollbacks, level, hash, replay);
     tbody.appendChild(row);
   });
   table.appendChild(tbody);

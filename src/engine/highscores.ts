@@ -42,6 +42,13 @@ export interface HighscoreEntry {
   /** The file the run ended on — died on, or the last one cleared before the
    * campaign ran out of files. */
   levelName: string;
+  /** How many rollbacks this run spent restarting a level it died on, when
+   * it spent any. Absent on a clean run *and* on every entry recorded before
+   * rollbacks existed, deliberately the same case: a stored `0` would claim
+   * to know something about a run that predates the question. The board has
+   * never carried a difficulty either, so this marks a run rather than making
+   * two rows comparable — see the display note in `renderHighscoreTable`. */
+  rollbacksUsed?: number;
   /** How many levels were actually cleared before the run ended. Never `0` —
    * dying on the very first level (0 cleared) isn't recorded at all, see
    * `recordRunHighscore` in `main.ts`. */
@@ -221,6 +228,7 @@ function isHighscoreEntry(value: unknown): value is HighscoreEntry {
     typeof v.hash === "string" &&
     typeof v.achievedAt === "number" &&
     (v.codebaseLinesOfCode === undefined || typeof v.codebaseLinesOfCode === "number") &&
-    (v.codebaseComplexity === undefined || typeof v.codebaseComplexity === "number")
+    (v.codebaseComplexity === undefined || typeof v.codebaseComplexity === "number") &&
+    (v.rollbacksUsed === undefined || typeof v.rollbacksUsed === "number")
   );
 }

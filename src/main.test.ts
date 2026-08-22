@@ -563,6 +563,8 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
       weaponIndex: 1,
       ownedWeapons: [0, 1, 2],
       levelIndex: 2,
+      rollbacksRemaining: 2,
+      rollbacksUsed: 0,
     });
     expect(loadCampaignSave()).toEqual({
       workspaceName: "ws",
@@ -578,6 +580,8 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
       weaponIndex: 1,
       ownedWeapons: [0, 1, 2],
       levelIndex: 2,
+      rollbacksRemaining: 2,
+      rollbacksUsed: 0,
     });
   });
 
@@ -686,6 +690,8 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
       weaponIndex: 0,
       ownedWeapons: [],
       levelIndex: 1,
+      rollbacksRemaining: 2,
+      rollbacksUsed: 0,
     });
     const tabContinue = document.querySelector<HTMLButtonElement>("#tab-continue")!;
     tabContinue.style.display = "";
@@ -728,6 +734,8 @@ describe("main.ts — campaign persistence (loadCampaignSave/saveCampaign/clearC
         weaponIndex: 0,
         ownedWeapons: [],
         levelIndex: 1,
+        rollbacksRemaining: 2,
+        rollbacksUsed: 0,
       }),
     ).not.toThrow();
     expect(warnSpy).toHaveBeenCalledWith("[continue] Failed to save campaign progress:", expect.any(Error));
@@ -5715,6 +5723,21 @@ function testHooks(): TestHooks | undefined {
   return (window as unknown as { __codeensteinTestHooks?: TestHooks }).__codeensteinTestHooks;
 }
 
+interface RollbackState {
+  remaining: number;
+  used: number;
+  granted: number;
+}
+
+/** The app shell's resolved rollback state — see `getRollbackState` in
+ * `main.ts`. Installed at module import under `?testHooks=1`, so unlike
+ * `testHooks()` it is available before any engine exists. */
+function rollbackState(): RollbackState | undefined {
+  return (
+    window as unknown as { __codeensteinCampaignTestHooks?: { getRollbackState: () => RollbackState } }
+  ).__codeensteinCampaignTestHooks?.getRollbackState();
+}
+
 /** Flips `window.location.search` to include `?testHooks=1` before a level
  * is launched — the only way `RaycasterEngine`'s constructor exposes
  * `window.__codeensteinTestHooks` (see its own doc comment). Must be called
@@ -6400,9 +6423,160 @@ describe("main.ts — reaching a natural game over via real navigation", () => {
     }
 
     expect(testHooks()?.getPlayerState().state).toBe("over");
-    expect(logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry.")).toBe(true);
+
+    // Death is no longer the end of the run on its own: the panic screen now
+    // offers a rollback first, and nothing is recorded until the player
+    // actually declines it.
+    expect(
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
+    ).toBe(false);
+
+    // Escape is "Give up" on a two-button panic screen — that ends the run
+    // for real, and the level-1 gate then refuses the entry exactly as before.
+    raf.flush(1, 1300); // past DISMISS_LOCK_MS
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" }));
+    await waitUntil(() =>
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
+    );
+
     // Dying never gets the "Export Map as PNG" button — only a genuine win does.
     expect([...document.querySelectorAll("button")].some((b) => b.textContent === "🖼️ Export Map as PNG")).toBe(false);
+  });
+});
+
+describe("main.ts — rollbacks (arcade continues)", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  /** Enables `?testHooks=1` *before* importing main, which is the only way
+   * the campaign hook global (installed at module import) exists at all. */
+  async function importMainWithHooks(): Promise<typeof import("./main")> {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
+    return importMain();
+  }
+
+  it("grants the difficulty's budget on a fresh workspace load", async () => {
+    localStorage.setItem("codeenstein-difficulty", "easy");
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => rollbackState()?.remaining === 3);
+    expect(rollbackState()).toEqual({ remaining: 3, used: 0, granted: 3 });
+  });
+
+  it("does not re-grant when the difficulty is changed mid-run", async () => {
+    // The reason the count is stored rather than re-derived: difficulty is a
+    // standing preference that deliberately lives outside the campaign save,
+    // so re-deriving would hand a fresh budget to anyone who switched to Easy
+    // partway through.
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => rollbackState()?.remaining === 1);
+
+    const select = document.querySelector<HTMLSelectElement>("#difficulty-select")!;
+    select.value = "easy";
+    select.dispatchEvent(new Event("change"));
+
+    // `granted` follows the setting (it is "what a fresh run would get"),
+    // but the live count must not move.
+    expect(rollbackState()).toEqual({ remaining: 1, used: 0, granted: 3 });
+  });
+
+  it("is suppressed entirely by the harness opt-out", async () => {
+    localStorage.setItem("codeenstein-rollbacks-disabled", "1");
+    await importMainWithHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    // `granted: 0` is the assertion a harness script makes — `remaining: 0`
+    // alone cannot tell "disabled" from "already spent them all".
+    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0 });
+  });
+
+  it("ignores the opt-out key without ?testHooks=1, so a real player cannot set it", async () => {
+    localStorage.setItem("codeenstein-rollbacks-disabled", "1");
+    localStorage.setItem("codeenstein-difficulty", "normal");
+    const { loadCampaignSave } = await importMain(); // deliberately no hooks
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    dismissBriefingHelper(raf);
+    raf.flush(2, 16); // first onStats autosaves (lastSaveAt starts at 0)
+
+    // Observable without the test hook, which is the point: the save the
+    // running level writes carries Normal's full grant, not the 0 the key
+    // would have forced had it been honoured.
+    await waitUntil(() => loadCampaignSave() !== null);
+    expect(loadCampaignSave()!.rollbacksRemaining).toBe(2);
+  });
+
+  it("backfills a save written before rollbacks existed", async () => {
+    localStorage.setItem("codeenstein-difficulty", "normal");
+    const { loadCampaignSave, saveCampaign } = await importMain();
+    saveCampaign({
+      workspaceName: "ws",
+      filePath: "a.c",
+      health: 80,
+      swap: 5,
+      bullets: 12,
+      shells: 4,
+      rockets: 1,
+      smg: 3,
+      gas: 4,
+      score: 500,
+      weaponIndex: 1,
+      ownedWeapons: [0],
+      levelIndex: 2,
+      rollbacksRemaining: 2,
+      rollbacksUsed: 0,
+    });
+    // Strip the two fields back off, reproducing a pre-rollback save exactly.
+    const raw = JSON.parse(localStorage.getItem("codeenstein-campaign-save")!) as Record<string, unknown>;
+    delete raw.rollbacksRemaining;
+    delete raw.rollbacksUsed;
+    localStorage.setItem("codeenstein-campaign-save", JSON.stringify(raw));
+
+    const loaded = loadCampaignSave()!;
+    // `used` has a true answer (0 — the run predates the feature); `remaining`
+    // does not, so it takes the current difficulty's grant rather than a
+    // fiction.
+    expect(loaded.rollbacksUsed).toBe(0);
+    expect(loaded.rollbacksRemaining).toBe(2);
+    expect(loaded.health).toBe(80); // the rest of the save still loads
+  });
+
+  it("still loads a pre-rollback save on hard, granting hard's budget", async () => {
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    const { loadCampaignSave } = await importMain();
+    localStorage.setItem(
+      "codeenstein-campaign-save",
+      JSON.stringify({
+        workspaceName: "ws",
+        filePath: "a.c",
+        health: 80,
+        swap: 5,
+        bullets: 12,
+        shells: 4,
+        rockets: 1,
+        smg: 3,
+        gas: 4,
+        score: 500,
+        weaponIndex: 1,
+        ownedWeapons: [0],
+        levelIndex: 2,
+      }),
+    );
+    expect(loadCampaignSave()!.rollbacksRemaining).toBe(1);
   });
 });
 
