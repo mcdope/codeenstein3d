@@ -184,18 +184,57 @@ describe("AudioManager.playShoot() dispatch", () => {
     const ctx = audio.resume() as unknown as MockAudioContext;
     audio.startChainsaw();
 
-    // Two drone oscillators plus the chug LFO, and no one-shot stop scheduled
-    // at start time — a sustained source deliberately breaks the "always
+    // One engine body plus the chug LFO, and no one-shot stop scheduled at
+    // start time — a sustained source deliberately breaks the "always
     // bounded" invariant every other voice in the file follows.
     const oscs = ctx.createOscillator.mock.results.map((r) => r.value);
-    expect(oscs).toHaveLength(3);
-    expect(oscs[0].type).toBe("sawtooth");
-    expect(oscs[1].type).toBe("sawtooth");
-    expect(oscs[2].type).toBe("sine");
+    expect(oscs).toHaveLength(2);
+    const [body, lfo] = oscs;
     for (const osc of oscs) {
       expect(osc.start).toHaveBeenCalled();
       expect(osc.stop).not.toHaveBeenCalled();
     }
+
+    // The three properties that separate a chainsaw from a synth patch. An
+    // early version had none of them and a playtest called it "scifi techno";
+    // each line here is one of those mistakes, pinned so it cannot come back.
+
+    // 1. It is mostly *noise* — the chain rattle — not oscillators. Without a
+    //    looping noise source this is a synth bass by construction.
+    const noise = ctx.createBufferSource.mock.results[0].value;
+    expect(noise.loop).toBe(true);
+    expect(noise.start).toHaveBeenCalled();
+    const [rattle, cut] = ctx.createBiquadFilter.mock.results.map((r) => r.value);
+    expect(rattle.type).toBe("bandpass");
+    // Wide, not resonant: a high Q here rings like a filter sweep.
+    expect(rattle.Q.value).toBeLessThan(2);
+
+    // 1b. The body is mixed *under* the rattle and the sub-bass is trimmed.
+    //     At unity the oscillator buries the noise and the whole thing reads
+    //     as a bass note with a rattle behind it — reported as "a bit much
+    //     bass" before this existed.
+    const gains = ctx.createGain.mock.results.map((r) => r.value);
+    const bodyMix = gains.find((g) => g.gain.setValueAtTime.mock.calls.some(([v]) => v > 0 && v < 0.5));
+    expect(bodyMix).toBeDefined();
+    expect(cut.type).toBe("highpass");
+    expect(cut.frequency.setValueAtTime.mock.calls[0][0]).toBeGreaterThan(60);
+
+    // 2. The chug LFO is a sawtooth, not a sine. Smooth sinusoidal amplitude
+    //    modulation is a tremolo pedal; combustion is a sharp kick that
+    //    decays, and that asymmetry is the engine character.
+    expect(body.type).toBe("sawtooth");
+    expect(lfo.type).toBe("sawtooth");
+
+    // 3. The body sits off a musical pitch. The first version used 55Hz (A1)
+    //    with a second oscillator an octave above it, which spelled a chord.
+    const A1 = 55;
+    expect(body.frequency.setValueAtTime).toHaveBeenCalled();
+    const bodyHz = body.frequency.setValueAtTime.mock.calls[0][0];
+    expect(Math.abs(bodyHz - A1)).toBeGreaterThan(4);
+    // ...and still inside the 50-350Hz mechanical register the rest of the
+    // file's machinery lives in (see the `Clack` bodies).
+    expect(bodyHz).toBeGreaterThan(40);
+    expect(bodyHz).toBeLessThan(350);
   });
 
   it("only starts one chainsaw motor however often it is asked", () => {
@@ -234,7 +273,8 @@ describe("AudioManager.playShoot() dispatch", () => {
     vi.stubGlobal("AudioContext", MockAudioContext);
     const ctx = audio.resume() as unknown as MockAudioContext;
     audio.startChainsaw();
-    const [osc, detune, lfo] = ctx.createOscillator.mock.results.map((r) => r.value);
+    const [osc, lfo] = ctx.createOscillator.mock.results.map((r) => r.value);
+    const rattle = ctx.createBiquadFilter.mock.results[0].value;
     const before = ctx.createOscillator.mock.calls.length;
 
     audio.playShoot("chainsaw");
@@ -242,11 +282,12 @@ describe("AudioManager.playShoot() dispatch", () => {
     // No new oscillator: a bite leans on the drone that is already running.
     // This is the one `playShoot` kind that synthesizes nothing.
     expect(ctx.createOscillator.mock.calls.length).toBe(before);
-    // Pitch and chug rate both climb and settle, which is what makes a bite
-    // audible over a continuous motor.
+    // All three climb together — engine note, firing rate, and the brightness
+    // of the rattle. Ramping the pitch alone would read as a pitch-bend
+    // effect rather than as a chain catching on something.
     expect(osc.frequency.linearRampToValueAtTime).toHaveBeenCalled();
-    expect(detune.frequency.linearRampToValueAtTime).toHaveBeenCalled();
     expect(lfo.frequency.linearRampToValueAtTime).toHaveBeenCalled();
+    expect(rattle.frequency.linearRampToValueAtTime).toHaveBeenCalled();
   });
 
   it("ignores a bite when the motor is not running", () => {
