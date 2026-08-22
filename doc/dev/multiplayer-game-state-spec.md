@@ -825,13 +825,18 @@ intact and health at `REVIVE_HEALTH` (e.g. 50 — a balance value to validate vi
 the telemetry process like everything else here). Death deliberately drops
 nothing — unlike a disconnect, the player is still present and revives with their
 inventory, so stripping it would double-punish; the team already paid the price of
-losing a gun for the rest of the level. **One exception: held dependency keys drop
-at the death position** (as `kind: "key"` `LootDrop`s, the same new kind the
-disconnect rule defines in `multiplayer-netcode-spec.md` §5) — keys are
+losing a gun for the rest of the level. **This spec once carved out one exception — held dependency keys dropping at
+the death position, as `kind: "key"` `LootDrop`s — and the implementation
+deliberately does not do it.** The reasoning here was that keys are
 level-scoped and one-per-door, so a dead player holding one until next level's
-revive is the same door-soft-lock the disconnect rule exists to prevent, just
-slower; and unlike weapons/ammo, keys are worthless to the dead player anyway
-(they don't carry across levels, and the revive is next level). **All players dead
+revive would be the same door-soft-lock the disconnect rule exists to prevent,
+just slower. That premise turned out to be false once keys became team-wide:
+`collectKeys` grants a picked-up key to *every* player, so a dead player has
+never been holding anything exclusively, every survivor already opens every
+gate they could, and there is nothing for a drop to hand over. `killPlayer`
+says so at the call site. Recorded rather than deleted because the soft-lock
+worry is sound in general — it is only defused by the team-wide grant, and
+anything that made keys per-player again would bring it straight back. **All players dead
 ends the run for everyone** — Kernel Panic, comparison table, same as
 single-player death.
 
