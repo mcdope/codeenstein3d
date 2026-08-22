@@ -246,6 +246,29 @@ export class CampaignReplayRecorder {
     this.levels.push(this.current);
   }
 
+  /**
+   * Discard the level currently being recorded — the run rolled back to its
+   * entry state, so as far as the replay is concerned that attempt never
+   * happened.
+   *
+   * Without this a rolled-back run's replay is not merely redundant, it is
+   * *truncated*: `startLevel` would append a second segment for the same file
+   * path, and `startReplay` walks segments in order, so playback would reach
+   * the first of the pair, die, and stop — the replay viewer's `onGameOver`
+   * sets `ended` and shows Kernel Panic, and only `onWin` calls
+   * `advanceLevel()`. Everything the player actually went on to do after
+   * spending the rollback would be silently unwatchable.
+   *
+   * A no-op when nothing is being recorded, which is the `MAX_REPLAY_LEVELS`
+   * case: `startLevel` set `current` to null and pushed nothing, so there is
+   * no segment of ours to pop and popping anyway would eat someone else's.
+   */
+  dropCurrentLevel(): void {
+    if (!this.current) return;
+    this.levels.pop();
+    this.current = null;
+  }
+
   /** Record this frame's input into whichever level is currently active —
    * a no-op if none is (e.g. past `MAX_REPLAY_LEVELS`). */
   record(dt: number, input: InputSnapshot): void {
