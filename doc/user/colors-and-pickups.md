@@ -104,12 +104,22 @@ Here is the whole set side by side, exactly as the game draws them:
 
 And the things you'd otherwise work out the hard way:
 
-- **The weapon drop's pulsing ring is the only animation on any pickup.** Nothing in this game bobs, spins or glows on the floor — keys included. If something's pulsing, it's a weapon, and it's worth the detour.
+- **The weapon drop's pulsing ring is the only animation on any pickup.** Nothing in this game bobs, spins or glows on the floor — keys included. But "pulsing" on its own does not mean "pickup": a proximity mine breathes too, and it is the one thing down there that will hurt you. Tell them apart by shape, not by the flicker — a weapon drop is a square with a ring around it at waist height, a mine is a round dome sitting on the floor. See [What a mine looks like](#what-a-mine-looks-like).
 - **All weapon drops look identical.** You can't tell a gdb from a ghidra from a Toolchain before you pick it up; the console line afterwards is what names it.
 - **Rockets and gas are both orange** and genuinely close to each other. In practice it rarely matters: neither drops at all until you own the weapon that uses it.
 - **Health is green and swap is blue**, which is the pair worth committing to memory — they're the two that decide whether you survive the next room.
 - **A dropped item and a placed one look the same.** Something an enemy dropped when it died and something the level put there when it was built are drawn identically. There's no way to tell, and nothing depends on it.
 - **One kill can leave up to three items stacked in the same spot** — a health drop, an ammo or swap drop, and a weapon are three separate rolls. If you walk over a kill site and hear more than one pickup, that's why.
+
+## What a mine looks like
+
+A **proximity mine** is a dark red dome on a wide base plate, with three prongs and a single bright lens that breathes in and out. It sits **on the floor** — it never floats — and you only see it once you are within about four and a half tiles of it.
+
+![A proximity mine beside a red keycard: the mine is a domed device on the floor with three prongs and a glowing lens, the keycard is a flat square floating at waist height](img/key-vs-mine.png)
+
+It is deliberately drawn next to the red keycard here, because for a long time it was not distinguishable from one: both were a dark red rectangle with a brighter red rectangle inside, and players learned to flinch away from red keys. **Shape is now the thing to read**, and it is the cue that survives distance and colour blindness — the mine is round and spiky and on the ground, a keycard is square and flat and floating. If it has prongs, do not walk into it.
+
+You can shoot a mine you have spotted to destroy it from a safe distance — see [Tips](tips.md). Standing near one for about a second sets it off; backing out of range resets it.
 
 ## What a key looks like
 

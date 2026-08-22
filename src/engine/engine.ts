@@ -1605,7 +1605,7 @@ export class RaycasterEngine {
 
         // --- Staging hooks, for `scripts/capture-doc-screenshots.mjs` ------
         //
-        // Everything above this line observes; these four *place* things. They
+        // Everything above this line observes; these five *place* things. They
         // exist because the documentation screenshots need a specific item in
         // a specific spot, and no amount of observation gets you there:
         // `rollLoot` filters rockets/smg/gas out entirely until the matching
@@ -1627,6 +1627,20 @@ export class RaycasterEngine {
         },
         debugSpawnKey: (key: { x: number; y: number; gateId: number }) => {
           this.map.keys.push({ ...key, collected: false });
+        },
+        /**
+         * Spawns an already-*spotted* proximity mine.
+         *
+         * `visible: true` rather than letting `updateTraps` set it: a mine
+         * reveals itself only inside `MINE_SIGHT_RADIUS` (4.5 tiles), so a
+         * screenshot that relied on the real path would have to walk the
+         * camera into the blast radius of a live mine to photograph it, and
+         * would go blank the moment that distance was tuned. The fuse is
+         * untouched — this places a mine that can be seen, not one that is
+         * inert, so it still detonates normally if something walks into it.
+         */
+        debugSpawnMine: (mine: { x: number; y: number }) => {
+          this.map.mines.push({ ...mine, alive: true, visible: true, closeTimer: 0 });
         },
         /**
          * Marks the level explored, for an automap shot that isn't mostly fog.

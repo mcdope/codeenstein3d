@@ -16,7 +16,7 @@
 import type { Decoration, DecorKind, Enemy, KeyItem, LootDrop, Mine, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
-import { outlineRect } from "./pathSprites";
+import { drawDisc, fillLine, outlineRect } from "./pathSprites";
 import { clamp } from "../mathUtil";
 
 /**
@@ -916,11 +916,55 @@ export function collectTeleporterBillboards(
  * shared between rendering and hit-testing so what you see is what you hit. */
 const MINE_SIZE = 0.42;
 
+/** The mine's dome and its pulsing lens, as `drawDisc` "r,g,b" strings.
+ *
+ * Kept as constants rather than inlined because `drawDisc` caches a rendered
+ * sprite keyed on this string — passing a per-frame value (an alpha baked into
+ * the colour, say) would allocate a fresh sprite every frame. The pulse is
+ * therefore applied through `drawDisc`'s separate `alpha` argument.
+ *
+ * The dome is a touch lighter than the `#2a1414` body it replaced, and that is
+ * deliberate compensation rather than a restyle: the old silhouette was a
+ * `w x 0.6w` rectangle, and a dome of radius `0.28w` covers roughly a fifth of
+ * that area. Holding the tone would have meant a much smaller dark mass against
+ * near-black floor tiles — quietly undoing the earlier playtest fix that made
+ * mines easier to spot. The plate keeps the original darker tone, so the two
+ * parts still separate. */
+const MINE_BODY_RGB = "58,26,24";
+const MINE_LENS_RGB = "255,60,40";
+
+/** The base plate the dome stands on — darker than the dome, so the device
+ * reads as two parts rather than one blob. */
+const MINE_PLATE = "#2a1414";
+
 /**
  * Collect discovered-but-undetonated proximity mines as a low, pulsing red
  * warning device draw jobs. Invisible (never drawn at all) until the engine
  * marks `visible` true, so stumbling into one's sight radius is the only way
  * to ever see it coming.
+ *
+ * **The silhouette is round and spiky on purpose, and that is the whole point
+ * of this function.** A mine used to be drawn as a dark rectangle with a
+ * brighter square inside it — which is precisely the shape every *pickup* in
+ * the game uses (see `collectLootBillboards` and `collectKeyBillboards`, and
+ * the design rule stated in `doc/user/colors-and-pickups.md`: colour is the
+ * only thing that separates one pickup from another). That made the one
+ * entity in the game that deals 32 damage wear the collectible uniform, and
+ * left ~41 points of red channel as the only thing distinguishing it from a
+ * red keycard. A playtest report put it plainly: "red key and mine look almost
+ * the same, i actively avoid it by reflex."
+ *
+ * So a mine is a dome bolted to a base plate, with three prongs and a pulsing
+ * lens. It differs from a keycard in *outline*, not in hue — which is what
+ * makes it hold up at distance, where the two old cues (the key floats at
+ * waist height, the mine pulses) both collapse: the `height/depth` term shrinks
+ * toward the horizon and the pulse becomes a couple of flickering pixels. It is
+ * also the reason this survives red-green colour blindness, under which the old
+ * pair were the same object.
+ *
+ * The red and the pulse are deliberately *unchanged*. They are load-bearing
+ * from an earlier playtest fix (mines were too easy to miss even once
+ * revealed), so this change buys identity without spending conspicuity.
  */
 export function collectMineBillboards(
   ctx: CanvasRenderingContext2D,
@@ -947,12 +991,39 @@ export function collectMineBillboards(
         const w = proj.right - proj.left;
         const groundY = height / 2 + height / proj.depth / 2;
         const cx = proj.screenX;
-        const bodyH = w * 0.6;
+        const domeR = w * 0.28;
+        const plateH = w * 0.14;
+        // The dome rests *on* the floor line rather than straddling it: its
+        // centre is exactly one radius up, so its lowest pixel lands on
+        // `groundY`. Getting this wrong is what the first draft did — a disc
+        // centred on the plate hangs 0.18w below the floor and reads as a ball
+        // half-sunk into the ground with a belt across it, not as a device
+        // standing on a base.
+        const domeCy = groundY - domeR;
 
-        ctx.fillStyle = "#2a1414";
-        ctx.fillRect(cx - w / 2, groundY - bodyH, w, bodyH);
-        ctx.fillStyle = `rgba(255,60,40,${0.65 + 0.35 * pulse})`;
-        ctx.fillRect(cx - w * 0.26, groundY - bodyH * 0.8, w * 0.52, w * 0.52);
+        // Dome first, plate over it: the plate hides the disc's bottom slice,
+        // which buys a flat-bottomed dome without an arc path (banned on this
+        // canvas — see `renderCost.test.ts`).
+        drawDisc(ctx, MINE_BODY_RGB, 1, cx, domeCy, domeR);
+        ctx.fillStyle = MINE_PLATE;
+        ctx.fillRect(cx - w / 2, groundY - plateH, w, plateH);
+
+        // Prongs, at roughly 10 / 12 / 2 o'clock. Skipped once they would be
+        // sub-pixel: below ~6px of footprint they read as noise rather than as
+        // spikes, and a distant mine is better served by a clean pulsing dot
+        // than by three stray pixels.
+        if (w >= 6) {
+          const prongW = Math.max(1, w * 0.04);
+          ctx.fillStyle = `rgba(${MINE_LENS_RGB},${0.5 + 0.3 * pulse})`;
+          const shoulderY = domeCy - domeR * 0.55;
+          fillLine(ctx, cx - domeR * 0.7, shoulderY, cx - domeR * 1.2, shoulderY - domeR * 0.9, prongW);
+          fillLine(ctx, cx, domeCy - domeR, cx, domeCy - domeR * 2.05, prongW);
+          fillLine(ctx, cx + domeR * 0.7, shoulderY, cx + domeR * 1.2, shoulderY - domeR * 0.9, prongW);
+        }
+
+        // The lens carries the pulse — same colour and same breathing range as
+        // before, so the mine is no less noticeable than it was.
+        drawDisc(ctx, MINE_LENS_RGB, 0.65 + 0.35 * pulse, cx, domeCy - domeR * 0.3, w * 0.1);
       },
     }));
 }

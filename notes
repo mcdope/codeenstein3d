@@ -334,7 +334,6 @@ implemented, already refuted, or impossible as written.
 - [ ] add continues for singleplayer - 2 for normal, 3 for easy, 1 for hard
 - [ ] remeasure impact of level-end-summary
 - [ ] hud face from wad (when loaded)
-- [ ] red key and mine look almost the same, i actively avoid it by reflex
 - [ ] ping keys when near them, to make sure they get noticed (see above :D)
 - [ ] chainsaw "stabs", should stay out while space is hold and make an actual chainsaw like sound
 - [ ] "sell" unclearable levels as "come back in coop"

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { Decoration, Enemy, GameMap, KeyItem, LootDrop, Mine, Teleporter, Tile } from "../map/types";
 import type { CodeEntity } from "../parser/types";
@@ -28,6 +28,19 @@ import {
   projectPoint,
   projectVisibleMines,
 } from "./sprites";
+import { drawDisc, fillLine } from "./pathSprites";
+
+// Spy on the two path helpers while keeping their real behaviour, so the
+// key-vs-mine shape assertions below can talk about "drew a disc" directly
+// rather than inferring it from raster calls. That inference would be
+// environment-dependent: `drawDisc` renders through `drawImage` when an
+// OffscreenCanvas is available and falls back to `arc`/`fill` when it isn't,
+// and this file runs in the `node` environment while `renderCost.test.ts`
+// opts into jsdom.
+vi.mock("./pathSprites", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./pathSprites")>();
+  return { ...actual, drawDisc: vi.fn(actual.drawDisc), fillLine: vi.fn(actual.fillLine) };
+});
 
 const WIDTH = 100;
 const HEIGHT = 60;
@@ -705,6 +718,54 @@ describe("collectMineBillboards", () => {
     const jobs = collectMineBillboards(asCtx(c), player, [mine({ x: player.posX + 3, y: player.posY })], clearZBuffer(0.5));
     jobs[0].draw();
     expect(c.fillRect).not.toHaveBeenCalled();
+  });
+
+  // The reported bug: "red key and mine look almost the same, i actively avoid
+  // it by reflex". Both used to be a dark rectangle with a brighter rectangle
+  // inside it, in reds ~41 points apart — the mine wearing the pickup uniform
+  // while dealing 32 damage. A colour-distance assertion would be the wrong
+  // guard here, because the mine is *meant* to stay red: red and the pulse are
+  // load-bearing from an earlier "mines are too easy to miss" fix. What has to
+  // hold is that the two differ in outline, which is also what makes them
+  // separable at distance and under red-green colour blindness.
+  it("gives the mine a round silhouette the keycard never uses", () => {
+    const player = facingPlayer();
+    const disc = vi.mocked(drawDisc);
+
+    disc.mockClear();
+    const mineJobs = collectMineBillboards(asCtx(ctx()), player, [mine({ x: player.posX + 3, y: player.posY })], clearZBuffer(Infinity));
+    mineJobs[0].draw();
+    // Dome and lens.
+    expect(disc.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    disc.mockClear();
+    const keyJobs = collectKeyBillboards(
+      asCtx(ctx()),
+      player,
+      [{ x: player.posX + 3, y: player.posY, collected: false, gateId: 0 } as KeyItem],
+      clearZBuffer(Infinity),
+      [0],
+    );
+    keyJobs[0].draw();
+    expect(disc).not.toHaveBeenCalled();
+  });
+
+  it("drops the prongs once a mine is too small for them to read", () => {
+    const player = facingPlayer();
+    const line = vi.mocked(fillLine);
+
+    // HEIGHT/depth * MINE_SIZE, so 3 tiles out is ~8px across — wide enough.
+    line.mockClear();
+    collectMineBillboards(asCtx(ctx()), player, [mine({ x: player.posX + 3, y: player.posY })], clearZBuffer(Infinity))[0].draw();
+    expect(line).toHaveBeenCalledTimes(3);
+
+    // ...and 8 tiles out is ~3px, where three prongs would be indistinguishable
+    // stray pixels rather than a silhouette. Reachable in practice only through
+    // `debugSpawnMine`, since `MINE_SIGHT_RADIUS` keeps a mine from revealing
+    // itself beyond 4.5 tiles during play.
+    line.mockClear();
+    collectMineBillboards(asCtx(ctx()), player, [mine({ x: player.posX + 8, y: player.posY })], clearZBuffer(Infinity))[0].draw();
+    expect(line).not.toHaveBeenCalled();
   });
 });
 
