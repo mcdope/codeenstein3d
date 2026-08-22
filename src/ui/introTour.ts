@@ -97,7 +97,7 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
     targetId: "difficulty-select",
     activateTabId: "tab-settings",
     title: "Set the rules first",
-    body: "Difficulty and gore apply to the next level you launch, so pick them before you start. Both are remembered between sessions.",
+    body: "Difficulty and gore apply to the next level you launch, so pick them before you start. Difficulty then locks for the rest of the run — a score is only comparable if it held throughout. Both are remembered between sessions.",
   },
   {
     targetId: "render-quality-select",

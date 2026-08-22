@@ -267,6 +267,8 @@ const loadingScreen = requireElement<HTMLElement>("#loading-screen");
 const loadingStatus = requireElement<HTMLParagraphElement>("#loading-status");
 const goreSelect = requireElement<HTMLSelectElement>("#gore-select");
 const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select");
+/** Dimmed alongside the select while a run holds the difficulty fixed. */
+const difficultyLabel = requireElement<HTMLLabelElement>("#difficulty-label");
 const renderQualitySelect = requireElement<HTMLSelectElement>("#render-quality-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
 const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
@@ -1119,6 +1121,9 @@ function commitWorkspaceSlot(key: WorkspaceSlotKey, init: LoadedWorkspaceInit): 
   // `campaignLevelIndex` from the save straight after this.)
   campaignLevelIndex = 1;
   cheatsUsed = false;
+  // A fresh workspace load abandons whatever run was in progress, so the
+  // picker opens back up until the first level of the new one launches.
+  setDifficultyLocked(false);
   rollbacksRemaining = grantedRollbacks();
   rollbacksUsed = 0;
   pendingRollback = null;
@@ -1219,6 +1224,34 @@ difficultySelect.addEventListener("change", () => {
   currentDifficulty = difficultySelect.value as DifficultyLevel;
   saveDifficulty(currentDifficulty);
 });
+
+/**
+ * Lock or unlock the difficulty picker for the lifetime of a run.
+ *
+ * Difficulty used to be changeable at any moment, applying from the next
+ * level — the same "standing preference" shape gore and render quality have.
+ * For those two that is harmless; for this one it is not, and the highscore
+ * board is why. Score is entirely difficulty-blind (there is no difficulty
+ * term anywhere in `scoring.ts`), so the tier is the *only* thing separating
+ * an Easy 8,000 from a Hard one. A player could clear fifteen levels on Easy,
+ * switch to Hard for the last, and post a Hard-labelled entry — and the
+ * honest per-level record in the replay would disagree with the label on the
+ * board. Recording the difficulty made that visible rather than creating it.
+ *
+ * So the setting is fixed for a run: pick it before you start, live with it,
+ * change it freely again once the run is over. Gore and render quality are
+ * deliberately left alone — neither touches the simulation or the score.
+ *
+ * The `title` doubles as the explanation, because a control that is simply
+ * dead reads as a bug.
+ */
+function setDifficultyLocked(locked: boolean): void {
+  difficultySelect.disabled = locked;
+  difficultyLabel.classList.toggle("muted", locked);
+  difficultySelect.title = locked
+    ? "Locked while a run is in progress — a score is only comparable if the difficulty held for the whole run."
+    : "";
+}
 
 /** Standing render-quality preference — same "independent standing
  * preference" shape as gore/difficulty above. Consumed by
@@ -3297,6 +3330,8 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
   currentLevelPath = path;
   currentParsedFile = parsed;
   currentLevelSource = source;
+  // A run is now in progress — see `setDifficultyLocked`.
+  setDifficultyLocked(true);
 
   // Tear down any level already running before starting the new one — a
   // live multiplayer session included: nothing else ever called .stop() on
@@ -4043,6 +4078,9 @@ function showFileTreePlaceholder(): void {
 
 /** Stop any running level and return the viewport to its initial state. */
 function resetToFileTree(): void {
+  // The run is over (won, given up, or died with nothing left), so the
+  // difficulty is the player's to change again.
+  setDifficultyLocked(false);
   activeEngine?.stop();
   activeEngine = null;
   activeHud = null;

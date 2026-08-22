@@ -49,11 +49,14 @@ export interface HighscoreEntry {
    * from the attached replay rather than giving up, since every level segment
    * records the difficulty it was played at.
    *
-   * Read at record time, the same as `playerName` above and for the same
-   * reason: difficulty is a standing preference, so this is the setting in
-   * force when the run ended. A run whose difficulty was changed partway is
-   * therefore labelled by where it finished; the replay's per-segment
-   * `difficulty` is the finer-grained truth if anyone needs it. */
+   * Read at record time, the same as `playerName` above. That used to carry
+   * a real caveat — a run could change difficulty partway and be labelled by
+   * wherever it finished — which is exactly why `setDifficultyLocked` now
+   * fixes the setting for the lifetime of a run. Record time and run start
+   * are therefore the same answer, and the per-segment values in the replay
+   * agree with this one. The disagreement case survives only for entries
+   * recorded before that lock existed, which `difficultyOf` declines to
+   * label rather than guess at. */
   difficulty?: DifficultyLevel;
   /** How many rollbacks this run spent restarting a level it died on, when
    * it spent any. Absent on a clean run *and* on every entry recorded before

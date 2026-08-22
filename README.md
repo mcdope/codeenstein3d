@@ -242,6 +242,7 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 - **Player name** — Labels your highscore entries, and floats above your character in co-op
 - **Gore** — None/Normal/More/Extreme/Excessive/Absurd, scaling blood-particle count, size and how long stains last; Absurd's stains never expire
 - **Difficulty** — Easy/Normal/Hard, scaling enemy HP, damage, ammo scarcity
+- **Difficulty** — Easy / Normal / Hard; applies at the next level and then **locks for the rest of the run**, since the highscore board records it
 - **Render quality** — Classic (640×400, the default) or Sharp (1280×800 with a half-resolution floor); applies at the next level, and aiming is identical in both
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
 - **Select BGM Folder** — Pick a local folder of audio files for custom playlist (session-only — a browser can't hold onto the folder handle)

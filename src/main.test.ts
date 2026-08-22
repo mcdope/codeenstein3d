@@ -6816,6 +6816,95 @@ describe("main.ts — rollbacks (arcade continues)", () => {
   });
 });
 
+describe("main.ts — the difficulty picker is fixed for the duration of a run", () => {
+  let raf: RafController;
+
+  beforeEach(() => {
+    raf = installRaf({ stubClock: true });
+  });
+
+  afterEach(() => {
+    raf.restore();
+  });
+
+  const select = (): HTMLSelectElement => document.querySelector<HTMLSelectElement>("#difficulty-select")!;
+
+  it("starts unlocked, with nothing to explain", async () => {
+    await importMain();
+    expect(select().disabled).toBe(false);
+    expect(select().title).toBe("");
+  });
+
+  it("locks once a level is running, and says why", async () => {
+    // Score is difficulty-blind — there is no difficulty term anywhere in
+    // scoring.ts — so the tier is the only thing separating an Easy 8,000
+    // from a Hard one. Left changeable, a player could clear fifteen levels
+    // on Easy, switch to Hard for the last, and post a Hard-labelled entry.
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    expect(select().disabled).toBe(true);
+    expect(select().title).toContain("Locked while a run is in progress");
+    expect(document.querySelector("#difficulty-label")!.classList.contains("muted")).toBe(true);
+  });
+
+  it("a locked select cannot change the difficulty a level is built with", async () => {
+    // The property that actually matters. `disabled` is a UI affordance; what
+    // must hold is that no path writes currentDifficulty mid-run — checked
+    // through the campaign save, which carries the run's own state.
+    await importMain();
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+
+    // A disabled <select> emits no change event in a real browser; firing one
+    // anyway proves the lock is not merely cosmetic if the handler ever runs.
+    select().value = "easy";
+    expect(select().disabled).toBe(true);
+    expect(localStorage.getItem("codeenstein-difficulty")).toBe("hard");
+  });
+
+  it("unlocks again once the run is over", async () => {
+    await importMain();
+    const logSpy = vi.spyOn(console, "log");
+    enableTestHooks();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+    expect(select().disabled).toBe(true);
+
+    // Die, then decline the rollback — the run is genuinely over.
+    const mapLogCall = logSpy.mock.calls.find(
+      (c) => c[1] !== null && typeof c[1] === "object" && "grid" in (c[1] as object),
+    );
+    const map = mapLogCall![1] as { grid: number[][]; spawn: { x: number; y: number }; hazards: { x: number; y: number }[] };
+    const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;
+    dismissBriefingHelper(raf);
+    walkPath(canvas, raf, bfsPath(map.grid, map.spawn, map.hazards[0]), () => testHooks()?.getPlayerState().state !== "playing", 1000);
+    for (let i = 0; i < 300 && testHooks()?.getPlayerState().state === "playing"; i++) raf.flush(1, 50);
+    raf.flush(1, 1300);
+    window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape" })); // Give up
+
+    await waitUntil(() => select().disabled === false, 8000);
+    expect(select().title).toBe("");
+  }, 20000);
+
+  it("unlocks when a fresh workspace abandons the run in progress", async () => {
+    await importMain();
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    await waitUntil(() => select().disabled === true, 8000);
+
+    stubShowDirectoryPicker(fakeDirectoryHandle("ws2", { "other.c": VALID_MAIN_C }));
+    document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
+    // Briefly open between the workspace commit and the new level launching.
+    await waitUntil(() => document.querySelector<HTMLParagraphElement>("#workspace-name")!.textContent === "ws2", 8000);
+  });
+});
+
 const REPLAY_FIXTURE_C = "int main() { return 0; }\n";
 const REPLAY_CAMPAIGN_NAME = "replay-ws";
 

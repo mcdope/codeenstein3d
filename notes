@@ -336,3 +336,4 @@ implemented, already refuted, or impossible as written.
 - [ ] "sell" unclearable levels as "come back in coop" in docs/tips
 - [ ] add a pun to the gameover screen if cheats were used: "You used cheats and still died? lol"
 - [ ] revisit enemy dmg, seems a bit low
+- [ ] paused icon shown on tab button after final death / end of run

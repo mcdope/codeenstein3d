@@ -82,6 +82,8 @@ Note Easy's damage (×0.85) doesn't mirror its HP reduction (×0.7) the way Hard
 
 Rollbacks are the one difficulty axis that isn't about the fight at all — see [Dying](#dying) below.
 
+**Difficulty is fixed once a run starts.** You pick it before you launch, and the setting locks until the run ends. Score does not scale with difficulty, so the tier is the only thing that distinguishes an easy 8,000 from a hard one — being able to switch on the last level would make the board's Difficulty column meaningless.
+
 Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — traps and rocket self-splash are unaffected. "Dead-on" aim still means a real bolt with real travel time, not a hitscan or a homing shot — you can still dodge it, an enemy just won't miss by aiming badly.
 
 ## Dying
