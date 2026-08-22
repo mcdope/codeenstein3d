@@ -74,9 +74,9 @@ Any regular kill tops up your health if you're not already at full stability —
 
 | Difficulty | Enemy HP | Enemy damage | Enemy aim | Pickup amounts | Rollbacks |
 |---|---|---|---|---|---|
-| Easy | ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 | 3 |
-| Normal | ×1 | ×1 | Slightly off — up to ±4° | ×1 | 2 |
-| Hard | ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 | 1 |
+| Easy | ×0.7 | ×0.85 | Sloppy — random deviation up to ±10° per shot | ×1.3 | 2 |
+| Normal | ×1 | ×1 | Slightly off — up to ±4° | ×1 | 1 |
+| Hard | ×1.5 | ×1.5 | Dead-on — no deviation at all | ×0.7 | none |
 
 Note Easy's damage (×0.85) doesn't mirror its HP reduction (×0.7) the way Hard's pair does — a deliberate, slightly less forgiving choice made after Easy's original mirrored curve, combined with cautious play, turned out to make it possible to sail through the whole campaign nearly unscathed.
 
@@ -86,10 +86,10 @@ Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — 
 
 ## Dying
 
-Running out of System Stability ends the level with a **Kernel Panic**. What happens next depends on whether your run still has a **rollback**.
+Running out of System Stability ends the level with a **Kernel Panic**. What happens next depends on whether your run still has a **rollback** — **2 on Easy, 1 on Normal, and none at all on Hard**, where death is final by design.
 
 - **With one left**, the screen offers a choice: **Roll back** restarts the level you died on, or **Give up** ends the run. Roll back is the default — Enter, Space, a click on it, or **A** on a gamepad — because Space is also the fire button, and a trigger pulled in the fight that just killed you shouldn't be able to end your run by accident. **Escape**, or **B** on a gamepad, gives up.
-- **With none left**, there is no choice: the run ends and you return to the file tree, exactly as it always worked.
+- **With none left** — including every death on Hard — there is no choice: the run ends and you return to the file tree, exactly as it always worked.
 
 A rollback restores the state you *entered* the level with — health, armour, every ammunition pool, the weapons you were carrying, and your score. Everything the failed attempt earned or spent is discarded along with the damage you took. Keys are not carried between levels anyway, so a rollback starts you with none, the same as walking in for the first time.
 

@@ -19,8 +19,8 @@ describe("DIFFICULTY_MULTIPLIERS", () => {
 });
 
 describe("ROLLBACKS_BY_DIFFICULTY", () => {
-  it("grants 3/2/1 rollbacks on easy/normal/hard", () => {
-    expect(ROLLBACKS_BY_DIFFICULTY).toEqual({ easy: 3, normal: 2, hard: 1 });
+  it("grants 2/1/0 rollbacks on easy/normal/hard", () => {
+    expect(ROLLBACKS_BY_DIFFICULTY).toEqual({ easy: 2, normal: 1, hard: 0 });
   });
 
   it("has an entry for every DifficultyLevel", () => {
@@ -38,10 +38,16 @@ describe("ROLLBACKS_BY_DIFFICULTY", () => {
     expect(ROLLBACKS_BY_DIFFICULTY.normal).toBeGreaterThan(ROLLBACKS_BY_DIFFICULTY.hard);
   });
 
-  it("gives every difficulty at least one rollback", () => {
-    // A tier at 0 would silently mean "this difficulty has the feature
-    // disabled", which is the harness opt-out's job, not a difficulty's.
-    for (const count of Object.values(ROLLBACKS_BY_DIFFICULTY)) expect(count).toBeGreaterThanOrEqual(1);
+  it("gives hard none at all, so death stays final there", () => {
+    // Not an empty slot waiting to be filled: Hard is the one tier where the
+    // Kernel Panic screen keeps its original single button. Pinned because a
+    // well-meaning "every difficulty should get at least one" would undo a
+    // deliberate design statement.
+    expect(ROLLBACKS_BY_DIFFICULTY.hard).toBe(0);
+  });
+
+  it("never goes negative, which would read as a rollback the UI can't show", () => {
+    for (const count of Object.values(ROLLBACKS_BY_DIFFICULTY)) expect(count).toBeGreaterThanOrEqual(0);
   });
 });
 

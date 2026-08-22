@@ -2617,14 +2617,20 @@ if (isTestHooksActive()) {
     getLevelOrder: (): Promise<string[]> => campaignLevelOrder(workspaceTree),
     /** The resolved rollback state, so a script can assert the opt-out
      * actually took effect rather than inferring it from the shape of the
-     * death overlay. `granted` is what a *fresh* run would get right now,
-     * which is the value that reads 0 when `installRollbacksDisabled` worked
-     * — `remaining` alone cannot distinguish "disabled" from "already spent
-     * them all". */
-    getRollbackState: (): { remaining: number; used: number; granted: number } => ({
+     * death overlay.
+     *
+     * Three fields because no two of them answer the question on their own.
+     * `remaining` cannot tell "disabled" from "already spent them all".
+     * `granted` (what a *fresh* run would get right now) cannot either, since
+     * Hard's grant is legitimately 0 — so a harness running the hard combo
+     * would read `granted: 0` and call the opt-out confirmed whether or not
+     * it ever took. `disabled` is the only one that actually reports the
+     * switch, and it is what `assertRollbacksDisabled` checks. */
+    getRollbackState: (): { remaining: number; used: number; granted: number; disabled: boolean } => ({
       remaining: rollbacksRemaining,
       used: rollbacksUsed,
       granted: grantedRollbacks(),
+      disabled: rollbacksDisabled(),
     }),
   };
   (window as unknown as { __codeensteinReplayTestHooks?: unknown }).__codeensteinReplayTestHooks = {

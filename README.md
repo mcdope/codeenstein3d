@@ -252,7 +252,7 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 - **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
 - **Reach green exit tile** → Commit summary screen (with an "Export Map as PNG" button for the level you just cleared) → Next level loads (health/ammo/weapons carry over)
 - **Run out of files** → "Build Successful" screen
-- **Die** → "Kernel Panic" screen — with a **rollback** left (3 Easy / 2 Normal / 1 Hard) it offers to restart the level exactly as you entered it; with none left the run ends
+- **Die** → "Kernel Panic" screen — with a **rollback** left (2 Easy / 1 Normal / 0 Hard) it offers to restart the level exactly as you entered it; with none left, which is always the case on Hard, the run ends
 - **Continue Run button** — Resume a saved campaign exactly where you left off
 
 ---

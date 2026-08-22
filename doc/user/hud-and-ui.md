@@ -20,7 +20,7 @@ The crosshair turns red over a valid target, and shows tick marks for weapons th
 
 If you enter a cheat code, a badge appears here and stays for the rest of the campaign — a cheated run can't post a score or a replay, and this says so while you're still playing rather than only once the run is over.
 
-A second badge, in amber, counts the **rollbacks** your run has left (see [Dying](mechanics.md#dying)); it disappears once you've spent them all, since a bar reading "0 rollbacks" is just noise. If a run somehow has both — cheats entered *and* rollbacks in hand — the two stack rather than overlapping, with the rollback count sitting above the cheat warning.
+A second badge, in amber, counts the **rollbacks** your run has left (see [Dying](mechanics.md#dying)); it disappears once you've spent them all, since a bar reading "0 rollbacks" is just noise — so on Hard, which gets none, it never appears. If a run somehow has both — cheats entered *and* rollbacks in hand — the two stack rather than overlapping, with the rollback count sitting above the cheat warning.
 
 Three warning toasts share the top of the screen, each on its own row so they never cover each other when more than one fires at once: "Out of ammo!" on the first, "Memory leak — acid rising!" on the second, and "You need the red key!" — walking into a key-locked door empty-handed — on the third, naming the colour you're missing and drawn in that door's own colour.
 
@@ -42,7 +42,7 @@ All of the game's settings live behind the gear (⚙) tab in the sidebar's tab b
 
 - **Player name** — labels your runs on the leaderboard, and in multiplayer floats above your character in the 3D view in your own marker colour. Remembered between sessions. Leave it blank and everything reads as it did before you set one.
 - **Gore** — None / Normal / More / Extreme / Excessive / Absurd, controls blood-particle volume and how long stains linger. **Excessive** is Extreme with roughly twice as much blood on screen at once, lingering about a third longer. **Absurd** is a different thing rather than more of the same: blood that has landed never dries up, so a room you fought through stays painted for the rest of the level, and the splats are large enough that a busy floor turns solid red rather than speckled. It is capped — the oldest blood makes way once there is enough of it — but it is the most expensive setting by a wide margin, so try one tier down first if the game feels choppy.
-- **Difficulty** — Easy / Normal / Hard, scales enemy HP, enemy damage, pickup scarcity, and how many rollbacks a run gets (3 / 2 / 1). See [Mechanics](mechanics.md#difficulty) for exact numbers.
+- **Difficulty** — Easy / Normal / Hard, scales enemy HP, enemy damage, pickup scarcity, and how many rollbacks a run gets (2 / 1 / none). See [Mechanics](mechanics.md#difficulty) for exact numbers.
 - **Render quality** — Classic or Sharp. Classic keeps the game's intended chunky retro look (640×400) and is the default. Sharp renders internally at 1280×800 — crisper walls, sprites and weapon — paired with a half-resolution floor so it stays fast, and is worth trying on a high-refresh (120Hz+) display. Like gore and difficulty, a change applies at the next level you launch (a small note in the panel says so), and aiming and shots behave identically in both modes — the quality is purely visual.
 - **Master / SFX / Music** volume sliders, persisted across sessions.
 - **Select BGM Folder** — pick a local folder of `.mp3`/`.ogg`/`.wav` files to play as a shuffled custom soundtrack instead of silence.

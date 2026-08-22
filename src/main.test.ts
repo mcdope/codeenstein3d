@@ -5727,6 +5727,7 @@ interface RollbackState {
   remaining: number;
   used: number;
   granted: number;
+  disabled: boolean;
 }
 
 /** The app shell's resolved rollback state — see `getRollbackState` in
@@ -6509,7 +6510,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
   }
 
   it("rolls the level back to its entry state, rewriting the save rather than clearing it", async () => {
-    localStorage.setItem("codeenstein-difficulty", "normal");
+    localStorage.setItem("codeenstein-difficulty", "easy"); // 2, so one survives the death
     const logSpy = await launchHazardRun();
     const { loadCampaignSave } = await import("./main");
     await dieInTheAcid(logSpy);
@@ -6534,8 +6535,26 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     expect(logSpy.mock.calls.filter((c) => String(c[0]).startsWith("[map]")).length).toBeGreaterThanOrEqual(2);
   });
 
+  it("offers nothing at all on hard, where death stays final", async () => {
+    // Hard's grant is 0, so the very first death takes the original
+    // single-button path — no rollback is spent, and the run ends there.
+    // This is the tier's design statement, not an unspent budget.
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    const logSpy = await launchHazardRun();
+    expect(rollbackState()).toMatchObject({ remaining: 0, granted: 0, disabled: false });
+
+    await dieInTheAcid(logSpy);
+
+    // Straight to the end-of-run path with no button press in between —
+    // which on level 1 refuses the entry, exactly as it always did.
+    await waitUntil(() =>
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
+    );
+    expect(rollbackState()).toMatchObject({ remaining: 0, used: 0 });
+  });
+
   it("falls back to the plain one-button panic screen once they are spent", async () => {
-    localStorage.setItem("codeenstein-difficulty", "hard"); // exactly 1
+    localStorage.setItem("codeenstein-difficulty", "normal"); // exactly 1
     const logSpy = await launchHazardRun();
     await dieInTheAcid(logSpy);
     expect(rollbackState()).toMatchObject({ remaining: 0, used: 1 });
@@ -6556,7 +6575,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
   }, 20000);
 
   it("closing the tab at the death screen resumes from the entry state, already charged", async () => {
-    localStorage.setItem("codeenstein-difficulty", "normal");
+    localStorage.setItem("codeenstein-difficulty", "easy"); // 2, so one is left to persist
     const logSpy = await launchHazardRun();
     const { loadCampaignSave } = await import("./main");
     await dieInTheAcid(logSpy);
@@ -6590,7 +6609,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
       throw new Error("storage unavailable, as in private browsing");
     });
     try {
-      expect(rollbackState()!.granted).toBe(2); // never throws; falls back to "not disabled"
+      expect(rollbackState()!.granted).toBe(1); // never throws; falls back to "not disabled"
     } finally {
       Storage.prototype.getItem = getItem;
     }
@@ -6640,7 +6659,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
   }, 20000);
 
   it("Continue Run restores the stored counts instead of re-granting", async () => {
-    localStorage.setItem("codeenstein-difficulty", "easy"); // would grant 3 if re-derived
+    localStorage.setItem("codeenstein-difficulty", "easy"); // would grant 2 if re-derived
     localStorage.setItem(
       "codeenstein-campaign-save",
       campaignSave({ rollbacksRemaining: 1, rollbacksUsed: 2 }),
@@ -6649,8 +6668,8 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": VALID_MAIN_C }));
     document.querySelector<HTMLButtonElement>("#continue-run")!.click();
     await waitUntil(() => rollbackState()?.used === 2, 8000);
-    // 1, not Easy's 3: a resumed run keeps what it had left.
-    expect(rollbackState()).toEqual({ remaining: 1, used: 2, granted: 3 });
+    // 1, not Easy's 2: a resumed run keeps what it had left.
+    expect(rollbackState()).toEqual({ remaining: 1, used: 2, granted: 2, disabled: false });
   });
 
   it("Continue Run says how many are left, pluralised", async () => {
@@ -6672,7 +6691,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
     // Otherwise a resumed save would smuggle rollbacks back into a scripted
     // run that explicitly asked for none.
-    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0 });
+    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0, disabled: true });
   });
 
   it("grants the difficulty's budget on a fresh workspace load", async () => {
@@ -6680,8 +6699,8 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     await importMainWithHooks();
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
     document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
-    await waitUntil(() => rollbackState()?.remaining === 3);
-    expect(rollbackState()).toEqual({ remaining: 3, used: 0, granted: 3 });
+    await waitUntil(() => rollbackState()?.remaining === 2);
+    expect(rollbackState()).toEqual({ remaining: 2, used: 0, granted: 2, disabled: false });
   });
 
   it("does not re-grant when the difficulty is changed mid-run", async () => {
@@ -6689,19 +6708,21 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     // standing preference that deliberately lives outside the campaign save,
     // so re-deriving would hand a fresh budget to anyone who switched to Easy
     // partway through.
-    localStorage.setItem("codeenstein-difficulty", "hard");
+    localStorage.setItem("codeenstein-difficulty", "easy");
     await importMainWithHooks();
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
     document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
-    await waitUntil(() => rollbackState()?.remaining === 1);
+    await waitUntil(() => rollbackState()?.remaining === 2);
 
     const select = document.querySelector<HTMLSelectElement>("#difficulty-select")!;
-    select.value = "easy";
+    select.value = "hard";
     select.dispatchEvent(new Event("change"));
 
-    // `granted` follows the setting (it is "what a fresh run would get"),
-    // but the live count must not move.
-    expect(rollbackState()).toEqual({ remaining: 1, used: 0, granted: 3 });
+    // `granted` follows the setting (it is "what a fresh run would get", and
+    // Hard's is none), but the live count must not move — switching *to* the
+    // hardest tier mid-run must not confiscate the rollbacks already banked,
+    // any more than switching to Easy should hand out new ones.
+    expect(rollbackState()).toEqual({ remaining: 2, used: 0, granted: 0, disabled: false });
   });
 
   it("is suppressed entirely by the harness opt-out", async () => {
@@ -6710,9 +6731,12 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     stubShowDirectoryPicker(fakeDirectoryHandle("ws", { "main.c": HAZARD_FIXTURE_C }));
     document.querySelector<HTMLButtonElement>("#select-workspace")!.click();
     await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
-    // `granted: 0` is the assertion a harness script makes — `remaining: 0`
-    // alone cannot tell "disabled" from "already spent them all".
-    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0 });
+    // `disabled: true` is the assertion a harness script makes. Neither of
+    // the other two can carry it any more: `remaining: 0` cannot tell
+    // "disabled" from "already spent them all", and `granted: 0` is also what
+    // Hard legitimately reports, so a hard-combo run would read as confirmed
+    // whether or not the opt-out ever took.
+    expect(rollbackState()).toEqual({ remaining: 0, used: 0, granted: 0, disabled: true });
   });
 
   it("ignores the opt-out key without ?testHooks=1, so a real player cannot set it", async () => {
@@ -6729,7 +6753,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     // running level writes carries Normal's full grant, not the 0 the key
     // would have forced had it been honoured.
     await waitUntil(() => loadCampaignSave() !== null);
-    expect(loadCampaignSave()!.rollbacksRemaining).toBe(2);
+    expect(loadCampaignSave()!.rollbacksRemaining).toBe(1);
   });
 
   it("backfills a save written before rollbacks existed", async () => {
@@ -6763,11 +6787,11 @@ describe("main.ts — rollbacks (arcade continues)", () => {
     // does not, so it takes the current difficulty's grant rather than a
     // fiction.
     expect(loaded.rollbacksUsed).toBe(0);
-    expect(loaded.rollbacksRemaining).toBe(2);
+    expect(loaded.rollbacksRemaining).toBe(1);
     expect(loaded.health).toBe(80); // the rest of the save still loads
   });
 
-  it("still loads a pre-rollback save on hard, granting hard's budget", async () => {
+  it("still loads a pre-rollback save on hard, which backfills to none", async () => {
     localStorage.setItem("codeenstein-difficulty", "hard");
     const { loadCampaignSave } = await importMain();
     localStorage.setItem(
@@ -6788,7 +6812,7 @@ describe("main.ts — rollbacks (arcade continues)", () => {
         levelIndex: 2,
       }),
     );
-    expect(loadCampaignSave()!.rollbacksRemaining).toBe(1);
+    expect(loadCampaignSave()!.rollbacksRemaining).toBe(0);
   });
 });
 

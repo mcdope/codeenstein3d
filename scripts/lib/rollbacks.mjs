@@ -48,15 +48,20 @@ export async function installRollbacksDisabled(page) {
  * numbers are then quietly incomparable to every archived capture with
  * nothing in the log saying so.
  *
- * `granted` is the field that carries the answer: `remaining: 0` on its own
- * cannot tell "disabled" apart from "already spent them all".
+ * Checks `disabled`, which is the only field that reports the switch itself.
+ * `remaining: 0` cannot tell "disabled" from "already spent them all", and
+ * `granted: 0` cannot either — **Hard's grant is legitimately 0**, so a
+ * harness running the hard combo would read `granted: 0` and call the opt-out
+ * confirmed whether or not it ever took. `remaining` is still asserted
+ * alongside, since a disabled run that somehow holds rollbacks is its own
+ * kind of broken.
  */
 export async function assertRollbacksDisabled(page) {
   const state = await page.evaluate(() => window.__codeensteinCampaignTestHooks?.getRollbackState?.() ?? null);
   if (state === null) {
     throw new Error("rollback state unavailable — is ?testHooks=1 set, and has the page finished booting?");
   }
-  if (state.granted !== 0 || state.remaining !== 0) {
+  if (state.disabled !== true || state.remaining !== 0) {
     throw new Error(`rollbacks not disabled: ${JSON.stringify(state)}`);
   }
   return state;

@@ -71,15 +71,21 @@ export const DIFFICULTY_MULTIPLIERS: Record<DifficultyLevel, DifficultyMultiplie
  * The counts run the same direction as every other difficulty axis (Easy most
  * forgiving, Hard least), so they compound with the HP/damage/loot curve rather
  * than offsetting it — the same principle `DIFFICULTY_MULTIPLIERS`'
- * `ammoDropRate` follows. Note this makes Easy *more* forgiving on top of an
- * axis that telemetry once required be pulled back (see `easy.damage` above),
- * so this is the number most likely to want re-tuning after real play; it is
- * one line to change.
+ * `ammoDropRate` follows.
+ *
+ * **Hard is deliberately zero**, which makes it the one tier where death is
+ * still final and the Kernel Panic screen keeps its original single button.
+ * That is a design statement rather than a spare slot: a difficulty whose
+ * whole identity is a tighter margin should not also hand back the run. Two
+ * consequences worth knowing before changing it — the rollback badge never
+ * draws on Hard (it hides at 0), and `grantedRollbacks()` returning 0 is no
+ * longer proof that the harness opt-out took effect, which is why
+ * `getRollbackState` reports `disabled` separately for scripts to assert on.
  */
 export const ROLLBACKS_BY_DIFFICULTY: Record<DifficultyLevel, number> = {
-  easy: 3,
-  normal: 2,
-  hard: 1,
+  easy: 2,
+  normal: 1,
+  hard: 0,
 };
 
 export const DEFAULT_DIFFICULTY: DifficultyLevel = "normal";

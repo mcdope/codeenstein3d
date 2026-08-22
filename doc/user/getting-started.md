@@ -50,7 +50,7 @@ From there you explore, fight, loot, and make your way to the level's exit tile.
 
 ### Rollbacks
 
-A run starts with a small budget of rollbacks — **3 on Easy, 2 on Normal, 1 on Hard** — and the number left is shown above the status bar while you play. Spending one puts you back at the start of the level you died on, with the health, armour, ammunition, weapons and score you *walked in with*. Whatever you picked up or scored during the failed attempt is gone; so is the damage you took.
+A run starts with a small budget of rollbacks — **2 on Easy, 1 on Normal, none on Hard** — and the number left is shown above the status bar while you play. On Hard there are none to spend and the Kernel Panic screen keeps its single button: death there is final, which is part of what the tier means. Spending one puts you back at the start of the level you died on, with the health, armour, ammunition, weapons and score you *walked in with*. Whatever you picked up or scored during the failed attempt is gone; so is the damage you took.
 
 Two things are worth knowing. The **level layout is the same** — it is built from the source file and does not change — but the enemies will not behave identically, because their timing, their aim and what they drop are rolled fresh each time you enter. And a run that spends a rollback **still gets a leaderboard entry**; the Highscores dialog marks it in the **RB** column, so a continued run and a clean one are told apart rather than one of them being thrown away.
 
