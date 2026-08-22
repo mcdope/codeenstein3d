@@ -15,8 +15,9 @@ an enemy inside, and so on), and what to expect once you're inside a level. It's
 level launches and won't reappear for the rest of the session.
 
 The very first time you open the game, a short guided tour points at the controls this page
-describes — the launch tabs, **Demos** as the path that needs no setup, co-op, the file tree,
-the highscore board and the console. Along the way it opens the **Settings** tab and walks
+describes — the launch tabs, **Demos** as the path that needs no setup, **Repo** for playing code
+of your own, co-op, the file tree, the highscore board (including what **Watch** and
+**Export** do) and the console. Along the way it opens the **Settings** tab and walks
 through its controls (difficulty, gore, render quality and the rest), then returns you to the
 tab you were on. Use the arrow keys or **Back**/**Next** to move through it, **Skip** or
 **Escape** to dismiss it. It won't come back once dismissed; everything it covers is written
@@ -29,7 +30,7 @@ The sidebar has six tabs. Five of them are ways to start a run — four single-p
 - **Repo** — paste a repository URL from **GitHub, GitLab or Codeberg** and click **Load** to pull any public repository over the network instead of picking a local folder. The host is worked out from the URL, and the button says which one it recognised ("Load from GitLab") so you can see it got the right one before the download starts. A bare `owner/repo` with no host still means GitHub. Four "Suggested repos" quick-pick buttons (Easy/Medium/Hard/Nightmare) below the input fill in and load a known repo of increasing size/complexity if you don't have one in mind.
 - **Demos** — click **Launch Demo Campaign** for a bundled, multi-language showcase campaign that ships with the app itself. No local files or network access needed — every level is baked into the app at build time, so it also works offline.
 
-Whichever you use, the loaded workspace's files are listed under the tab you loaded it from, and the other tabs say what they'd load instead. Switching tabs only changes what you're looking at — it never disturbs the level you're playing — and a small **▶** marks the tab the game is running from, turning to **❚❚** whenever it's paused. See [HUD & UI](hud-and-ui.md#the-file-tree) for the details.
+Whichever you use, the loaded workspace's files are listed under the tab you loaded it from, and the other tabs say what they'd load instead. Switching tabs only changes what you're looking at — it never disturbs the level you're playing — and a small **▶** marks the tab the game is running from, turning to **❚❚** whenever it's paused and disappearing altogether once no level is loaded. See [HUD & UI](hud-and-ui.md#the-file-tree) for the details.
 
 Once a workspace loads, the game looks for a sensible starting point — a `main` function, `index.php`, otherwise the *least* complex file it can parse, since complexity is what becomes enemies and health and level 1 shouldn't be the hardest map in the repository — and launches straight into it. You don't need to manually pick a file to begin, though you can also click any file in the sidebar's file tree to jump into it directly. A spinner with a status line (fetching the tree, scanning for an entrypoint, parsing, generating the world) shows in the viewport while this is in progress — for a large repository this can take tens of seconds over the network — the built-in **Nightmare** suggestion (`magento/magento2`) is deliberately about as slow as it gets. If a repo that size comes up short, see [Troubleshooting](troubleshooting.md#a-big-repo-loaded-but-it-seems-incomplete).
 

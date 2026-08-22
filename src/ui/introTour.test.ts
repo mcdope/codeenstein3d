@@ -296,11 +296,55 @@ describe("DEFAULT_TOUR_STEPS", () => {
     expect(wad?.body).toMatch(/session/i);
   });
 
+  it("names the repo facts a newcomer otherwise learns by failing", () => {
+    // All from doc/user/getting-started.md. None is guessable from a tab
+    // labelled "Repo": that it takes three forges rather than just GitHub,
+    // that a bare owner/repo still resolves, and that private repos are not
+    // an option — each is something you would otherwise discover by pasting
+    // something and watching it not work.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-repo");
+    expect(step?.body).toMatch(/GitLab/i);
+    expect(step?.body).toMatch(/Codeberg/i);
+    expect(step?.body).toMatch(/owner\/repo/);
+    expect(step?.body).toMatch(/public/i);
+  });
+
+  it("anchors the repo step on the tab button, so it needs no tab switch", () => {
+    // Anchoring at #repo-input would sit inside a hidden panel: isVisible
+    // checks the element's own computed display, which is not "none" just
+    // because an ancestor is — so the step would survive resolvable(),
+    // measure 0x0, and park the popout in the corner.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "tab-repo");
+    expect(step).toBeDefined();
+    expect(step?.activateTabId).toBeUndefined();
+  });
+
+  it("explains what the highscore board records and what Export does", () => {
+    // The board grew a Difficulty and an RB column, and Export was never
+    // mentioned anywhere in the tour. The 1x/webm detail matters because
+    // Export locks the transport for the length of the run.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "view-highscores");
+    expect(step?.body).toMatch(/difficulty/i);
+    expect(step?.body).toMatch(/rollback/i);
+    expect(step?.body).toMatch(/webm|video/i);
+    expect(step?.body).toMatch(/1x|real time/i);
+  });
+
+  it("no longer claims every entry can be replayed", () => {
+    // It cannot: an entry recorded before a balance change renders "rules
+    // changed" with no button at all (highscorePanel.ts), and one whose
+    // recording was dropped shows a dash. The old wording promised both away.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "view-highscores");
+    expect(step?.body).not.toMatch(/every entry/i);
+    expect(step?.body).toMatch(/rules changed/i);
+  });
+
   it("walks the sidebar top to bottom", () => {
     // Each step scrolls its target into view, so an order that jumped between
     // the top and bottom of a sidebar taller than the viewport would yank the
     // page around under the reader.
     const order = DEFAULT_TOUR_STEPS.map((s) => s.targetId);
+    expect(order.indexOf("tab-repo")).toBeLessThan(order.indexOf("tab-demo"));
     expect(order.indexOf("tab-settings")).toBeLessThan(order.indexOf("player-name-input"));
     expect(order.indexOf("player-name-input")).toBeLessThan(order.indexOf("difficulty-select"));
     expect(order.indexOf("difficulty-select")).toBeLessThan(order.indexOf("render-quality-select"));

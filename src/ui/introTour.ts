@@ -73,6 +73,17 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
     body: "Four of these tabs load source code to play — from your machine, a saved run, a public repository, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
   },
   {
+    // Second, not later: steps follow the tab strip left to right and Repo
+    // sits before Demos in it. Anchored on the tab button rather than
+    // `#repo-input`, the same shape `tab-demo` and `tab-multiplayer` use — a
+    // step reaching into the panel would need `activateTabId` and would walk
+    // strip -> panel -> strip across three consecutive popouts, which is what
+    // the ordering rule above exists to prevent.
+    targetId: "tab-repo",
+    title: "Or play your own code",
+    body: "Paste a repository from GitHub, GitLab or Codeberg and its files become the levels. The address says which site it came from, and the button names the one it recognised before anything downloads — a bare owner/repo still means GitHub. Public repositories only. Below it sit four suggestions from Easy to Nightmare if you'd rather not pick one.",
+  },
+  {
     targetId: "tab-demo",
     title: "Start here if you're new",
     body: "Demos launches a bundled multi-language campaign with no setup at all — no local files, no network. It's the fastest way to see what the game does with code.",
@@ -114,7 +125,17 @@ export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "view-highscores",
     title: "Scores stay on your machine",
-    body: "Runs are scored and kept locally — nothing is uploaded. Every entry on the board can be replayed from here, exactly as it was played.",
+    // Anchored on the button and describing the dialog rather than opening
+    // it, deliberately: a dialog shown with `showModal()` lives in the
+    // browser's top layer, which paints above every z-index — the popout and
+    // its buttons would be behind it and unreachable. Same reason this tour
+    // is a fixed layer rather than a `<dialog>` (see `style.css`).
+    //
+    // The old body claimed every entry could be replayed. Two states say
+    // otherwise (`highscorePanel.ts`): a run recorded before a balance change
+    // reads "rules changed" with no button, and one whose recording was
+    // dropped shows a dash.
+    body: "Runs are scored and kept locally — nothing is uploaded. Each row also says what the run cost: which difficulty it was played on, and how many rollbacks it spent restarting a level. Watch replays a run frame-for-frame; Export plays it back and records that to a .webm video, in real time at 1x with the controls locked until it finishes. A run recorded before a balance change reads \"rules changed\" instead — it would no longer match its own score.",
   },
   {
     targetId: "file-tree",
