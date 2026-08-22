@@ -315,19 +315,43 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
     canvas.height = 400;
   });
 
-  it("draws both buttons and names the remaining count", () => {
+  it("draws both buttons and says what is left after this one", () => {
     panicWithRollback(2);
     const texts = fillTextCalls();
     expect(texts).toContain("KERNEL PANIC");
     expect(texts).toContain("Roll back");
     expect(texts).toContain("Give up");
-    expect(texts.some((t) => t.includes("2 rollbacks left"))).toBe(true);
+    expect(texts.some((t) => t.includes("2 more rollbacks after this one"))).toBe(true);
     expect(texts).not.toContain("Return to file tree");
   });
 
-  it("says 'rollback' rather than 'rollbacks' on the last one", () => {
+  it("says 'rollback' rather than 'rollbacks' when one follows this one", () => {
     panicWithRollback(1);
-    expect(fillTextCalls().some((t) => t.includes("1 rollback left"))).toBe(true);
+    expect(fillTextCalls().some((t) => t.includes("1 more rollback after this one"))).toBe(true);
+  });
+
+  it("never reads as a bare count that contradicts the button", () => {
+    // The reported bug: `remaining` is the count *after* this rollback is
+    // spent, so on the last one the screen said "0 rollbacks left" directly
+    // above a live "Roll back" button. Whatever the wording, it must never
+    // announce zero of something it is simultaneously offering.
+    panicWithRollback(0);
+    const texts = fillTextCalls();
+    expect(texts).toContain("Roll back"); // the offer is real
+    expect(texts.some((t) => t.includes("last rollback"))).toBe(true);
+    expect(texts.some((t) => /\b0 rollback/.test(t))).toBe(false);
+  });
+
+  it("keeps the wording honest at every count the game can produce", () => {
+    // Easy grants 2, so 1 and 0 are the counts a real run reaches; 2 is
+    // covered above. None of them may contain a bare "0".
+    for (const remaining of [0, 1, 2]) {
+      vi.clearAllMocks();
+      panicWithRollback(remaining);
+      const texts = fillTextCalls();
+      expect(texts, `remaining=${remaining}`).toContain("Roll back");
+      expect(texts.some((t) => /\b0 rollback/.test(t)), `remaining=${remaining}`).toBe(false);
+    }
   });
 
   it("stays exactly as it was when no rollback is offered", () => {

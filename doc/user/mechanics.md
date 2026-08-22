@@ -89,6 +89,8 @@ Difficulty affects enemy-dealt melee/ranged damage and ranged aim precision — 
 Running out of System Stability ends the level with a **Kernel Panic**. What happens next depends on whether your run still has a **rollback** — **2 on Easy, 1 on Normal, and none at all on Hard**, where death is final by design.
 
 - **With one left**, the screen offers a choice: **Roll back** restarts the level you died on, or **Give up** ends the run. Roll back is the default — Enter, Space, a click on it, or **A** on a gamepad — because Space is also the fire button, and a trigger pulled in the fight that just killed you shouldn't be able to end your run by accident. **Escape**, or **B** on a gamepad, gives up.
+The screen tells you what happens *next*, not what you hold: on your final one it says so ("this is your last rollback"), otherwise it names how many follow it. That is because a rollback is counted the moment you die rather than when you press the button — see the end of this section.
+
 - **With none left** — including every death on Hard — there is no choice: the run ends and you return to the file tree, exactly as it always worked.
 
 A rollback restores the state you *entered* the level with — health, armour, every ammunition pool, the weapons you were carrying, and your score. Everything the failed attempt earned or spent is discarded along with the damage you took. Keys are not carried between levels anyway, so a rollback starts you with none, the same as walking in for the first time.

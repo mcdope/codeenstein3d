@@ -83,6 +83,13 @@ export class GameHud {
     // player back in play. Escape keeps the meaning it already has on this
     // screen (leave, back to the file tree), which is why it maps to the
     // secondary rather than to some notion of "cancel".
+    // `rollback.remaining` is the count *after* this rollback is spent — it
+    // is decremented at the death itself, before this screen is shown (see
+    // `onGameOver`), so that closing the tab here is not a free retry. That
+    // makes a bare "N left" actively wrong to read: on the last one it says
+    // "0 rollbacks left" directly above a button offering to spend one, which
+    // is how this first got reported. Every line below therefore talks about
+    // *this* choice and what follows it, never about a bare balance.
     const n = rollback?.remaining ?? 0;
     this.show(
       {
@@ -91,7 +98,9 @@ export class GameHud {
         lines: rollback
           ? [
               "System stability reached 0%.",
-              `${n} rollback${n === 1 ? "" : "s"} left — the level restarts as you entered it.`,
+              n === 0
+                ? "This is your last rollback — the level restarts as you entered it."
+                : `${n} more rollback${n === 1 ? "" : "s"} after this one — the level restarts as you entered it.`,
               "This attempt's score and kills are discarded, and the run is marked.",
             ]
           : ["System stability reached 0%.", "The process was terminated."],
