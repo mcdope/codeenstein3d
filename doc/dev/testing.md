@@ -87,6 +87,42 @@ WebKit is worth testing despite most historically-WebKit browsers (old Opera, ol
 - `npm run test:watch` — watch mode.
 - `npm run coverage` — run once with coverage, enforcing the 99.9/99.9/99.5/99.5 gate (see [Setup](#setup) for why it isn't a flat 100%).
 
+**Locally, `npm test` and `npm run coverage` both need scoping if you have ever fetched the balancing corpus.** `vitest.config.ts` sets no test `include`, and `balancing_corpus/` is gitignored but full of real repositories — including their own test files, which Vitest happily collects and fails. Use `npx vitest run --dir src` for the engine suite. CI never fetches the corpus and so runs `npm run coverage` bare — meaning the command you run locally is *not* the command the gate runs, and `--dir src` additionally skips [the `scripts/` tests below](#unit-tests-under-scripts--outside-the-coverage-gate-still-run-by-ci), doc pins included. Run those separately before pushing anything that touches a doc.
+
+### The 5s default timeout is a real constraint, and CI is not your laptop
+
+`vitest.config.ts` sets **no `testTimeout`**, so every test gets Vitest's 5s
+default. That is generous for a unit test and *not* generous for anything that
+drives the engine in a loop, because the CI job runs the whole repo under v8
+coverage instrumentation in parallel, and is **at least 6x slower per
+`engine.advance()` call** than an uninstrumented local `--dir src` run.
+
+Measured, on the coop help-ping change: a test that advanced the engine 600
+ticks to outlast the 480-frame help-ping cooldown took **805ms locally and
+timed out at 5s on CI** — so 6x is a floor, not an estimate; the real figure is
+unknown because the run was killed. A sibling test doing the same 600 ticks at
+756ms locally did pass, which is the point: there is no visible warning before
+one of these crosses the line.
+
+**Prefer removing the loop to raising the timeout.** A bulk-advance loop is
+almost always waiting out a frame-counted constant, and the counter is reachable
+from the test — the engine's `players` map is already poked directly by several
+suites. Setting it to `0` and advancing a couple of frames is both fast and a
+*sharper* test: with the countdown neutralised, whatever guard you actually
+meant to exercise is the only thing left that can produce the result, instead of
+the test passing on the countdown alone and saying nothing about the guard it is
+named after. The two tests above went to 9ms and 32ms that way.
+
+Keep a real bulk advance only where the expiry *is* the assertion, and give that
+one an explicit timeout (`it("…", () => {…}, 20_000)`).
+
+**A borderline test can hide behind the retry.** The CI step is literally
+`npm run coverage || npm run coverage` (`.github/workflows/verify.yml`, "Run test
+suite with coverage (retry once on failure)"). A test sitting just under the
+limit will fail the first attempt and pass the second, and the job goes green —
+so "CI is green" is not evidence that a slow test is safe. If you add one, check
+its reported duration rather than only its status.
+
 ## Setup
 
 **Versions moved together with the Node floor.** `vitest`/`@vitest/coverage-v8`/`jsdom` sat pinned at `3.2.7`/`3.2.7`/`26.1.0` for a while specifically because `vitest@4`/`jsdom@29`+ require Node 20+, one major ahead of this project's Node 18.19.1 floor at the time. Once the floor moved to Node 20.19+/22.12+ (forced by the Vite 8 bump — see [Architecture](architecture.md#build) — and matched by bumping CI to Node 24), all three were bumped too: `vitest@4.1.10`, `@vitest/coverage-v8@4.1.10`, `jsdom@29.1.1`. That bump is also *why* the coverage gate below isn't a flat 100% anymore — see the thresholds comment in `vitest.config.ts` for the measurement-bug story.
