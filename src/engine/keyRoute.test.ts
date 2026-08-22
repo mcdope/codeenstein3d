@@ -12,7 +12,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DOOR_TILE, type GameMap, type Gate, type KeyItem } from "../map/types";
-import { nextKeyStep } from "./keyRoute";
+import { nextKeyStep, reachable } from "./keyRoute";
 
 /** A walled 12x12 room with whatever is layered on top. */
 function grid(): number[][] {
@@ -44,6 +44,34 @@ function pocket(g: number[][]): void {
 }
 
 const FROM = { x: 6, y: 6 };
+
+describe("reachable", () => {
+  // Exported for the proximity key hint, which needs "can I get there right
+  // now" without wanting a route. The door case is the whole reason this is not
+  // `PathField`: that one calls any closed door solid, so it would report a key
+  // one openable door away as out of reach.
+  it("floods open floor and stops at walls", () => {
+    const g = grid();
+    const region = reachable(map(g, [], []), FROM, new Set());
+    expect(region.has(6 * 12 + 6)).toBe(true);
+    expect(region.has(1 * 12 + 1)).toBe(true);
+    expect(region.has(0 * 12 + 0)).toBe(false); // the wall ring
+  });
+
+  it("treats a door as solid without its key and open with it", () => {
+    const g = grid();
+    pocket(g);
+    const m = map(g, [gate(0, 0, { x: 2, y: 3 })], []);
+    const sealed = 1 * 12 + 1;
+    expect(reachable(m, FROM, new Set()).has(sealed)).toBe(false);
+    expect(reachable(m, FROM, new Set([0])).has(sealed)).toBe(true);
+  });
+
+  it("returns nothing when the starting tile is itself solid", () => {
+    const g = grid();
+    expect(reachable(map(g, [], []), { x: 0, y: 0 }, new Set()).size).toBe(0);
+  });
+});
 
 describe("nextKeyStep", () => {
   it("returns the asked-for key when it can simply be walked to", () => {

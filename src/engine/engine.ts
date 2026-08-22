@@ -26,7 +26,7 @@ import type {
   ReconciliationSnapshot,
   TileMutation,
 } from "./reconciliationSnapshot";
-import { acidTiles, createAcidOverflowStates, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
+import { acidTiles, createAcidOverflowStates, intersectsRect, intersectsRoom, updateAcidOverflows, type AcidOverflowState } from "./acidOverflow";
 import { ACID_DECAY_SECONDS, createAcidDecayState, decayableTiles, updateAcidDecay, type AcidDecayState } from "./acidDecay";
 import { doorwayTiles } from "../map/generation/geometry";
 import { Player, isHazard } from "./player";
@@ -108,7 +108,7 @@ import { audio } from "./audio";
 import { computeScore, killPoints, sumScoreBreakdowns, zeroScoreBreakdown, type ScoreBreakdown } from "./scoring";
 import { gateIdAt } from "../map/gates";
 import { gateColorName } from "./gateColors";
-import { nextKeyStep } from "./keyRoute";
+import { nextKeyStep, reachable } from "./keyRoute";
 import { resolvePlayerDisplayName } from "./playerNames";
 import {
   PLAYER_STATS_ENABLED,
@@ -192,6 +192,7 @@ import {
   TELEPORTER_TILE,
   type Enemy,
   type GameMap,
+  type KeyItem,
   type LootDrop,
   type LootKind,
   type LoreTerminal,
@@ -342,6 +343,48 @@ const KEY_PING_BEAT_FRAMES = 42;
  * denial thunk has finished rather than on top of it. The two are a sequence,
  * not a chord: the denial names what happened, the ping answers it. ~0.3s. */
 const KEY_PING_LEAD_FRAMES = 18;
+/**
+ * How far outside a room's own rect still counts as "walked past it", for the
+ * proximity key hint — in tiles, on every side.
+ *
+ * The hint is for the key you never saw, so the trigger has to fire from the
+ * corridor *outside* the room rather than only once you are standing in it: by
+ * the time you have walked in, you have already seen the thing. Roughly a tile
+ * of corridor plus the doorway — doubled from 1.5 after playtesting, which found
+ * the original fired only once you were nearly in the doorway already.
+ */
+const KEY_HINT_ROOM_MARGIN = 3;
+/**
+ * Straight-line fallback radius, in tiles, for a key that is not inside any
+ * `map.rooms` rect.
+ *
+ * Measured across the demo campaign, 20 of 25 keys sit in a room, 4 in
+ * corridors and 1 in another rect type — so this branch is the minority case,
+ * but without it a level like `stage16_hardware.h`, whose only key lies in a
+ * corridor, would never hint at all.
+ *
+ * Doubled from 4.5 after playtesting: a key with no room around it has no
+ * doorway to walk past either, so the only thing that can announce it is
+ * distance, and half a corridor's length turned out to be too late to read as
+ * "you went by this".
+ */
+const KEY_HINT_RADIUS = 9;
+/**
+ * Frames between proximity scans — 15, i.e. four a second.
+ *
+ * Bounds the worst case rather than the common one. A key that is *near but
+ * not reachable* — one sitting inside a locked room you are walking past — fails
+ * the flood every time it is checked, and without a throttle that is a
+ * whole-grid BFS on every frame for as long as the player stands there. At a
+ * quarter second the check is still far finer than a player can move (~0.06
+ * tiles per frame at most), so nothing is missed.
+ *
+ * `PathField` looks like it could answer this for free, since it is already
+ * flooded per-frame for pathing — but it treats an owned-but-unpushed door as
+ * solid, so it under-reports exactly the case `keyRoute`'s `passable` exists to
+ * fix, and would stay silent about a key one openable door away.
+ */
+const KEY_HINT_SCAN_FRAMES = 15;
 /** Kills within this many real seconds of each other trigger a "Multi
  * Kill" (see `damageEnemy`'s rolling-window check) — not Unreal
  * Tournament's own continuously-extending streak/tier algorithm, just this
@@ -768,6 +811,38 @@ interface PlayerState {
    * same shape as `alarmCountdown`, but frame-counted like its neighbours
    * here rather than `dt`-scaled. */
   keyPingBeatFrames: number;
+  /**
+   * Gate ids whose key has already been hinted by *proximity* on this level —
+   * one key per gate, so the gate id identifies the key.
+   *
+   * A latch rather than a cooldown: the proximity hint's job is "make sure you
+   * noticed this", which is done the first time. Re-firing every trip through a
+   * hub corridor would turn a hint into nagging, and the player who walked past
+   * and kept going has already made their decision.
+   *
+   * Rebuilt per level along with the rest of `PlayerState` — carrying it across
+   * would silently pre-suppress the next level's first key, which is the kind
+   * of bug that only shows up on level 2. Local presentation only, like its
+   * `keyPing*` neighbours: never in a reconciliation snapshot, never a PRNG
+   * draw, so a peer that latches differently stays in lockstep.
+   */
+  proximityHintedGates: Set<number>;
+  /** Frames until the next proximity scan — see `cueNearbyKeyHint`. */
+  proximityScanFrames: number;
+  /**
+   * Whether the live key ping was armed by bumping a locked door rather than by
+   * walking past a key.
+   *
+   * The two triggers share `keyPingFrames` as a rate limit, but they are not
+   * peers and must not suppress each other symmetrically. Bumping a door is
+   * something the player *did*, and it owes them the denial thunk and the "you
+   * need the red key" toast whether or not a hint happens to be on screen —
+   * without this flag a passive ping would swallow the only feedback that the
+   * door refused them, and the door would read as simply not working. So a door
+   * bump overrides a proximity ping, while a proximity ping never interrupts a
+   * door one.
+   */
+  keyPingIsDoorHint: boolean;
   isMapActive: boolean;
   isPaused: boolean;
   loreText: string | null;
@@ -1830,6 +1905,9 @@ export class RaycasterEngine {
       keyPingFrames: 0,
       keyPingTarget: null,
       keyPingBeatFrames: 0,
+      proximityHintedGates: new Set<number>(),
+      proximityScanFrames: 0,
+      keyPingIsDoorHint: false,
       isMapActive: false,
       isPaused: false,
       loreText: null,
@@ -3882,6 +3960,9 @@ export class RaycasterEngine {
       if (p.outOfAmmoToastFrames > 0) p.outOfAmmoToastFrames -= 1;
       if (p.acidOverflowToastFrames > 0) p.acidOverflowToastFrames -= 1;
       if (p.lockedDoorToastFrames > 0) p.lockedDoorToastFrames -= 1;
+      // Before the tick, so a hint armed this frame starts its first beat on
+      // this frame rather than idling one.
+      this.cueNearbyKeyHint(p);
       this.tickKeyPing(p);
     }
     tickBulletTraces(this.traces);
@@ -4837,7 +4918,9 @@ export class RaycasterEngine {
    */
   private cueLockedDoorHint(p: PlayerState, gateId: number): void {
     if (p.id !== this.localPlayerId) return;
-    if (p.keyPingFrames > 0) return;
+    // Only a live *door* hint suppresses this one. A proximity ping is
+    // overridden rather than deferred to — see `keyPingIsDoorHint`.
+    if (p.keyPingFrames > 0 && p.keyPingIsDoorHint) return;
 
     // The asked-for key when it is reachable, otherwise the one that unblocks
     // it. Before 2026-08-21 this pointed only at the asked-for key and went
@@ -4855,6 +4938,7 @@ export class RaycasterEngine {
     p.keyPingFrames = KEY_PING_FRAMES;
     p.keyPingTarget = step ? { x: step.key.x, y: step.key.y } : null;
     p.keyPingBeatFrames = KEY_PING_LEAD_FRAMES;
+    p.keyPingIsDoorHint = true;
     audio.playLockedDoor();
     // No coordinates, deliberately: `consoleSidebar.ts` mirrors these strings
     // straight onto the screen, and key/exit/secret locations never go into
@@ -4878,6 +4962,66 @@ export class RaycasterEngine {
    * what rate-limits the next one) but has nothing to ping, hence the
    * separate `keyPingTarget` guard rather than one combined condition.
    */
+  /**
+   * Ping a key the player is walking past but has not picked up.
+   *
+   * The companion to `cueLockedDoorHint`, and the *preventive* half of the same
+   * cue: that one fires once you have already bounced off a locked door, which
+   * is too late to have noticed the key on the way. This one fires when you
+   * pass the room the key is sitting in, which is the moment you would
+   * otherwise have missed it.
+   *
+   * **Ordered cheap-test-first on purpose.** `reachable` floods the entire grid,
+   * and unlike the door hint — which runs once per door bump — this is a
+   * per-frame path. The geometric pass below is over `map.keys`, which is at
+   * most four entries, and the flood only runs once something is actually in
+   * range and not already latched.
+   *
+   * Deliberately *not* fired here: `playLockedDoor` and the locked-door toast
+   * fields. Nothing was denied, so the thunk would be noise and the "you need
+   * the red key" line would be a lie. The first sonar ping is immediate rather
+   * than delayed by `KEY_PING_LEAD_FRAMES`, which exists only to let that
+   * thunk's tail clear.
+   */
+  private cueNearbyKeyHint(p: PlayerState): void {
+    if (p.id !== this.localPlayerId) return;
+    // Shares the door hint's window as its rate limit, so the two triggers can
+    // never stack a second ping on top of a live one.
+    if (p.keyPingFrames > 0) return;
+    if (p.proximityScanFrames > 0) {
+      p.proximityScanFrames -= 1;
+      return;
+    }
+    p.proximityScanFrames = KEY_HINT_SCAN_FRAMES;
+
+    let candidate: KeyItem | null = null;
+    for (const key of this.map.keys) {
+      if (key.collected || p.proximityHintedGates.has(key.gateId)) continue;
+      const room = this.map.rooms.find((r) => key.x >= r.x && key.x < r.x + r.w && key.y >= r.y && key.y < r.y + r.h);
+      const near = room
+        ? intersectsRect(p.player, room, KEY_HINT_ROOM_MARGIN)
+        : Math.hypot(key.x - p.player.posX, key.y - p.player.posY) <= KEY_HINT_RADIUS;
+      if (near) {
+        candidate = key;
+        break;
+      }
+    }
+    if (!candidate) return;
+
+    // "Reachable" means with the keys actually in hand right now — a key
+    // visible through a locked door you cannot open yet is not something to
+    // send the player after.
+    const from = { x: Math.floor(p.player.posX), y: Math.floor(p.player.posY) };
+    const region = reachable(this.map, from, p.heldGates);
+    if (!region.has(Math.floor(candidate.y) * this.map.width + Math.floor(candidate.x))) return;
+
+    p.proximityHintedGates.add(candidate.gateId);
+    p.keyPingFrames = KEY_PING_FRAMES;
+    p.keyPingTarget = { x: candidate.x, y: candidate.y };
+    p.keyPingBeatFrames = 0;
+    p.keyPingIsDoorHint = false;
+  }
+
   private tickKeyPing(p: PlayerState): void {
     if (p.keyPingFrames <= 0) return;
     p.keyPingFrames -= 1;

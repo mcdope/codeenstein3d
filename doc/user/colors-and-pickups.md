@@ -33,7 +33,7 @@ Two of those will catch you out, so they're worth stating plainly:
 
 **A key marker is gold no matter which key it is.** All four colours show up identically here, so the panel tells you *where* a key is, not *which* one. The colour you're missing is on the HUD key pips, and on the door itself.
 
-Walking into a locked door with no key **pings** the nearest key you can actually reach: its marker brightens and a sonar ring sweeps out of it for a few seconds. "Reachable" means by walking distance, so it never points you at a key sitting behind another locked door.
+Keys **ping** on the minimap: the marker brightens and a sonar ring sweeps out of it for a few seconds. Two things set that off — walking into a locked door you have no key for, and simply passing a room that still holds a key you can reach. "Reachable" means by walking distance, counting doors you already hold the key for. When the key you were asked for is itself locked away, the ping deliberately points at the key that unblocks it instead, so what pings is always somewhere you can go next.
 
 ## Reading the automap
 

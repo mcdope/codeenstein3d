@@ -1760,7 +1760,10 @@ describe("RaycasterEngine — locked-door hint", () => {
   /** A locked door directly east of spawn, so plain `KeyW` walks into it. The
    * door belongs to gate 0, which is what the hint now names and pings. */
   function lockedDoorMap(overrides: Partial<GameMap> = {}): GameMap {
-    const size = 12;
+    // Larger than the 12 these started at: `FAR_KEY` has to sit outside
+    // `KEY_HINT_RADIUS` so the proximity trigger stays out of tests that are
+    // about the door, and 9 tiles of clearance does not fit in a 12x12 room.
+    const size = 32;
     const g = walledRoom(size);
     g[5][7] = DOOR_TILE;
     return fakeMap(
@@ -1774,8 +1777,12 @@ describe("RaycasterEngine — locked-door hint", () => {
     );
   }
 
-  /** Far enough from spawn that `collectKeys` never picks it up mid-test. */
-  const FAR_KEY: KeyItem = { x: 2.5, y: 2.5, collected: false, gateId: 0 };
+  /** Far enough from spawn that `collectKeys` never picks it up mid-test, and
+   * — since the proximity hint shipped — far enough that walking past it does
+   * not arm a ping of its own. These tests isolate the *door* trigger; the
+   * proximity one has its own describe block below. ~20 tiles out, against a
+   * `KEY_HINT_RADIUS` of 9. */
+  const FAR_KEY: KeyItem = { x: 1.5, y: 25.5, collected: false, gateId: 0 };
 
   function doorLogs(log: { mock: { calls: unknown[][] } }): unknown[][] {
     return log.mock.calls.filter((c: unknown[]) => typeof c[0] === "string" && c[0].includes("[door] locked"));
@@ -1801,7 +1808,7 @@ describe("RaycasterEngine — locked-door hint", () => {
     expect(map.grid[5][7]).toBe(DOOR_TILE); // still shut — this is feedback, not a free pass
     expect(local.lockedDoorToastFrames).toBeGreaterThan(0);
     expect(local.keyPingFrames).toBeGreaterThan(0);
-    expect(local.keyPingTarget).toEqual({ x: 2.5, y: 2.5 });
+    expect(local.keyPingTarget).toEqual({ x: FAR_KEY.x, y: FAR_KEY.y });
     expect(denial).toHaveBeenCalledTimes(1);
     expect(doorLogs(log)).toHaveLength(1);
   });
@@ -2125,6 +2132,137 @@ describe("RaycasterEngine — locked-door hint", () => {
     expect(hintState(engine).keyPingFrames).toBe(0);
     expect(denial).not.toHaveBeenCalled();
     expect(doorLogs(log)).toHaveLength(0);
+  });
+});
+
+describe("RaycasterEngine — proximity key hint", () => {
+  /** An open room with no door at all: these tests are about walking *past* a
+   * key, not about being refused by anything. */
+  function openMap(overrides: Partial<GameMap> = {}): GameMap {
+    const size = 12;
+    return fakeMap({ grid: walledRoom(size), spawn: { x: 5, y: 5 }, ...overrides }, size);
+  }
+
+  function silencePing() {
+    return vi.spyOn(audio, "playKeyPing").mockImplementation(() => {});
+  }
+
+  /** Same reach-into-`players` trick the locked-door block uses; repeated here
+   * rather than hoisted, since these are the only two suites that need it. */
+  type PingState = {
+    keyPingFrames: number;
+    keyPingTarget: { x: number; y: number } | null;
+    lockedDoorToastFrames: number;
+  };
+  function pingState(engine: InstanceType<typeof RaycasterEngine>): PingState {
+    return (engine as unknown as { players: Map<string, PingState> }).players.get("local")!;
+  }
+
+  it("pings a reachable key the player walks past", () => {
+    const key: KeyItem = { x: 7.5, y: 5.5, collected: false, gateId: 0 };
+    const map = openMap({ keys: [key], rooms: [{ x: 7, y: 4, w: 3, h: 3 } as GameMap["rooms"][number]] });
+    const { engine } = makeEngine(map);
+    const ping = silencePing();
+
+    engine.advance(0.016);
+
+    const local = pingState(engine);
+    expect(local.keyPingFrames).toBeGreaterThan(0);
+    expect(local.keyPingTarget).toEqual({ x: 7.5, y: 5.5 });
+    // Immediate, unlike the door hint — there is no denial thunk to wait for.
+    expect(ping).toHaveBeenCalled();
+  });
+
+  it("pings a key that lies in no room at all, via the radius fallback", () => {
+    // 16% of demo-campaign keys sit in a corridor rather than a room rect; a
+    // room-only trigger would never hint them. `rooms` is empty here on purpose.
+    const key: KeyItem = { x: 7.5, y: 5.5, collected: false, gateId: 0 };
+    const { engine } = makeEngine(openMap({ keys: [key], rooms: [] }));
+    silencePing();
+
+    engine.advance(0.016);
+
+    expect(pingState(engine).keyPingTarget).toEqual({ x: 7.5, y: 5.5 });
+  });
+
+  it("stays silent for a key that is too far away to have been noticed", () => {
+    // Needs a map with more than `KEY_HINT_RADIUS` of clearance in it.
+    const size = 32;
+    const key: KeyItem = { x: 1.5, y: 25.5, collected: false, gateId: 0 };
+    const map = fakeMap({ grid: walledRoom(size), spawn: { x: 5, y: 5 }, keys: [key], rooms: [] }, size);
+    const { engine } = makeEngine(map);
+    silencePing();
+
+    engine.advance(0.016);
+
+    expect(pingState(engine).keyPingFrames).toBe(0);
+  });
+
+  it("stays silent for a nearby key behind a door the player cannot open", () => {
+    // The assertion the whole reachability flood exists for: a key you can see
+    // across a locked threshold is not somewhere you can be sent.
+    const size = 12;
+    const g = walledRoom(size);
+    for (let y = 1; y < size - 1; y++) g[y][7] = 1; // wall off the east half
+    g[5][7] = DOOR_TILE;
+    const key: KeyItem = { x: 8.5, y: 5.5, collected: false, gateId: 0 };
+    const map = fakeMap(
+      {
+        grid: g,
+        spawn: { x: 5, y: 5 },
+        keys: [key],
+        rooms: [],
+        doors: [{ x: 7, y: 5 }],
+        gates: [{ id: 0, colorIndex: 0, room: { x: 8, y: 4, w: 3, h: 3 }, doors: [{ x: 7, y: 5 }] }],
+      },
+      size,
+    );
+    const { engine } = makeEngine(map);
+    silencePing();
+
+    engine.advance(0.016);
+
+    expect(pingState(engine).keyPingFrames).toBe(0);
+  });
+
+  it("pings a given key only once, however often the player walks past it", () => {
+    const key: KeyItem = { x: 7.5, y: 5.5, collected: false, gateId: 0 };
+    const { engine } = makeEngine(openMap({ keys: [key], rooms: [] }));
+    silencePing();
+
+    engine.advance(0.016);
+    const local = pingState(engine);
+    expect(local.keyPingFrames).toBeGreaterThan(0);
+
+    // Run the window fully out, then keep standing there.
+    for (let i = 0; i < 400; i++) engine.advance(1 / 60);
+    expect(local.keyPingFrames).toBe(0);
+    for (let i = 0; i < 120; i++) engine.advance(1 / 60);
+    expect(local.keyPingFrames).toBe(0);
+  });
+
+  it("does not ping a key that has already been collected", () => {
+    const key: KeyItem = { x: 7.5, y: 5.5, collected: true, gateId: 0 };
+    const { engine } = makeEngine(openMap({ keys: [key], rooms: [] }));
+    silencePing();
+
+    engine.advance(0.016);
+
+    expect(pingState(engine).keyPingFrames).toBe(0);
+  });
+
+  it("fires no denial thunk and no locked-door toast — nothing was refused", () => {
+    const key: KeyItem = { x: 7.5, y: 5.5, collected: false, gateId: 0 };
+    const { engine } = makeEngine(openMap({ keys: [key], rooms: [] }));
+    silencePing();
+    const denial = vi.spyOn(audio, "playLockedDoor").mockImplementation(() => {});
+
+    engine.advance(0.016);
+
+    const local = pingState(engine);
+    expect(local.keyPingFrames).toBeGreaterThan(0);
+    expect(denial).not.toHaveBeenCalled();
+    expect(local.lockedDoorToastFrames).toBe(0);
   });
 });
 

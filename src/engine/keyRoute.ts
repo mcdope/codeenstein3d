@@ -67,8 +67,15 @@ function passable(map: GameMap, x: number, y: number, opened: ReadonlySet<number
 }
 
 /** Tile keys reachable from `from`, treating `opened`'s gates as walked through.
- * 4-neighbour, same connectivity as every other flood in the codebase. */
-function reachable(map: GameMap, from: Point, opened: ReadonlySet<number>): Set<number> {
+ * 4-neighbour, same connectivity as every other flood in the codebase.
+ *
+ * Exported because "can the player get there right now, with the keys they are
+ * holding" is needed by the proximity key hint as well as by `nextKeyStep`, and
+ * `PathField` cannot answer it — see `passable`'s comment above for the
+ * owned-but-unpushed door it gets wrong. Callers must keep this out of the
+ * per-frame path: it floods the whole grid, so guard it behind a cheap
+ * geometric test the way `cueNearbyKeyHint` does. */
+export function reachable(map: GameMap, from: Point, opened: ReadonlySet<number>): Set<number> {
   const start = from.y * map.width + from.x;
   const seen = new Set<number>();
   if (!passable(map, from.x, from.y, opened)) return seen;
