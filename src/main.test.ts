@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildTestWad } from "../scripts/fixtures/buildTestWad.mjs";
 import { ONLINE_WAD_CATALOG } from "./wad/onlineWadCatalog";
 import { buildIndexDom, stubDialogElement, stubResizeObserver } from "../test/mocks/mainDom";
+import { trackWindowListeners } from "../test/mocks/windowListeners";
 import { installRaf, type RafController } from "../test/mocks/raf";
 import { stubCanvasGetContext, stubCanvasToBlob } from "../test/mocks/canvas";
 import { FakeFileSystemFileHandle, fakeDirectoryHandle } from "../test/mocks/fsAccess";
@@ -234,6 +235,18 @@ beforeEach(() => {
   // (see its doc comment) live on this separate global.
   delete (window as unknown as { __codeensteinMultiplayerTestHooks?: unknown }).__codeensteinMultiplayerTestHooks;
   delete (window as unknown as { __codeensteinCampaignTestHooks?: unknown }).__codeensteinCampaignTestHooks;
+});
+
+// This file imports `main.ts` 245 times (see `importMain`), and `main.ts`
+// registers `window` listeners at import time that it never removes — a real
+// page imports it once. Without dropping them per test, every one of those
+// module graphs stays reachable from a live listener on a `window` that
+// outlives the whole file, and the worker dies of heap exhaustion ~91% of the
+// way through. See `trackWindowListeners` for the full write-up.
+const windowListeners = trackWindowListeners();
+
+afterEach(() => {
+  windowListeners.drop();
 });
 
 afterEach(async () => {
