@@ -89,6 +89,24 @@ WebKit is worth testing despite most historically-WebKit browsers (old Opera, ol
 
 **Locally, `npm test` and `npm run coverage` both need scoping if you have ever fetched the balancing corpus.** `vitest.config.ts` sets no test `include`, and `balancing_corpus/` is gitignored but full of real repositories — including their own test files, which Vitest happily collects and fails. Use `npx vitest run --dir src` for the engine suite. CI never fetches the corpus and so runs `npm run coverage` bare — meaning the command you run locally is *not* the command the gate runs, and `--dir src` additionally skips [the `scripts/` tests below](#unit-tests-under-scripts--outside-the-coverage-gate-still-run-by-ci), doc pins included. Run those separately before pushing anything that touches a doc.
 
+### The suite is already parallel — there is no win left in `pool`
+
+Asked and measured 2026-08-19, and worth not re-asking. `vitest.config.ts` sets
+neither `pool` nor `fileParallelism`, so Vitest 4's defaults apply: **forks, one
+worker per core**. Measured on a 16-core machine, `vitest run --dir src` was
+**40.8s wall against 69.8s of summed worker time** — that gap *is* the
+parallelism, and it is already being taken. `--dir scripts` is under a second.
+
+The wall clock that actually hurts is the browser-driven `verify-*.mjs` scripts,
+which no `pool` setting can reach — they are separate Node processes each
+driving a real browser. CI parallelises those the only way available, by *job*
+(see the workflow's matrix and the dedicated multiplayer legs).
+
+If someone tries `pool: "threads"` anyway: the suite constructs real
+`RaycasterEngine`s and jsdom canvases and leans on `restoreMocks` plus per-file
+module isolation, which `forks` gives for free. Measure it; it is not a
+drop-in.
+
 ### The 5s default timeout is a real constraint, and CI is not your laptop
 
 `vitest.config.ts` sets **no `testTimeout`**, so every test gets Vitest's 5s
