@@ -8,10 +8,19 @@ import { installRaf, type RafController } from "../../test/mocks/raf";
 import type { AmmoPickup, Enemy, GameMap, KeyItem, LootDrop, Mine, SpikeTrap, Teleporter, Tile } from "../map/types";
 import { BRANCH_DOOR_TILE, DOOR_TILE, HAZARD_TILE, LORE_TILE, SECRET_WALL_TILE, TELEPORTER_TILE } from "../map/types";
 import { audio } from "./audio";
+import { drawWeapon } from "./viewmodel";
 import { computeBalanceHash } from "./balanceHash";
 import type { GoreLevel } from "./effects";
 import type { InputSnapshot, InputSource } from "./input";
 import { INPUT_DELAY_TICKS } from "./lagCompensationConstants";
+
+// Spy on the viewmodel while keeping its real behaviour, so a test can assert
+// *which weapon the player actually sees* rather than poking at engine
+// internals. Used by the held-Toolchain test below.
+vi.mock("./viewmodel", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./viewmodel")>();
+  return { ...actual, drawWeapon: vi.fn(actual.drawWeapon) };
+});
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
 import type { ReconciliationSnapshot } from "./reconciliationSnapshot";
 import { EMPTY_SNAPSHOT } from "./replay";
@@ -2800,6 +2809,31 @@ describe("RaycasterEngine — firing", () => {
       for (let i = 0; i < 10; i++) engine.advance(0.05);
     }).not.toThrow();
     void handlers;
+  });
+
+  it("keeps the chainsaw on screen for the whole time it is held", () => {
+    const map = fakeMap({}, 12);
+    const { engine, input } = makeEngine(map, makeHandlers(), {
+      carryover: { health: 100, swap: 0, bullets: 0, rockets: 0, smg: 0, gas: 0, ownedWeapons: [0, 1, 2, 6] },
+    });
+    const drawn = vi.mocked(drawWeapon);
+    input.meleeHeld = true;
+
+    // Well over Toolchain's 0.35s bite interval, so this spans several full
+    // cycles including the stretch that used to be the problem.
+    drawn.mockClear();
+    for (let i = 0; i < 60; i++) {
+      engine.advance(1 / 60);
+      engine.render();
+    }
+
+    // The reported bug: `meleeRecoil` decayed under the 0.02 overlay threshold
+    // in ~0.29s, *inside* the 0.35s interval, so for the last few frames of
+    // every bite the renderer drew the equipped pistol instead and the
+    // chainsaw visibly blinked out. Holding the key must show exactly one
+    // weapon.
+    const kinds = new Set(drawn.mock.calls.map(([, view]) => view.kind));
+    expect(kinds).toEqual(new Set(["chainsaw"]));
   });
 
   it("auto-fires gdb repeatedly while the trigger is held, once owned", () => {

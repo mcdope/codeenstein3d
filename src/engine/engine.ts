@@ -451,6 +451,18 @@ const WEAPON_BOB_X_PX = 10;
 const WEAPON_BOB_Y_PX = 8;
 /** How fast the weapon recoil eases back to rest (per second). */
 const RECOIL_RECOVERY = 12;
+/**
+ * Where `meleeRecoil` settles while an `auto` melee weapon is *held*, rather
+ * than the 0 every other recoil eases to.
+ *
+ * Comfortably above `renderNormalFrame`'s 0.02 melee-overlay threshold, so a
+ * held chainsaw can never decay out of being drawn — that gap is what made it
+ * blink back to the equipped ranged weapon between bites. Also non-zero enough
+ * that the glyph stays visibly extended (`drawChainsaw` maps recoil to 40px of
+ * lift, so this is ~11px of it) instead of sitting flush at rest as though it
+ * had been put away.
+ */
+const MELEE_HELD_REST = 0.28;
 /** Frames the muzzle flash is drawn after firing. */
 const MUZZLE_FLASH_FRAMES = 3;
 /** Fraction of max stability below which the low-health alarm sounds. */
@@ -670,6 +682,24 @@ interface PlayerState {
   bobAmount: number;
   recoil: number;
   meleeRecoil: number;
+  /**
+   * True while this player is holding the quick-melee key *and* their melee
+   * weapon is an `auto` one (Toolchain today) — i.e. while the chainsaw is
+   * actually running rather than mid-swing.
+   *
+   * Exists because `meleeRecoil` alone cannot express "held": it is a decaying
+   * animation value, and Toolchain's 0.35s `fireIntervalSec` is *longer* than
+   * the ~0.29s that value takes to fall under the 0.02 overlay threshold at
+   * 60fps. The viewmodel therefore used to blink back to the equipped ranged
+   * weapon for the last few frames of every bite cycle — the "stabbing" a
+   * playtest reported. This flag is what lets the decay floor out instead of
+   * reaching zero, and what gates the looping motor audio.
+   *
+   * Derived in the simulate path from `input.isMeleeHeld()`, never in the
+   * renderer, so replays and multiplayer stay deterministic — `meleeHeld` is
+   * already carried on `InputSnapshot` and through the replay codec.
+   */
+  meleeActive: boolean;
   muzzleFrames: number;
   viewOffsets: { horizonShift: number; bobX: number; bobY: number };
   /**
@@ -1776,6 +1806,7 @@ export class RaycasterEngine {
       bobAmount: 0,
       recoil: 0,
       meleeRecoil: 0,
+      meleeActive: false,
       muzzleFrames: 0,
       viewOffsets: { horizonShift: 0, bobX: 0, bobY: 0 },
       renderOffset: null,
@@ -2859,6 +2890,12 @@ export class RaycasterEngine {
   private notifyFrozen(frozen: boolean): void {
     if (frozen === this.wasFrozen) return;
     this.wasFrozen = frozen;
+    // Every freeze path (pause, lore terminal) returns from `simulate` *before*
+    // the quick-melee loop, so `meleeActive` keeps whatever value it had and
+    // the per-frame sync would leave the chainsaw motor running underneath a
+    // paused game. This is the one stop that does not fall out of that sync.
+    // The player still holding the key on unpause simply restarts it.
+    if (frozen) audio.stopChainsaw();
     this.handlers.onFreezeChange?.(frozen);
   }
 
@@ -3067,6 +3104,11 @@ export class RaycasterEngine {
     // resolves to the knife until Toolchain is owned, then Toolchain
     // permanently (it replaces the knife on Space, not a second slot). Every
     // living player swings independently.
+    // Cleared for *everyone* first, so the paths that skip the loop below —
+    // a dead player, and any state that isn't "playing" — drop the flag
+    // rather than leaving a chainsaw running forever on the frame the player
+    // died or the level ended.
+    for (const p of this.players.values()) p.meleeActive = false;
     if (this.state === "playing") {
       for (const id of this.sortedPlayerIds()) {
         const p = this.players.get(id)!;
@@ -3077,7 +3119,11 @@ export class RaycasterEngine {
           // Drain the one-shot edge so it can't "replay" as a stray knife
           // swing if the player somehow loses Toolchain mid-swing.
           p.input.consumeMelee();
-          if (p.input.isMeleeHeld() && p.meleeCooldown <= 0) {
+          // Held, independent of the bite cooldown: the motor runs the whole
+          // time the key is down, while `fire()` below is gated to one bite
+          // per `fireIntervalSec`.
+          p.meleeActive = p.input.isMeleeHeld();
+          if (p.meleeActive && p.meleeCooldown <= 0) {
             this.fire(p, melee);
             p.meleeRecoil = 1;
             // Not reachable via current WEAPONS data — Toolchain, the only
@@ -3093,6 +3139,14 @@ export class RaycasterEngine {
         }
       }
     }
+    // The chainsaw motor follows the *local* player's held state only — audio
+    // is local, while the loop above runs for every peer in co-op. Both calls
+    // are idempotent, so this is a plain per-frame sync rather than scattered
+    // start/stop pairs: every path that stops the melee loop (death, a state
+    // that isn't "playing", releasing the key, losing Toolchain) has already
+    // cleared `meleeActive` by here, and so silences the motor for free.
+    if (this.players.get(this.localPlayerId)?.meleeActive) audio.startChainsaw();
+    else audio.stopChainsaw();
     this.perf?.mark("input-actions");
 
     // Simulate (may end the game via damage or reaching the exit).
@@ -3906,7 +3960,15 @@ export class RaycasterEngine {
     const target = p.moving ? 1 : 0;
     p.bobAmount += (target - p.bobAmount) * Math.min(1, dt * BOB_EASE);
     p.recoil += (0 - p.recoil) * Math.min(1, dt * RECOIL_RECOVERY);
-    p.meleeRecoil += (0 - p.meleeRecoil) * Math.min(1, dt * RECOIL_RECOVERY);
+    // A held auto-melee weapon settles toward `MELEE_HELD_REST` instead of 0,
+    // which is what keeps the chainsaw on screen between bites. Decaying all
+    // the way to rest crosses the 0.02 overlay threshold in ~0.29s at 60fps,
+    // *inside* Toolchain's 0.35s bite interval, so the viewmodel used to flip
+    // back to the equipped ranged weapon for the last few frames of every
+    // cycle. Each bite still slams this to 1, so the curve reads as a lurch
+    // settling into a chug rather than a stab that retracts.
+    const meleeRest = p.meleeActive ? MELEE_HELD_REST : 0;
+    p.meleeRecoil += (meleeRest - p.meleeRecoil) * Math.min(1, dt * RECOIL_RECOVERY);
 
     const phase = p.bobTime * BOB_FREQUENCY;
     // Horizontal sway is one cycle per stride; vertical bounces twice (a dip on
