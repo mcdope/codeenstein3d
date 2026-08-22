@@ -76,6 +76,63 @@ That is why "a private method reads as guarded" is expressed on the **HP axis** 
 
 Both changes move the hash and invalidate every shipped replay, which is why the sequencing matters and is not negotiable: **batch the balance work, close the hash last, regenerate `defaultHighscore.ts` once, afterwards** (~33 min). Regenerating before the design settles costs a second one, which has happened.
 
+## Enemy Archetypes Are Not Driven by Richer AST Facts
+
+Recurring idea, measured and declined (2026-08-20): extract *recursion*,
+*call-graph fan-in*, *async* and *deprecation* per entity, and use them to drive
+a wider set of enemy archetypes. A prevalence check over **7,101 callable
+entities across 8 repos in 8 languages**, run before building anything, says the
+route does not exist.
+
+- **Prevalence**: recursion **10.2%**, async **1.5%**, deprecation **0.2%** —
+  against the facts already extracted, which this was meant to improve on:
+  private/protected 33.8%, `nestingDepth >= 2` 14.9%, `switchBranches` 4.7%. Two
+  of the four are rarer than the *worst* fact already available.
+- **The one that looked transformative is invalid.** The proposed cheap fan-in
+  proxy — a workspace-wide identifier-occurrence count — reads 50.2% at >=10
+  occurrences, but it measures **name commonality, not call-graph position**:
+  mean name length is 7.8 characters in the high group against 14.8 in the low.
+  Restricting to call sites (`name(`) does not rescue it; correlation stays
+  **-0.300** and the per-language spread runs 12.5% to 72.3%, the same
+  language-marker problem private/protected already has. Real cross-file
+  resolution — imports, namespaces, overloads, dynamic dispatch — is not a small
+  change.
+- **The number that decides it**: of the **51.2%** of entities carrying no
+  existing fact, all three viable facts together reach **12.3%** of them. The
+  factless share would go from 51.2% to ~44.9%. That does not unblock a fourth
+  archetype.
+- **Caveat, so the verdict stays re-testable**: these were text probes over each
+  entity's source span, not real AST extraction. They match the *proposed*
+  implementations closely (the idea itself specifies same-name matching for
+  recursion and an identifier count for fan-in), and deprecation at 0.2% would
+  survive any measurement error.
+
+So the conclusion is about the approach rather than these four facts: archetype
+variety cannot be driven by per-entity AST facts, because every candidate is
+rare, language-bound, or not cheaply resolvable. The facts with full coverage
+and no language skew are the ones already extracted.
+
+**Terrain is a separate question and this does not answer it.** Async and
+deprecation at 1.5%/0.2% would be flavour on a handful of rooms, which may be
+worth it on its own merits — it is just not an archetype lever.
+
+### Adding any field to `CodeEntity` invalidates every shipped replay
+
+This is the cost that is invisible from the idea's wording, and it applies to
+*any* reason for extending the parsed AST, not only this one. `astHash` is
+`hashRun(JSON.stringify(parsed), campaignName)` — so a new field on `CodeEntity`
+changes every AST hash, which makes every shipped replay in
+`defaultHighscore.ts` and every stored highscore entry stale, because playback
+compares the hash and refuses on a mismatch. Batch AST-shape changes together,
+and expect to regenerate the default board (`npm run generate:default-highscore`)
+as part of the same change.
+
+One design question would also have to be settled before extracting anything:
+"async" does not mean the same thing across 15 languages (`async fn`, `suspend`,
+a goroutine, `Task<>`, an IO type). Either the game wants one uniform "this
+entity does something concurrent", or it wants per-language flavour — and that
+is a game-design choice, not an extraction detail.
+
 ## A Held Weapon Needs a Sustained Voice, Not a Faster One-Shot
 
 Every sound in `audio.ts` is a bounded one-shot that schedules its own `stop()` and is never referenced again — `bgm.ts` states the invariant outright, and it is what keeps the module free of lifecycle. Toolchain is the one weapon that breaks it, because it is the only weapon that is *held*.
@@ -440,6 +497,40 @@ The workspace can load a repository from GitHub, and the backlog long carried "s
 **The workaround this project already uses does not transfer.** The online WAD catalog hit exactly this wall — none of its upstream hosts send usable CORS headers — and solved it by moving acquisition *out of the runtime* into `scripts/fetch-online-wads.mjs` at build time. That works because the catalog is fixed and known in advance. A player picks their repo at runtime, so there is nothing to pre-fetch.
 
 **Which leaves a proxy the app controls, and that is the part being declined.** There is a server already (`scripts/multiplayer-server.mjs`), but turning it into an open fetch proxy means an SSRF surface, unbounded third-party bandwidth billed to whoever hosts it, and an availability commitment for a feature that is otherwise entirely client-side. The cost is operational and permanent; the benefit over supporting the three or four hosts people actually use is small. **Add hosts, do not add a proxy.**
+
+### Which hosts, and why Bitbucket was declined
+
+GitHub shipped first; GitLab and Codeberg followed on 2026-08-20 behind one
+auto-detecting "Repo" tab that reads the host off the pasted domain (see
+[history.md](history.md) for the three traps that pass found). **Bitbucket was
+the last candidate and is declined (user, 2026-08-23)**, closing the backlog
+item rather than leaving it open indefinitely.
+
+The reasoning is about *this* feature rather than about Bitbucket generally.
+The adapter reads **public** repositories over an unauthenticated API, so the
+only usage it can serve is someone pasting a public repo to turn it into a
+level. Bitbucket's presence in that population is small — it is predominantly
+private and team-hosted Atlassian work, and dropping Mercurial hosting in 2020
+moved most of the open-source projects that were distinctively there elsewhere.
+Against that, the per-host cost is not nominal: a sibling adapter, a URL and
+shorthand parser, a tab entry, its own rate-limit inference path, and tests.
+The backlog item also recorded that Bitbucket is **unproven** — its API answered
+`ACAO: *` on the one probe, but the probe itself 404'd, so the tree shape and
+pagination were never actually checked and scoping would have started by
+redoing that work.
+
+Declined, not walled off: the "Repo" tab dispatches on domain, so if a real
+request for Bitbucket (or Gitea, or Forgejo) ever arrives, the adapter drops
+into a slot that already exists.
+
+**The rule that outlives the decision — check CORS against the live host before
+writing any adapter, not after.** It is the only property that decides whether a
+host is possible at all from a page, and it cannot be reasoned about from
+documentation: GitLab sends `ratelimit-remaining` but omits it from
+`Access-Control-Expose-Headers`, so a header-gated check is dead code; its
+obvious `/-/raw/` URL sends no CORS header at all. Self-hosted Gitea and Forgejo
+configure CORS per deployment, so "Gitea works" is a claim about one instance,
+never about the software.
 
 ## Dependency Minimalism
 
