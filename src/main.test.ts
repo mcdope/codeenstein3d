@@ -1602,7 +1602,7 @@ describe("main.ts — first-run intro tour", () => {
     await importMain();
     await new Promise((resolve) => requestAnimationFrame(resolve));
     expect(document.querySelector(".intro-tour-popout")).not.toBeNull();
-    expect(document.querySelector(".intro-tour-title")?.textContent).toBe("Six tabs, five ways in");
+    expect(document.querySelector(".intro-tour-title")?.textContent).toBe("Every tab is a way in");
   });
 
   it("does not start unprompted when storage already has data", async () => {

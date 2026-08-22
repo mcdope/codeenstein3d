@@ -69,8 +69,17 @@ const VIEWPORT_MARGIN = 8;
 export const DEFAULT_TOUR_STEPS: readonly TourStep[] = [
   {
     targetId: "launch-tabs",
-    title: "Six tabs, five ways in",
-    body: "Four of these tabs load source code to play — from your machine, a saved run, a public repository, or the bundled demos. The fifth hosts co-op, and the gear holds the settings. Every file you load becomes a level.",
+    // Deliberately counts nothing. The strip is not a fixed size: **Continue**
+    // is `display: none` until a campaign save exists, and **Multiplayer**
+    // until the build was given a signaling server URL — so a first-time
+    // visitor sees four tabs, or five on the public site, and never the six
+    // that exist in the markup. The old title said "Six tabs, five ways in"
+    // and the body described "the fifth" as co-op, on a tab most readers
+    // could not see. Note the co-op step later in this list is simply dropped
+    // when that tab is hidden (see `resolvable`), which is the right
+    // behaviour and another reason this step must not promise it.
+    title: "Every tab is a way in",
+    body: "Each of these loads source code to play, and every file it finds becomes a level — a folder on your machine, a public repository, or the bundled demos. The gear on the right holds the settings. Others appear only when they apply: Continue, once you have a run to pick back up, and Multiplayer, when this copy of the game is set up for co-op.",
   },
   {
     // Local is the leftmost tab and the one selected on arrival, so it leads

@@ -296,6 +296,28 @@ describe("DEFAULT_TOUR_STEPS", () => {
     expect(wad?.body).toMatch(/session/i);
   });
 
+  it("never tells the reader how many tabs there are", () => {
+    // The strip is not a fixed size. #tab-continue is display:none until a
+    // campaign save exists and #tab-multiplayer until the build was given a
+    // signaling server URL, so a first-time visitor sees four tabs, or five
+    // on the public site — never the six in the markup. The step used to be
+    // titled "Six tabs, five ways in" and to describe "the fifth" as co-op,
+    // on a tab most readers could not see. Any count is a claim about a
+    // conditional strip, so the rule is simply: don't count.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "launch-tabs");
+    expect(step).toBeDefined();
+    expect(`${step?.title} ${step?.body}`).not.toMatch(/\b(two|three|four|five|six|2|3|4|5|6)\b/i);
+  });
+
+  it("says the conditional tabs are conditional", () => {
+    // Continue and Multiplayer are the two that come and go; a reader who
+    // cannot see them should be told why rather than left hunting.
+    const step = DEFAULT_TOUR_STEPS.find((s) => s.targetId === "launch-tabs");
+    expect(step?.body).toMatch(/Continue/);
+    expect(step?.body).toMatch(/Multiplayer/);
+    expect(step?.body).toMatch(/only when|appear only|once you have/i);
+  });
+
   it("explains the Local tab, which is the one you land on", () => {
     // It had no step at all: the overview said "from your machine" and
     // nothing followed up, on the tab that is selected when the game opens.
