@@ -160,7 +160,9 @@ describe("AudioManager.playShoot() dispatch", () => {
     { kind: "mp", noiseSources: 0, oscType: "square" },
     { kind: "rocket", noiseSources: 1, oscType: "sawtooth" },
     { kind: "flamethrower", noiseSources: 1, oscType: "sawtooth" },
-    { kind: "chainsaw", noiseSources: 0, oscType: "sawtooth" },
+    // "chainsaw" is deliberately absent: it is the one kind that synthesizes
+    // no per-shot voice at all. Toolchain runs a sustained motor instead, so
+    // `playShoot` only revs it — covered by the loop tests below.
   ];
 
   for (const { kind, noiseSources, oscType } of cases) {
@@ -173,6 +175,102 @@ describe("AudioManager.playShoot() dispatch", () => {
       expect(ctx.createBufferSource).toHaveBeenCalledTimes(noiseSources);
     });
   }
+
+  // Toolchain's motor — the only sustained voice in `audio.ts`, and therefore
+  // the only one that can leak. Everything else schedules its own stop and is
+  // never referenced again.
+  it("runs the chainsaw as a sustained motor rather than a per-shot blip", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.startChainsaw();
+
+    // Two drone oscillators plus the chug LFO, and no one-shot stop scheduled
+    // at start time — a sustained source deliberately breaks the "always
+    // bounded" invariant every other voice in the file follows.
+    const oscs = ctx.createOscillator.mock.results.map((r) => r.value);
+    expect(oscs).toHaveLength(3);
+    expect(oscs[0].type).toBe("sawtooth");
+    expect(oscs[1].type).toBe("sawtooth");
+    expect(oscs[2].type).toBe("sine");
+    for (const osc of oscs) {
+      expect(osc.start).toHaveBeenCalled();
+      expect(osc.stop).not.toHaveBeenCalled();
+    }
+  });
+
+  it("only starts one chainsaw motor however often it is asked", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.startChainsaw();
+    const afterFirst = ctx.createOscillator.mock.calls.length;
+    audio.startChainsaw();
+    audio.startChainsaw();
+    // Idempotent on purpose: the engine calls this every frame the key is held.
+    expect(ctx.createOscillator.mock.calls.length).toBe(afterFirst);
+  });
+
+  it("disconnects every chainsaw node once the motor has spun down", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.startChainsaw();
+    const oscs = ctx.createOscillator.mock.results.map((r) => r.value);
+    const shaper = ctx.createWaveShaper.mock.results[0].value;
+    audio.stopChainsaw();
+
+    for (const osc of oscs) expect(osc.stop).toHaveBeenCalled();
+    // The teardown is deferred to `onended` so the fade-out is audible rather
+    // than clipped. Firing it by hand is the only way to reach the teardown
+    // without a real audio clock.
+    expect(oscs[0].onended).toBeTypeOf("function");
+    oscs[0].onended();
+    // The shaper especially: a `WaveShaperNode` left wired to a dead gain is
+    // precisely the unbounded node leak that once crashed the tab within
+    // seconds of holding this weapon's trigger. See `distortionNode`.
+    expect(shaper.disconnect).toHaveBeenCalled();
+    for (const osc of oscs) expect(osc.disconnect).toHaveBeenCalled();
+  });
+
+  it("revs the running motor on a bite instead of layering a new voice", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    audio.startChainsaw();
+    const [osc, detune, lfo] = ctx.createOscillator.mock.results.map((r) => r.value);
+    const before = ctx.createOscillator.mock.calls.length;
+
+    audio.playShoot("chainsaw");
+
+    // No new oscillator: a bite leans on the drone that is already running.
+    // This is the one `playShoot` kind that synthesizes nothing.
+    expect(ctx.createOscillator.mock.calls.length).toBe(before);
+    // Pitch and chug rate both climb and settle, which is what makes a bite
+    // audible over a continuous motor.
+    expect(osc.frequency.linearRampToValueAtTime).toHaveBeenCalled();
+    expect(detune.frequency.linearRampToValueAtTime).toHaveBeenCalled();
+    expect(lfo.frequency.linearRampToValueAtTime).toHaveBeenCalled();
+  });
+
+  it("ignores a bite when the motor is not running", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    const ctx = audio.resume() as unknown as MockAudioContext;
+    // Reachable for real: `fire()` can land on the same frame the key goes
+    // down, before the per-frame sync has started the motor.
+    expect(() => audio.playShoot("chainsaw")).not.toThrow();
+    expect(ctx.createOscillator).not.toHaveBeenCalled();
+  });
+
+  it("stops the chainsaw safely when it was never started", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    audio.resume();
+    expect(() => audio.stopChainsaw()).not.toThrow();
+  });
+
+  it("makes the chainsaw motor a no-op under browser automation", () => {
+    vi.stubGlobal("AudioContext", MockAudioContext);
+    vi.stubGlobal("navigator", { webdriver: true });
+    audio.startChainsaw();
+    expect(audio.getContextState()).toBe("none");
+    expect(() => audio.stopChainsaw()).not.toThrow();
+  });
 
   it("the shotgun's blast is followed by two low pump clacks", () => {
     vi.stubGlobal("AudioContext", MockAudioContext);

@@ -23,6 +23,10 @@ function mockAudioParam(initial = 0) {
     linearRampToValueAtTime: vi.fn(),
     exponentialRampToValueAtTime: vi.fn(),
     setTargetAtTime: vi.fn(),
+    // Needed by the sustained chainsaw motor, which re-schedules a running
+    // param (pitch, chug rate, fade-out) rather than only ever scheduling a
+    // fresh one-shot the way every other voice does.
+    cancelScheduledValues: vi.fn(),
   };
 }
 

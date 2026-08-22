@@ -29,12 +29,17 @@
  * rack cycling in behind it), a cheap flyweight
  * tick for gdb's full-auto burst, a rising launch whoosh for ghidra (distinct
  * from `playRocketExplosion`'s impact boom), a continuously-blended hiss for
- * Friday Hotfix's jet, an airy whoosh for the knife, and a revving buzz for
- * Toolchain. The three full-auto voices (gdb/Friday Hotfix/Toolchain) add a
- * small `Math.random()` pitch jitter per shot so a rapid burst doesn't sound
- * like an identical clone-stamped loop — cosmetic randomness only, per
- * `doc/dev/architecture.md`'s Determinism section (SFX pitch must never draw
- * from the seeded replay PRNG).
+ * Friday Hotfix's jet, and an airy whoosh for the knife. The full-auto voices
+ * (gdb/Friday Hotfix/Toolchain) add a small `Math.random()` pitch jitter per
+ * shot so a rapid burst doesn't sound like an identical clone-stamped loop —
+ * cosmetic randomness only, per `doc/dev/architecture.md`'s Determinism
+ * section (SFX pitch must never draw from the seeded replay PRNG).
+ *
+ * **Toolchain is the one exception to "every sound is a bounded one-shot".**
+ * It is the only *held* weapon, so it runs a real sustained motor —
+ * `startChainsaw`/`revChainsaw`/`stopChainsaw`, driven by the engine's melee
+ * path rather than scheduled entirely from here. `playShoot("chainsaw")`
+ * therefore revs the running loop instead of synthesizing a fresh voice.
  *
  * `playReload(kind)` dispatches the same way, over the four weapons that
  * actually have a magazine, giving each a short scheduled sequence of
@@ -64,6 +69,28 @@ function audioContextCtor(): AudioContextCtor | null {
 const DEFAULT_MASTER_VOLUME = 0.5;
 const DEFAULT_SFX_VOLUME = 1;
 const DEFAULT_BGM_VOLUME = 0.5;
+
+/**
+ * The Toolchain motor — see `AudioManager.startChainsaw`.
+ *
+ * Both pitches sit in the same 50-350Hz mechanical register the `Clack` bodies
+ * use, and the loaded pitch is close to where the old one-shot's peak was
+ * (130Hz), so the weapon's voice is recognisably the same tool — it just no
+ * longer stops between bites. The chug rates are what carry the two-stroke
+ * character: slow and loping at idle, faster under load, the way a real saw
+ * climbs when it bites into something.
+ */
+const CHAINSAW_IDLE_HZ = 55;
+const CHAINSAW_LOAD_HZ = 130;
+const CHAINSAW_IDLE_CHUG_HZ = 14;
+const CHAINSAW_LOAD_CHUG_HZ = 23;
+/** Quieter than a gunshot's 0.5-0.7 peak: this one is *sustained*, and a drone
+ * at gunshot level would sit on top of every other cue for as long as the key
+ * is held. */
+const CHAINSAW_PEAK = 0.32;
+/** Spin-down after the key is released — long enough to read as a motor
+ * coasting rather than a switch being flipped. */
+const CHAINSAW_RELEASE_SEC = 0.18;
 
 /**
  * One scheduled mechanical "clack" — a struck-object body under a narrow
@@ -112,6 +139,31 @@ class AudioManager {
    * vary between plays of the same length. */
   private noiseBuffers = new Map<number, AudioBuffer>();
   private unavailable = false;
+  /**
+   * The running chainsaw motor, or `null` when it is not running.
+   *
+   * **The only sustained voice in this file.** Everything else here is a
+   * bounded one-shot that schedules its own `stop()` and is never referenced
+   * again — see this module's header. Toolchain needs the exception because it
+   * is the one weapon that is *held*: firing a 0.16s blip once per 0.35s bite
+   * left ~0.19s of silence between buzzes, which reads as a stuttering tool
+   * rather than a running motor.
+   *
+   * Every node is retained so `stopChainsaw` can `disconnect()` all of them.
+   * That is not tidiness — see `distortionNode`'s comment for the unbounded
+   * node leak that crashed the tab the last time something held this trigger.
+   * A single shaper for the lifetime of one loop is fine; a shaper that
+   * outlives its loop, still wired to a dead gain, is the bug.
+   */
+  private chainsaw: {
+    osc: OscillatorNode;
+    detune: OscillatorNode;
+    lfo: OscillatorNode;
+    lfoDepth: GainNode;
+    chug: GainNode;
+    shaper: WaveShaperNode;
+    gain: GainNode;
+  } | null = null;
   /** Timestamp of the last damage sound, to rate-limit continuous hazards. */
   private lastDamageAt = -Infinity;
   /** Total `playShoot` calls this session — a cheap proxy for total
@@ -238,8 +290,11 @@ class AudioManager {
         return this.playFlameJet(ctx, sfx);
       case "knife":
         return this.playKnifeSwing(ctx, sfx);
+      // The only kind that does not synthesize a fresh voice per shot: the
+      // motor is already running (see `startChainsaw`), so a bite leans on it
+      // instead of layering another blip over the top.
       case "chainsaw":
-        return this.playChainsawSwing(ctx, sfx);
+        return this.revChainsaw();
     }
   }
 
@@ -450,22 +505,129 @@ class AudioManager {
     noise.stop(t + 0.09);
   }
 
-  /** Toolchain: a gritty, distorted revving buzz with a quick up-then-down
-   * pitch wobble (rather than every other weapon's plain downward sweep) so
-   * repeated auto-fire triggers read as a sustained motor, not a discrete
-   * blip each time. */
-  private playChainsawSwing(ctx: AudioContext, sfx: GainNode): void {
+  /**
+   * Start the Toolchain motor, if it is not already running.
+   *
+   * A two-stroke chainsaw is a low, dirty drone that is *amplitude*-modulated
+   * by its own firing cycle — the chug is the reason it reads as a chainsaw
+   * and not as a buzzing wasp, so it is the LFO here rather than the pitch
+   * that does the characterising work. The build is:
+   *
+   * - two `sawtooth` oscillators an octave apart and slightly detuned, so the
+   *   drone beats against itself instead of sitting dead still
+   * - through the file's usual `distortionCurve(60)` shaper, the "gritty"
+   *   idiom shared with the shotgun, explosions and the damage grunt
+   * - into a gain whose level is swung by a ~14Hz sine — the chug
+   * - into a master gain, ramped rather than enveloped
+   *
+   * `envelope()` is deliberately not used: it hard-schedules an exponential
+   * decay to silence, which is exactly what a sustained voice must not do.
+   *
+   * Idempotent, so the engine can call it every frame the key is held.
+   */
+  startChainsaw(): void {
+    if (this.chainsaw) return;
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
     const t = ctx.currentTime;
-    const jitter = 1 + (Math.random() * 2 - 1) * 0.08;
+
     const osc = ctx.createOscillator();
     osc.type = "sawtooth";
-    osc.frequency.setValueAtTime(90 * jitter, t);
-    osc.frequency.linearRampToValueAtTime(130 * jitter, t + 0.05);
-    osc.frequency.linearRampToValueAtTime(85 * jitter, t + 0.14);
-    const gain = envelope(ctx, 0.55, 0.004, 0.14);
-    osc.connect(this.distortionNode(ctx)).connect(gain).connect(sfx);
+    osc.frequency.setValueAtTime(CHAINSAW_IDLE_HZ, t);
+    const detune = ctx.createOscillator();
+    detune.type = "sawtooth";
+    detune.frequency.setValueAtTime(CHAINSAW_IDLE_HZ * 2.02, t);
+
+    // The chug: a gain that never fully closes, so the motor keeps turning
+    // over between strokes rather than cutting in and out.
+    const chug = ctx.createGain();
+    chug.gain.setValueAtTime(0.65, t);
+    const lfo = ctx.createOscillator();
+    lfo.type = "sine";
+    lfo.frequency.setValueAtTime(CHAINSAW_IDLE_CHUG_HZ, t);
+    const lfoDepth = ctx.createGain();
+    lfoDepth.gain.setValueAtTime(0.35, t);
+    lfo.connect(lfoDepth).connect(chug.gain);
+
+    const shaper = this.distortionNode(ctx);
+    const gain = ctx.createGain();
+    // Ramp in rather than snapping on, so starting the saw isn't a click.
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(CHAINSAW_PEAK, t + 0.06);
+
+    osc.connect(shaper);
+    detune.connect(shaper);
+    shaper.connect(chug).connect(gain).connect(this.sfx);
     osc.start(t);
-    osc.stop(t + 0.16);
+    detune.start(t);
+    lfo.start(t);
+    this.chainsaw = { osc, detune, lfo, lfoDepth, chug, shaper, gain };
+  }
+
+  /**
+   * Lean on the motor for one bite — pitch and chug rate both climb, then
+   * settle back to idle.
+   *
+   * Called once per `fireIntervalSec` from the engine's melee path, so the
+   * damage cadence still drives the sound even though the drone underneath it
+   * is continuous. A no-op when the motor is not running, which is what makes
+   * the `playShoot("chainsaw")` call site safe on the frame the key goes down.
+   */
+  revChainsaw(): void {
+    const saw = this.chainsaw;
+    if (!saw || !this.ctx) return;
+    const t = this.ctx.currentTime;
+    // Cosmetic only, so `Math.random` rather than the seeded PRNG — see
+    // architecture.md. Keeps consecutive bites from sounding clone-stamped.
+    const jitter = 1 + (Math.random() * 2 - 1) * 0.06;
+    for (const [node, base] of [
+      [saw.osc, CHAINSAW_LOAD_HZ],
+      [saw.detune, CHAINSAW_LOAD_HZ * 2.02],
+    ] as const) {
+      node.frequency.cancelScheduledValues(t);
+      node.frequency.setValueAtTime(node.frequency.value, t);
+      node.frequency.linearRampToValueAtTime(base * jitter, t + 0.05);
+      node.frequency.linearRampToValueAtTime((base === CHAINSAW_LOAD_HZ ? CHAINSAW_IDLE_HZ : CHAINSAW_IDLE_HZ * 2.02) * jitter, t + 0.3);
+    }
+    saw.lfo.frequency.cancelScheduledValues(t);
+    saw.lfo.frequency.setValueAtTime(saw.lfo.frequency.value, t);
+    saw.lfo.frequency.linearRampToValueAtTime(CHAINSAW_LOAD_CHUG_HZ, t + 0.05);
+    saw.lfo.frequency.linearRampToValueAtTime(CHAINSAW_IDLE_CHUG_HZ, t + 0.3);
+  }
+
+  /**
+   * Stop the motor and tear its graph down. Idempotent.
+   *
+   * **Every retained node is disconnected**, the shaper included. Leaving a
+   * shaper wired to a dead gain is the exact shape of the leak recorded in
+   * `distortionNode` — one that took seconds of held auto-fire to kill a tab.
+   * The oscillators are stopped slightly after the fade so the tail is audible
+   * rather than clipped into a click.
+   */
+  stopChainsaw(): void {
+    const saw = this.chainsaw;
+    if (!saw || !this.ctx) {
+      this.chainsaw = null;
+      return;
+    }
+    this.chainsaw = null;
+    const t = this.ctx.currentTime;
+    saw.gain.gain.cancelScheduledValues(t);
+    saw.gain.gain.setValueAtTime(saw.gain.gain.value, t);
+    saw.gain.gain.linearRampToValueAtTime(0.0001, t + CHAINSAW_RELEASE_SEC);
+    const end = t + CHAINSAW_RELEASE_SEC + 0.02;
+    saw.osc.stop(end);
+    saw.detune.stop(end);
+    saw.lfo.stop(end);
+    saw.osc.onended = () => {
+      saw.osc.disconnect();
+      saw.detune.disconnect();
+      saw.lfo.disconnect();
+      saw.lfoDepth.disconnect();
+      saw.chug.disconnect();
+      saw.shaper.disconnect();
+      saw.gain.disconnect();
+    };
   }
 
   /**
