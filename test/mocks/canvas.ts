@@ -77,7 +77,13 @@ export function createMockCanvasContext(canvas: HTMLCanvasElement): MockCanvasCo
     stroke: vi.fn(),
     fillRect: vi.fn(),
     strokeRect: vi.fn(),
-    fillText: vi.fn(),
+    // Returns the font it was called with. The real `fillText` returns void,
+    // and nothing reads this in production — it is here so a test can tell
+    // *which* font a given draw used, via `mock.results[i].value`. Recording
+    // it through the return value rather than a parallel array keeps it
+    // index-aligned with `mock.calls` by construction, including across
+    // `vi.clearAllMocks()`, which clears both together.
+    fillText: vi.fn(() => ctx.font),
     strokeText: vi.fn(),
     drawImage: vi.fn(),
     putImageData: vi.fn(),

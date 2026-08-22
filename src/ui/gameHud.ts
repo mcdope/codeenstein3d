@@ -400,6 +400,26 @@ const PAD_AFTER_BTN = 22;
 /** Space between the two buttons of a two-choice overlay. */
 const BTN_GAP = 16;
 
+/** Advance width of one character, as a fraction of the font size. Every
+ * string on an overlay is set in `ui-monospace, monospace` — where all three
+ * of the fonts below measure the same 0.602em per glyph regardless of weight
+ * — so a character count *is* a width, and `overlayLayout` can size a box to
+ * its content without ever calling `measureText`. That is what keeps it pure
+ * (see its doc comment) and usable on a canvas with no 2D context.
+ *
+ * Rounded up from the measured 0.602 because the fallback font differs by
+ * platform. The asymmetry is deliberate: an over-estimate pads the box by a
+ * few pixels, while an under-estimate puts the squeeze back. And `fillText`'s
+ * `maxWidth` still applies underneath, so even a badly wrong estimate here
+ * degrades to the old squeezed rendering rather than letting text escape its
+ * box. */
+const CHAR_EM = 0.62;
+
+/** The width `text` needs to render unsqueezed at `fontPx` — see `CHAR_EM`. */
+function textWidth(fontPx: number, text: string): number {
+  return text.length * fontPx * CHAR_EM;
+}
+
 /** One button's rect, in canvas pixels — see `overlayLayout`. */
 export interface OverlayButtonRect {
   x: number;
@@ -429,12 +449,32 @@ export interface OverlayGeometry {
  * second hand-tuned formula (see `layout()` below).
  *
  * Pure, and deliberately so: nothing here touches the context, because the
- * content walk only accumulates constants and never calls `measureText`. That
- * lets `show()` still wire up working input on a canvas whose 2D context is
- * unavailable, which is a real case the suite covers.
+ * content walk only accumulates constants and character counts, and never
+ * calls `measureText` (the overlay is monospace throughout — see `CHAR_EM`).
+ * That lets `show()` still wire up working input on a canvas whose 2D context
+ * is unavailable, which is a real case the suite covers.
  */
 export function overlayLayout(w: number, h: number, content: OverlayContent): OverlayGeometry {
-  const boxW = Math.min(content.wide ? 620 : 420, w - 48);
+  // Grow the box to what its content needs, rather than squeezing content
+  // into a fixed box. `fillText`'s `maxWidth` (see `drawOverlay`) is a
+  // backstop, not a layout — it compresses glyphs horizontally, so an
+  // overrunning line renders legible but visibly squashed. That is what the
+  // rollback death screen did in the shipped default: no stats rows means no
+  // `wide`, leaving its 71-character lines 388px to live in and needing 556.
+  // The two fixed sizes stay as *floors*, so nothing that already fits moves.
+  const needed = Math.max(
+    textWidth(22, content.title) + 32,
+    ...content.lines.map((line) => textWidth(13, line) + 32),
+    // `drawOverlay` gives each stat side `boxW / 2 - 24`, so fitting both
+    // sides takes twice the wider one.
+    ...(content.stats ?? []).flatMap(([label, value]) => [
+      2 * (textWidth(13, label) + 24),
+      2 * (textWidth(13, value) + 24),
+    ]),
+  );
+  // `w - 48` is the last resort and stays last: past the canvas edge there is
+  // no width left to give, and `maxWidth` squeezes as it always did.
+  const boxW = Math.min(Math.max(content.wide ? 620 : 420, needed), w - 48);
 
   let contentEnd = PAD_TOP;
   for (let i = 0; i < content.lines.length; i++) contentEnd += LINE_GAP;
