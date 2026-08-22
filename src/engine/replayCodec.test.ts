@@ -23,6 +23,7 @@ function emptyInput(): InputSnapshot {
     mapToggle: false,
     interact: false,
     reload: false,
+    helpPing: false,
     melee: false,
     meleeHeld: false,
     wheelSteps: 0,
@@ -90,11 +91,26 @@ describe("replayCodec — frame encoding", () => {
       "blur",
       "pointerUnlock",
       "click",
+      "reload",
+      "helpPing",
     ] as const;
     // The 11th flag is what proves the two-byte boolean field is read back
-    // little-endian — a one-byte field would silently drop `click`.
+    // little-endian — a one-byte field would silently drop `click`. `reload`
+    // and `helpPing` are bits 11 and 12, appended later; keeping them in this
+    // list is what keeps the two-byte field honest as it fills up.
     const frames = [...bools.map((b) => frame(0.016, { [b]: true })), frame(0.016, Object.fromEntries(bools.map((b) => [b, true])))];
     expect(decodeReplayFrames(encodeReplayFrames(frames))).toEqual(frames);
+  });
+
+  it("decodes a board recorded before helpPing existed, with the flag false", () => {
+    // `helpPing` is bit 12, so a frame that does not set it encodes to exactly
+    // the bytes the pre-helpPing writer produced for the same input — this IS
+    // the old-board case, byte for byte, not an approximation of it. The
+    // decoder must fill the missing field in rather than leaving it undefined.
+    const legacyShaped = frame(0.016, { interact: true, reload: true });
+    const decoded = decodeReplayFrames(encodeReplayFrames([legacyShaped]));
+    expect(decoded[0].input.helpPing).toBe(false);
+    expect(decoded[0].input.reload).toBe(true);
   });
 
   it("round-trips the extras group and distinguishes weaponRequest 0 from null", () => {

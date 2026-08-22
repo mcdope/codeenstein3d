@@ -66,6 +66,9 @@ export class NetworkInputSource implements InputSource {
   consumeReload(): boolean {
     return this.current.reload;
   }
+  consumeHelpPing(): boolean {
+    return this.current.helpPing;
+  }
 
   consumeMelee(): boolean {
     return this.current.melee;

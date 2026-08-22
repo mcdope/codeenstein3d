@@ -1163,6 +1163,35 @@ too — no role-based exception.
   reasonable UX nicety. Not specifying it as a requirement — silently having no
   effect is a complete, correct fix on its own; the toast is polish.
 
+### `helpPing` is the deliberate counter-example
+
+Everything above this heading is about signals that must be **stripped** before
+they reach the shared stream. The coop help ping (`InputSnapshot.helpPing`, bound
+to `G`) is the one flag added specifically so it would be shared, and it is worth
+naming here so a future pass tidying up "local-looking" inputs does not neutralize
+it by analogy.
+
+It rides `InputSnapshot` for the same reason `interact` and `reload` do: the
+session is deterministic lockstep, so a flag in the tick bundle reaches every peer
+with ordering, spoof-proof identity and identical timing already solved, and needs
+no message type, no `levelEpoch` guard and no rate limiter of its own.
+`LocalInputSampler` therefore drains it in the *shared* group, not the
+neutralized-to-false group, and `isValidInputSnapshot` validates it like every
+other boolean.
+
+Two consequences the implementation depends on, both documented at
+`RaycasterEngine.armHelpPings`:
+
+- **It has no `p.id === this.localPlayerId` gate**, unlike `cueLockedDoorHint` and
+  `cueNearbyKeyHint`. Those exist to stop a teammate's private hint appearing on
+  your screen; this one exists to do exactly that on purpose.
+- **It is edge-latched on a false->true transition rather than read directly.**
+  `NetworkInputSource.consume*()` are non-clearing reads of the current frame, and
+  `InputDelayBuffer.finalize()` re-delivers the previous snapshot verbatim on a
+  missing packet — so one press arrives as `helpPing: true` on every held-fallback
+  tick that follows it. Any future one-shot input added to this struct inherits
+  that hazard and needs the same latch.
+
 ## 7. Level transitions
 
 Flagged as ordinary feature work in `multiplayer-research.md` ("when one player

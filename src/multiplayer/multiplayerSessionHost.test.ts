@@ -1431,6 +1431,7 @@ function emptySnapshot(): InputSnapshot {
     mapToggle: false,
     interact: false,
     reload: false,
+    helpPing: false,
     melee: false,
     meleeHeld: false,
     wheelSteps: 0,

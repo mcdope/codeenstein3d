@@ -258,6 +258,51 @@ export function drawLockedDoorToast(
 }
 
 /**
+ * "<name> NEEDS HELP" — a teammate has pressed `G` in a coop session.
+ *
+ * **Left-aligned under the minimap's corner rather than a fourth centered
+ * toast row.** The three warning toasts stack at y=26/56/86, so the next row
+ * down looks like y=116 — but `drawLockedDoorToast` above is 42px tall
+ * whenever it carries its second line (the common case, ~71% of doors), so row
+ * 3 actually runs to y=128; `drawKillStreakToast` sits at `h * 0.28`, which is
+ * y=112 at the shipped 640x400; and at `?renderRes=320x200` the HUD bar starts
+ * at y=128. A fourth row collides with all three. The top-left is empty below
+ * the minimap panel in every resolution, and it puts the caller's name
+ * directly under the panel where their dot is pulsing, which is where the
+ * player has to look anyway.
+ *
+ * `name` and `tone` are passed in rather than resolved here: `colorForPlayer`
+ * is module-private to `engine.ts`, and importing a *value* from there into
+ * this module would close a real runtime cycle (engine already imports hud).
+ */
+export function drawHelpPingToast(
+  ctx: CanvasRenderingContext2D,
+  name: string,
+  tone: string,
+  alpha: number,
+): void {
+  const text = `${name} NEEDS HELP`;
+  ctx.save();
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+  ctx.font = "bold 12px ui-monospace, monospace";
+  const boxW = ctx.measureText(text).width + 16;
+  ctx.fillStyle = "rgba(4,8,10,0.7)";
+  ctx.fillRect(HELP_PING_TOAST_X, HELP_PING_TOAST_Y, boxW, 20);
+  ctx.strokeStyle = tone;
+  ctx.lineWidth = 1;
+  outlineRect(ctx, HELP_PING_TOAST_X + 0.5, HELP_PING_TOAST_Y + 0.5, boxW - 1, 19);
+  ctx.fillStyle = tone;
+  ctx.fillText(text, HELP_PING_TOAST_X + 8, HELP_PING_TOAST_Y + 14);
+  ctx.restore();
+}
+
+/** Top-left anchor for `drawHelpPingToast` — clear of the minimap panel above
+ * it (8px pad + a 70px panel) and of the HUD bar below it even at the smallest
+ * supported render height. */
+const HELP_PING_TOAST_X = 8;
+const HELP_PING_TOAST_Y = 90;
+
+/**
  * "Multi Kill"/"Ultra Kill" banner (see
  * `RaycasterEngine.registerKillForStreak`) — a big, bold, Unreal-
  * Tournament-style announcement, deliberately not `drawCheatToast`'s small

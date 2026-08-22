@@ -19,6 +19,7 @@ import {
 import { drawAutomap } from "./automap";
 import { HUD_HEIGHT } from "./hud";
 import type { Player } from "./player";
+import type { TeammateMapMarker } from "./sprites";
 
 const MARGIN = 12;
 const CELL_PX = 3;
@@ -430,5 +431,61 @@ describe("drawAutomap() — viewport clip and translucent panel", () => {
     g[2][2] = SPIKE_TRAP_TILE;
     const map = fakeMap({ grid: g, spikeTraps: [spike({ x: 2, y: 2, period: 4, phase: 0 })] });
     expect(() => drawAutomap(asCtx(ctx), map, fakePlayer())).not.toThrow();
+  });
+});
+
+describe("drawAutomap() — teammate markers", () => {
+  function unvisitedMap(overrides: Partial<GameMap> = {}): GameMap {
+    return fakeMap({ visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]), ...overrides });
+  }
+
+  const mate = (over: Partial<TeammateMapMarker> = {}): TeammateMapMarker => ({
+    x: 5.5,
+    y: 5.5,
+    color: "#60a5fa",
+    helpPing: false,
+    ...over,
+  });
+
+  it("defaults to none when the param is omitted (single-player-shaped call)", () => {
+    const map = unvisitedMap();
+    const withoutParam = makeCtx();
+    drawAutomap(asCtx(withoutParam), map, fakePlayer());
+    const withEmptyArray = makeCtx();
+    drawAutomap(asCtx(withEmptyArray), map, fakePlayer(), 0, [], []);
+    expect(withoutParam.fillRect.mock.calls.length).toBe(withEmptyArray.fillRect.mock.calls.length);
+  });
+
+  it("draws a dot and its surround per teammate", () => {
+    const map = unvisitedMap();
+    const none = makeCtx();
+    drawAutomap(asCtx(none), map, fakePlayer(), 0, [], []);
+    const one = makeCtx();
+    drawAutomap(asCtx(one), map, fakePlayer(), 0, [], [mate()]);
+    expect(one.fillRect.mock.calls.length).toBe(none.fillRect.mock.calls.length + 2);
+  });
+
+  it("draws a teammate standing on an UNVISITED tile — fog hides the level, not people", () => {
+    // Every other marker on this map is gated on `map.visited`; teammates are
+    // deliberately not, because a teammate's own position gives away nothing
+    // about the tiles around them and a coop map that hides your team is
+    // useless. This is the assertion that pins that decision.
+    const map = unvisitedMap(); // nothing visited at all
+    const none = makeCtx();
+    drawAutomap(asCtx(none), map, fakePlayer(), 0, [], []);
+    const one = makeCtx();
+    drawAutomap(asCtx(one), map, fakePlayer(), 0, [], [mate({ x: 8.5, y: 8.5 })]);
+    expect(one.fillRect.mock.calls.length).toBe(none.fillRect.mock.calls.length + 2);
+  });
+
+  it("adds a four-sided ring for a teammate calling for help, never a strokeRect", () => {
+    const map = unvisitedMap();
+    const quiet = makeCtx();
+    drawAutomap(asCtx(quiet), map, fakePlayer(), 0, [], [mate()]);
+    const calling = makeCtx();
+    drawAutomap(asCtx(calling), map, fakePlayer(), 0, [], [mate({ helpPing: true })]);
+    // One brightened re-fill + `outlineRect`'s four edge bars.
+    expect(calling.fillRect.mock.calls.length).toBe(quiet.fillRect.mock.calls.length + 5);
+    expect(calling.strokeRect).not.toHaveBeenCalled();
   });
 });

@@ -15,6 +15,7 @@ function snapshot(overrides: Partial<InputSnapshot> = {}): InputSnapshot {
     mapToggle: false,
     interact: false,
     reload: false,
+    helpPing: false,
     melee: false,
     meleeHeld: false,
     wheelSteps: 0,
@@ -50,6 +51,7 @@ describe("NetworkInputSource", () => {
         weaponRequest: 2,
         mapToggle: true,
         interact: true,
+        helpPing: true,
         melee: true,
         meleeHeld: true,
         wheelSteps: 1,
@@ -71,6 +73,7 @@ describe("NetworkInputSource", () => {
     expect(input.consumeWeaponRequest()).toBe(2);
     expect(input.consumeMapToggle()).toBe(true);
     expect(input.consumeInteract()).toBe(true);
+    expect(input.consumeHelpPing()).toBe(true);
     expect(input.consumeMelee()).toBe(true);
     expect(input.isMeleeHeld()).toBe(true);
     expect(input.consumeWheelSteps()).toBe(1);

@@ -239,6 +239,48 @@ describe("InputController R (reload)", () => {
   });
 });
 
+describe("InputController G (coop help ping)", () => {
+  beforeEach(() => controller.attach());
+
+  it("queues a help ping on a non-repeat G press", () => {
+    kd("KeyG", "g");
+    expect(controller.consumeHelpPing()).toBe(true);
+  });
+
+  it("does not re-queue on auto-repeat", () => {
+    kd("KeyG", "g", { repeat: true });
+    expect(controller.consumeHelpPing()).toBe(false);
+  });
+
+  it("is consumed once", () => {
+    kd("KeyG", "g");
+    expect(controller.consumeHelpPing()).toBe(true);
+    expect(controller.consumeHelpPing()).toBe(false);
+  });
+
+  it("is not swallowed by a part-typed cheat code", () => {
+    // `G` extends no prefix of IDDQD/IDKFA/IDCLIP, so it must drop the buffer
+    // and fall through to the control branches rather than being eaten the
+    // way a mid-sequence D or K is.
+    kd("KeyI", "i"); // buffer is now a live "I" prefix
+    kd("KeyG", "g");
+    expect(controller.consumeHelpPing()).toBe(true);
+  });
+
+  it("is reported by captureSnapshot without consuming it", () => {
+    kd("KeyG", "g");
+    expect(controller.captureSnapshot().helpPing).toBe(true);
+    expect(controller.consumeHelpPing()).toBe(true);
+  });
+
+  it("is cleared by detach", () => {
+    kd("KeyG", "g");
+    controller.detach();
+    controller.attach();
+    expect(controller.consumeHelpPing()).toBe(false);
+  });
+});
+
 describe("InputController F (interact)", () => {
   beforeEach(() => controller.attach());
 
@@ -556,6 +598,7 @@ describe("InputController.pollGamepad()", () => {
   for (const { name, index, consume } of [
     { name: "reload on X", index: 2, consume: () => controller.consumeReload() },
     { name: "interact on A", index: 0, consume: () => controller.consumeInteract() },
+    { name: "help ping on Y", index: 3, consume: () => controller.consumeHelpPing() },
   ]) {
     it(`edge-triggers ${name}, and not again while it stays held`, () => {
       let pad = fakeGamepad({ buttons: buttonsWith() });

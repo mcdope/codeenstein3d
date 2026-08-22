@@ -80,6 +80,11 @@ const PACKED_BOOLS = [
   // That is why `BINARY_PREFIX` does *not* need bumping here, and why the
   // shipped `defaultHighscore.ts` board still reads.
   "reload",
+  // Appended for the same reason, and with the same arithmetic still holding:
+  // this is bit 12 of the 16 the two boolean bytes carry, so a board recorded
+  // before the coop help ping existed decodes with `helpPing` false and
+  // `BINARY_PREFIX` again stays put.
+  "helpPing",
 ] as const satisfies readonly (keyof InputSnapshot)[];
 
 /** Sentinel for `weaponRequest: null` in the one byte it occupies — a real
@@ -233,6 +238,7 @@ function decodeReplayFramesAt(r: ByteReader): ReplayFrame[] {
       mapToggle: false,
       interact: false,
       reload: false,
+      helpPing: false,
       melee: false,
       meleeHeld: false,
       wheelSteps: 0,

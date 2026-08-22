@@ -63,6 +63,7 @@ type Renderers = {
   drawExitCountdownToast: typeof import("./hud").drawExitCountdownToast;
   drawSpectatingBanner: typeof import("./hud").drawSpectatingBanner;
   drawAutomap: typeof import("./automap").drawAutomap;
+  drawHelpPingToast: typeof import("./hud").drawHelpPingToast;
   drawBulletTraces: typeof import("./effects").drawBulletTraces;
   drawFlameStreams: typeof import("./effects").drawFlameStreams;
   renderExplosions: typeof import("./effects").renderExplosions;
@@ -230,6 +231,26 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     expectNoRasterisingCalls(c, "drawAutomap");
   });
 
+  it("renderMinimap — a help-pinging teammate's sonar ring", () => {
+    // Same reasoning as the key ping above: the ring is the one marker big
+    // enough that `strokeRect` would be the obvious way to draw it, and there
+    // is now a second renderer drawing one.
+    const c = sceneCtx();
+    const map = fakeMap();
+    R.renderMinimap(asCtx(c), map, new R.PlayerCtor(map), 0, 70, undefined, 0, [], [], undefined, null, [
+      { x: 4.5, y: 4.5, color: "#60a5fa", helpPing: true },
+    ]);
+    expectNoRasterisingCalls(c, "renderMinimap(teammates)");
+  });
+
+  it("drawAutomap — a help-pinging teammate's sonar ring", () => {
+    const c = sceneCtx();
+    R.drawAutomap(asCtx(c), fakeMap(), fakePlayer(), 0, [], [
+      { x: 4.5, y: 4.5, color: "#60a5fa", helpPing: true },
+    ]);
+    expectNoRasterisingCalls(c, "drawAutomap(teammates)");
+  });
+
   it("drawHud and drawCrosshair", () => {
     const c = sceneCtx();
     R.drawCrosshair(asCtx(c), true, 12);
@@ -260,6 +281,7 @@ describe("per-frame renderers issue no rasterising path geometry", () => {
     R.drawOutOfAmmoToast(asCtx(c), 1);
     R.drawAcidOverflowToast(asCtx(c), 1);
     R.drawLockedDoorToast(asCtx(c), 1, 1);
+    R.drawHelpPingToast(asCtx(c), "Guest-1", "#60a5fa", 1);
     R.drawKillStreakToast(asCtx(c), "ULTRA KILL!", 1, true);
     R.drawExitCountdownToast(asCtx(c), 90);
     R.drawSpectatingBanner(asCtx(c), "guest-1");

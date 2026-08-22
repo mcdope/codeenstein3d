@@ -3934,6 +3934,7 @@ describe("main.ts — multiplayer connect flow", () => {
         mapToggle: false,
         interact: false,
         reload: false,
+        helpPing: false,
         melee: false,
         meleeHeld: false,
         wheelSteps: 0,
@@ -7052,6 +7053,7 @@ const EMPTY_INPUT_SNAPSHOT: InputSnapshot = {
   mapToggle: false,
   interact: false,
   reload: false,
+  helpPing: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,
@@ -7143,6 +7145,9 @@ class MinimalScriptedInput {
   consumeReload(): boolean {
     return false;
   }
+  consumeHelpPing(): boolean {
+    return false;
+  }
   consumeMelee(): boolean {
     return false;
   }
@@ -7189,6 +7194,7 @@ class MinimalScriptedInput {
       mapToggle: false,
       interact: false,
       reload: false,
+      helpPing: false,
       melee: false,
       meleeHeld: false,
       wheelSteps: 0,

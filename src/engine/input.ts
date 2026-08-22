@@ -35,6 +35,9 @@ const GAMEPAD_BUTTON_R3 = 11;
 const GAMEPAD_BUTTON_A = 0;
 const GAMEPAD_BUTTON_X = 2;
 const GAMEPAD_BUTTON_L3 = 10;
+/** Y≈Triangle — the last unbound face button, and the pad's counterpart to
+ * `KeyG`'s coop help ping. */
+const GAMEPAD_BUTTON_Y = 3;
 /** Stick deflection below this magnitude reads as zero — cheap analog stick
  * drift is common enough that skipping this would cause a slow, uncommanded
  * drift/turn at rest. */
@@ -62,6 +65,7 @@ export interface InputSource {
   consumeMapToggle(): boolean;
   consumeInteract(): boolean;
   consumeReload(): boolean;
+  consumeHelpPing(): boolean;
   consumeMelee(): boolean;
   isMeleeHeld(): boolean;
   consumeWheelSteps(): number;
@@ -104,6 +108,13 @@ export interface InputSnapshot {
    * is recorded into replays — unlike `escape`/`blur`/`click`, which are
    * local-only concerns. */
   reload: boolean;
+  /** Coop "I need help" ping requested this frame (`G`, or the gamepad's Y).
+   * A real shared input like `interact`/`reload` rather than a local one: the
+   * whole point is that it reaches every other peer's screen, so it crosses
+   * the wire and every peer arms the ping from the same bundle. Only ever
+   * *acted* on in a multiplayer session (`RaycasterEngine.armHelpPings`); in
+   * single-player it is still recorded and drained, just inert. */
+  helpPing: boolean;
   melee: boolean;
   /** Whether Space (or the gamepad's R3/B) is currently held — see
    * `isMeleeHeld()`. Only meaningfully polled by an `auto` melee weapon
@@ -149,6 +160,10 @@ export class InputController implements InputSource {
    * until reloading existed; interact moved to F and fullscreen to Alt+Enter,
    * so that the genre-standard R-to-reload could be honoured. */
   private reloadQueued = false;
+  /** Edge-triggered coop help-ping request, set on a G press. G because it is
+   * the only free key left in the A/S/D/F row, so the left hand reaches it
+   * without leaving the movement keys. */
+  private helpPingQueued = false;
   /** Edge-triggered "quick-melee" request, set on a Space press — fires the
    * knife instantly, independent of whatever ranged weapon is equipped (see
    * `RaycasterEngine`). See `isMeleeHeld()` for why this isn't Left-Ctrl. */
@@ -216,6 +231,7 @@ export class InputController implements InputSource {
   private prevGpMelee = false;
   private prevGpReload = false;
   private prevGpInteract = false;
+  private prevGpHelpPing = false;
 
   constructor(private readonly canvas: HTMLCanvasElement) {}
 
@@ -277,6 +293,7 @@ export class InputController implements InputSource {
     this.mapToggleQueued = false;
     this.interactQueued = false;
     this.reloadQueued = false;
+    this.helpPingQueued = false;
     this.meleeQueued = false;
     this.wheelSteps = 0;
     this.fpsToggleQueued = false;
@@ -298,6 +315,7 @@ export class InputController implements InputSource {
     this.prevGpMelee = false;
     this.prevGpReload = false;
     this.prevGpInteract = false;
+    this.prevGpHelpPing = false;
   }
 
   isDown(code: string): boolean {
@@ -359,6 +377,13 @@ export class InputController implements InputSource {
     const reload = this.reloadQueued;
     this.reloadQueued = false;
     return reload;
+  }
+
+  /** Return true at most once per G press — the coop "I need help" ping. */
+  consumeHelpPing(): boolean {
+    const ping = this.helpPingQueued;
+    this.helpPingQueued = false;
+    return ping;
   }
 
   consumeInteract(): boolean {
@@ -524,6 +549,10 @@ export class InputController implements InputSource {
     if (interactDown && !this.prevGpInteract) this.interactQueued = true;
     this.prevGpInteract = interactDown;
 
+    const helpPingDown = pad.buttons[GAMEPAD_BUTTON_Y]?.pressed ?? false;
+    if (helpPingDown && !this.prevGpHelpPing) this.helpPingQueued = true;
+    this.prevGpHelpPing = helpPingDown;
+
     // Held, not edge-triggered: sprint is a modifier, like the Shift it
     // stands in for.
     this.gamepadSprintHeld = pad.buttons[GAMEPAD_BUTTON_L3]?.pressed ?? false;
@@ -548,6 +577,7 @@ export class InputController implements InputSource {
       mapToggle: this.mapToggleQueued,
       interact: this.interactQueued,
       reload: this.reloadQueued,
+      helpPing: this.helpPingQueued,
       melee: this.meleeQueued,
       meleeHeld: this.isMeleeHeld(),
       wheelSteps: this.wheelSteps,
@@ -615,6 +645,14 @@ export class InputController implements InputSource {
     // Not E, despite that being the more common convention, because E is
     // already the camera-turn-right key in this game's Q/E-turn scheme.
     if (e.code === "KeyF" && !e.repeat) this.interactQueued = true;
+
+    // G calls for help in coop — the marker on every teammate's map, not a
+    // local hint. Sits immediately right of F on the same row, so the left
+    // hand never leaves the movement keys to reach it. Inert in single-player
+    // (see `InputSnapshot.helpPing`), and deliberately kept on the canvas
+    // listener like every other control: a window-scoped key is invisible to
+    // every bot-driven harness (see doc/dev/testing.md).
+    if (e.code === "KeyG" && !e.repeat) this.helpPingQueued = true;
 
     // Right-Ctrl toggles the FPS overlay.
     if (e.code === "ControlRight" && !e.repeat) this.fpsToggleQueued = true;

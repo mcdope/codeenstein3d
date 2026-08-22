@@ -126,6 +126,13 @@ const PULSE_PEAK_MS = 90 * Math.PI;
  * `collectMineBillboards` — so it peaks every 440π ms at 110π. Same reasoning
  * as the weapon ring above: without locking the phase, the mine's brightness
  * is a coin-flip and the file churns on every regeneration. */
+/** The help ping's sonar ring is a *sawtooth*, not a sine: it sweeps outward
+ * and fades to fully transparent at the end of every cycle, so an uncontrolled
+ * grab has a real chance of photographing nothing at all — which is exactly
+ * what the first automap capture came back with. A quarter of the way through
+ * a sweep has the ring both clearly grown and still near full opacity. */
+const HELP_PING_SWEEP_MS = 900;
+const HELP_PING_SWEEP_PEAK_MS = HELP_PING_SWEEP_MS * 0.25;
 const MINE_PULSE_PERIOD_MS = 440 * Math.PI;
 const MINE_PULSE_PEAK_MS = 110 * Math.PI;
 
@@ -139,6 +146,47 @@ function say(msg) {
 }
 
 // --- Node-side ground truth -------------------------------------------------
+
+/**
+ * Two open floor tiles a short way from spawn, for the staged teammate markers.
+ *
+ * Picked from the real generated map rather than hardcoded, so a regenerated
+ * fixture cannot silently put a teammate inside a wall — and it throws rather
+ * than returning fewer than two, because a screenshot that quietly lost its
+ * subject still looks like a perfectly good screenshot.
+ */
+function teammateSpots(map) {
+  const sx = map.spawn.x;
+  const sy = map.spawn.y;
+  // The two have to be genuinely far apart, not merely on different tiles.
+  // The fixture is 83 tiles across, which puts `renderMinimap`'s cell size at
+  // its 1px floor — so a 3px dot plus its surround covers five tiles, and the
+  // first attempt at this staged them one tile apart and photographed a single
+  // marker with the other completely underneath it.
+  const MIN_SEPARATION = 10;
+  const open = [];
+  for (let r = 3; r <= 20; r++) {
+    for (let dy = -r; dy <= r; dy++) {
+      for (let dx = -r; dx <= r; dx++) {
+        if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+        const tx = sx + dx;
+        const ty = sy + dy;
+        if (ty < 0 || ty >= map.height || tx < 0 || tx >= map.width) continue;
+        if (map.grid[ty][tx] !== 0) continue;
+        open.push({ x: tx + 0.5, y: ty + 0.5 });
+      }
+    }
+  }
+  const first = open[0];
+  const second = open.find((c) => Math.max(Math.abs(c.x - first.x), Math.abs(c.y - first.y)) >= MIN_SEPARATION);
+  if (!first || !second) {
+    throw new Error(
+      `need two open floor tiles at least ${MIN_SEPARATION} apart near the fixture's spawn for the teammate markers; ` +
+        `found ${open.length} open tiles but no pair that far apart`,
+    );
+  }
+  return [first, second];
+}
 
 /**
  * Regenerate the fixture's map in plain Node, with the same options
@@ -719,6 +767,20 @@ async function main() {
     await page.reload();
     await launchFixtureLevel(page, server.url);
     await page.evaluate(() => window.__codeensteinTestHooks.debugClearEnemies());
+
+    // Two teammates, one of them calling for help — the coop markers both maps
+    // now draw. Staged rather than played: the real route needs a live WebRTC
+    // coop session, which is far more machinery than two coloured dots are
+    // worth, and a single-player engine's roster is only ever the viewer.
+    // Blue and pink from `PLAYER_COLORS` deliberately, not its green or amber:
+    // those two sit next to the exit marker and the key gold respectively, and
+    // a legend screenshot is the wrong place to show off the ambiguous pair.
+    const mates = teammateSpots(map);
+    await page.evaluate(([quiet, calling]) => {
+      window.__codeensteinTestHooks.debugSpawnTeammate({ ...quiet, color: "#60a5fa" });
+      window.__codeensteinTestHooks.debugSpawnTeammate({ ...calling, color: "#f472b6", helpPing: true });
+    }, mates);
+    say(`  teammates staged at ${mates.map((m) => `${m.x},${m.y}`).join(" and ")}`);
     await pump(page, FRAME_MS * 4);
 
     // `renderMinimap` sizes its panel from the map: cell = max(1, floor(70 /
@@ -728,6 +790,7 @@ async function main() {
     const cell = Math.max(1, Math.floor(70 / Math.max(map.width, map.height)));
     const panel = 6 + Math.max(map.width, map.height) * cell + 4;
     const minimapRect = { x: 0, y: 0, w: panel + 20, h: panel + 20 };
+    await pumpToPulsePeak(page, HELP_PING_SWEEP_MS, HELP_PING_SWEEP_PEAK_MS);
     await assertNotFlat(page, minimapRect, "minimap");
     writeIfChanged("minimap.png", await grabCrop(page, { ...minimapRect, scale: 4, label: "minimap" }));
 
@@ -743,6 +806,9 @@ async function main() {
       w: Math.min(RENDER_W, span + 20),
       h: Math.min(RENDER_H - 94, span + 20),
     };
+    // Re-phased: the reveal, the Tab press and its pump above have all moved
+    // the clock on since the minimap grab.
+    await pumpToPulsePeak(page, HELP_PING_SWEEP_MS, HELP_PING_SWEEP_PEAK_MS);
     await assertNotFlat(page, automapRect, "automap");
     writeIfChanged("automap.png", await grabCrop(page, { ...automapRect, scale: 2, label: "automap" }));
 

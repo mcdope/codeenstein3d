@@ -11,6 +11,7 @@ import { NUMBER_KEY_WEAPONS } from "./weapons";
 import { zeroScoreBreakdown } from "./scoring";
 import {
   drawAcidOverflowToast,
+  drawHelpPingToast,
   drawLockedDoorToast,
   drawCheatToast,
   drawCompass,
@@ -205,6 +206,35 @@ describe("drawAcidOverflowToast", () => {
     drawAcidOverflowToast(asCtx(c), 1);
     expect(textColor.toLowerCase()).toBe("#ff9d1f");
     expect(borderColor).toContain("255,157,31");
+    expect(c.strokeRect).not.toHaveBeenCalled();
+  });
+});
+
+describe("drawHelpPingToast", () => {
+  it("names the caller, clamps alpha, and anchors top-left", () => {
+    const c = ctx();
+    drawHelpPingToast(asCtx(c), "Guest-1", "#60a5fa", 5);
+    expect(c.fillText).toHaveBeenCalledWith("Guest-1 NEEDS HELP", 16, 104);
+    expect(c.globalAlpha).toBe(1);
+    expect(c.save).toHaveBeenCalledTimes(1);
+    expect(c.restore).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the three centered toast rows and the HUD bar at the smallest render height", () => {
+    // The reason this is a left chip and not a fourth centered row: row 3
+    // (`drawLockedDoorToast` with its second line) runs to y=128, the kill
+    // streak banner sits at h*0.28, and at 320x200 the HUD bar starts at 128.
+    // The chip's own box must clear all of that.
+    const c = ctx(320, 200);
+    drawHelpPingToast(asCtx(c), "Guest-1", "#60a5fa", 1);
+    const [, boxY, , boxH] = c.fillRect.mock.calls[0] as [number, number, number, number];
+    expect(boxY).toBeGreaterThanOrEqual(86); // below the minimap panel
+    expect(boxY + boxH).toBeLessThanOrEqual(200 - HUD_HEIGHT); // above the HUD bar
+  });
+
+  it("draws its border through outlineRect, never strokeRect", () => {
+    const c = ctx();
+    drawHelpPingToast(asCtx(c), "Guest-1", "#60a5fa", 1);
     expect(c.strokeRect).not.toHaveBeenCalled();
   });
 });

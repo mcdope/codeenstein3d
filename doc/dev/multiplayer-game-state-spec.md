@@ -623,6 +623,38 @@ document's own §3 prerequisite: `visited` staying a single shared structure is 
 fewer piece of state that needs to become "per player" alongside `Player`/health/
 ammo/weaponIndex.
 
+### Teammate markers, and why they are *not* fog-gated
+
+Shipped after the loot drops above and deliberately on the opposite rule, so the
+inconsistency is a decision rather than an oversight.
+
+`renderMinimap` and `drawAutomap` each take a `TeammateMapMarker[]`
+(`sprites.ts`) — position, that player's `colorForPlayer` colour, and whether
+their coop help ping is live. Same call-site gating discipline as the loot drops:
+the renderers stay roster-unaware, and `collectTeammateMapMarkers` needs no
+`isMultiplayerSession()` check of its own because single-player's roster is only
+ever the viewer, who is skipped, so it returns `[]` naturally.
+
+**They are drawn regardless of `map.visited`.** Every other multiplayer-shared
+marker on these panels is fog-gated, for the reason set out above: a marker in an
+unvisited room leaks the *level*. A teammate is not level content. Their dot says
+where a person is standing and nothing whatsoever about the tiles around them,
+they are already visible in the 3D view with a name label above them, and the
+entire purpose of putting a team on a map is answering "where is everybody" —
+which a fog gate would defeat precisely when it matters, since the teammate you
+need to find is by definition the one somewhere you have not been.
+
+The colour is `colorForPlayer`'s, the same one the 3D billboard and name label
+use, which is what finally makes `sprites.ts`' long-standing "reused for their
+automap/minimap dot too" comment true. Every dot is drawn on a dark surround:
+`PLAYER_COLORS` contains a green adjacent to the exit marker's and an amber
+adjacent to the key gold and the automap's own player arrow, so hue alone cannot
+carry "person, not place".
+
+The help ping itself (`InputSnapshot.helpPing`, `RaycasterEngine.armHelpPings`)
+is specified in `multiplayer-netcode-spec.md` §6 — it is an input-stream
+question, not a visibility one.
+
 ### Not addressed here, on purpose
 
 Whether a `weapon`-kind drop should get a visually distinct marker from an ammo
@@ -798,8 +830,9 @@ billboard pass** (a new `collectPlayerBillboards` alongside the enemy/item
 collectors — occlusion via the zBuffer comes free). The local player is the
 camera and is never billboarded. HUD, viewmodel, crosshair targeting, and the
 automap/minimap player *marker* are strictly local-player; teammates appear on
-minimap/automap as distinct-colored markers (team-shared knowledge, same spirit
-as §5). Audio stays local-perspective; remote players' shots may play sounds
+minimap/automap as distinct-colored markers (team-shared knowledge — see §5's
+"Teammate markers" subsection, which also records why these are the one shared
+marker that is *not* fog-gated). Audio stays local-perspective; remote players' shots may play sounds
 (cosmetic, `Math.random` pitch variance stays fine — it never feeds the sim).
 `damage()`'s own hit SFX is the one deliberate exception to "local-perspective
 means everyone hears everything": it's scoped to whoever the local peer is

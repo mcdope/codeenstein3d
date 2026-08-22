@@ -1036,6 +1036,44 @@ class AudioManager {
     });
   }
 
+  /**
+   * The coop "I need help" call — a teammate has pressed `G`, and this repeats
+   * roughly once a second for as long as their ping is up.
+   *
+   * **Why an alternating two-tone rather than the obvious low sweep.** Every
+   * other cue in this file that could be described as "low and urgent" is a
+   * falling triangle glide, and the register is crowded: `playHit` sweeps
+   * 165->55Hz on every single enemy hit, `playAcidOverflow` 150->70Hz,
+   * `playLockedDoor` 110->62Hz. A fourth falling triangle down there would be
+   * heard as one of those three, and the most likely confusion is with the one
+   * that fires constantly. Going up instead runs into `playKeyPing`'s rising
+   * E5/A5 figure, and going high runs into `playAlarm`'s 1245Hz pip.
+   *
+   * So this is separated by *shape* rather than by pitch alone: two square
+   * notes alternating back and forth, the way a siren does, which nothing else
+   * here does at all. Square (not triangle) keeps it distinct even where the
+   * bands overlap, and C4/G3 sits above the three glides while staying well
+   * under the alarm. Quieter than it wants to be (0.18) because it repeats.
+   */
+  playHelpPing(): void {
+    const ctx = this.resume();
+    if (!ctx || !this.sfx) return;
+    const t = ctx.currentTime;
+    const sfx = this.sfx;
+    // C4, G3, C4 — an alternation, not a glide or a two-note figure.
+    const notes = [261.63, 196, 261.63];
+    notes.forEach((freq, i) => {
+      const start = t + i * 0.15;
+      const osc = ctx.createOscillator();
+      osc.type = "square";
+      osc.frequency.setValueAtTime(freq, start);
+      const gain = envelope(ctx, 0.18, 0.006, 0.11, start);
+      osc.connect(gain).connect(sfx);
+      osc.start(start);
+      osc.stop(start + 0.14);
+    });
+  }
+
   /** Goto teleporter warp: a quick sci-fi sweep, up then settling back down. */
   playTeleport(): void {
     const ctx = this.resume();

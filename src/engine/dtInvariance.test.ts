@@ -157,6 +157,9 @@ class ScriptedInput implements InputSource {
   consumeReload(): boolean {
     return false;
   }
+  consumeHelpPing(): boolean {
+    return false;
+  }
   consumeMelee(): boolean {
     return false;
   }

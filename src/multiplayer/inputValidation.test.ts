@@ -15,6 +15,7 @@ const VALID_SNAPSHOT: InputSnapshot = {
   mapToggle: false,
   interact: false,
   reload: false,
+  helpPing: false,
   melee: false,
   meleeHeld: false,
   wheelSteps: 0,
@@ -78,6 +79,17 @@ describe("isValidInputSnapshot", () => {
 
   it("rejects a non-boolean interact", () => {
     expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, interact: 1 })).toBe(false);
+  });
+
+  it("rejects a non-boolean helpPing", () => {
+    // Peer-controlled and unvalidated until this line existed — an unlisted
+    // field is silently accepted by the rest of the chain.
+    expect(isValidInputSnapshot({ ...VALID_SNAPSHOT, helpPing: 1 })).toBe(false);
+  });
+
+  it("rejects a snapshot with helpPing missing entirely", () => {
+    const { helpPing: _omitted, ...withoutHelpPing } = VALID_SNAPSHOT;
+    expect(isValidInputSnapshot(withoutHelpPing)).toBe(false);
   });
 
   it("rejects a non-boolean melee", () => {
