@@ -58,8 +58,38 @@ export const ROAM_ARRIVE = 0.25;
 export const ATTACK_RADIUS = 0.5;
 /** Seconds between successive melee bites from a single enemy. */
 export const ATTACK_COOLDOWN = 0.8;
-/** Stability (health) the player loses per melee bite. */
-export const ATTACK_DAMAGE = 10;
+/**
+ * Stability (health) the player loses per melee bite.
+ *
+ * **10 -> 15 on 2026-08-23, decided by play and not by the solver.** Together
+ * with `PROJECTILE_DAMAGE`'s matching raise this is a flat 1.5x on everything
+ * enemies deal, chosen from a 1x/1.5x/2x/3x ladder wired temporarily into the
+ * settings panel and played on Normal.
+ *
+ * **Why it was low, and why no instrument had said so.** Enemy damage had not
+ * moved all cycle while the enemies around it had: `HP_PER_COMPLEXITY` went
+ * 25 -> 35 and Edge Cases 10-15 -> 25-35, so fights got longer *and* the
+ * guaranteed kill heal — `HEALTH_DROP_AMOUNT * maxHp / HEALTH_SCALE_REFERENCE_HP`
+ * — grew with the HP that was raised, while what the same enemies hit back
+ * with stayed put. The playtest bot could not see any of it: it takes ~16
+ * damage a level against a 100-point bar and sits at full health, so
+ * `pickupHealth` reads 0 in every arm of every capture. This is a number play
+ * settles and telemetry cannot.
+ *
+ * **The archetype ladder and every DPS ratio are untouched**, because both
+ * halves moved by the same factor: Elite melee is still 2x a regular's, Edge
+ * Case still 0.4x, and `enemyWeapons.test.ts`'s `damage / meanCooldown`
+ * invariant still holds per archetype. What changed is the scalar, deliberately
+ * and only the scalar — this is not a redistribution, which is the lever class
+ * three prior A/Bs showed does not move difficulty (total damage taken
+ * invariant at 122/127/126).
+ *
+ * **It compounds with difficulty, as every other axis does.** Per bite:
+ * Easy 12.75, Normal 15, Hard 22.5. The 1.5x was measured on Normal, so Hard
+ * now lands 2.25x what it did — the intended direction (Hard's damage mirrors
+ * its own HP curve), but it is a bigger move than the one that was played.
+ */
+export const ATTACK_DAMAGE = 15;
 /** Half-width of an enemy's collision box, in tiles. */
 export const ENEMY_RADIUS = 0.3;
 /** Melee/ranged damage multiplier for an Elite (boss-tier) enemy — see
@@ -82,8 +112,23 @@ export const EDGE_CASE_ROAM_JITTER_RAD = 0.9;
 
 /** Bolt travel speed, in tiles per second (dodgeable, but faster than a chase). */
 export const PROJECTILE_SPEED = 5;
-/** Stability the player loses when a bolt connects. */
-export const PROJECTILE_DAMAGE = 8;
+/**
+ * Stability the player loses when a bolt connects.
+ *
+ * **8 -> 12 on 2026-08-23** — the ranged half of the same flat 1.5x raise
+ * `ATTACK_DAMAGE` documents in full. Every entry of `ENEMY_WEAPONS` below is
+ * expressed as a multiple of this, so the archetype ladder moves with it and
+ * nothing there needs editing: a normal bolt is 12, an Elite's shell 48, an
+ * Edge Case's chip 2.4.
+ *
+ * **Worth knowing before raising it again**: an Elite shell is now 48 against
+ * a 100-point bar on Normal and 72 on Hard, so two of them kill from full.
+ * That is close to the point where the archetype stops being "a heavy,
+ * telegraphed shot you can step out of" and becomes a coin flip on reaction
+ * time — a further raise wants an Elite-specific carve-out rather than another
+ * move here.
+ */
+export const PROJECTILE_DAMAGE = 12;
 /** Bolt collision half-size, in tiles. */
 export const PROJECTILE_RADIUS = 0.15;
 
@@ -111,11 +156,13 @@ export const PROJECTILE_RADIUS = 0.15;
  *
  * - **normal** — unchanged in every field. The baseline the other two are
  *   defined against.
- * - **elite** — one heavy, slow, telegraphed shell. 32 damage a third of the
- *   player's health at once, but at 3.6 tiles/s it is the slowest bolt in the
- *   game and there is time to step out of it. Dodging an Elite becomes a real
- *   decision rather than an averaging exercise.
- * - **edgeCase** — a fast, weak, inaccurate spray. 1.6 a bolt at nearly twice
+ * - **elite** — one heavy, slow, telegraphed shell. 48 damage, roughly half
+ *   the player's health at once, but at 3.6 tiles/s it is the slowest bolt in
+ *   the game and there is time to step out of it. Dodging an Elite becomes a
+ *   real decision rather than an averaging exercise — and since the 2026-08-23
+ *   raise took it from a third of the bar to a half, rather less of an
+ *   optional one.
+ * - **edgeCase** — a fast, weak, inaccurate spray. 2.4 a bolt at nearly twice
  *   the fire rate and 7 degrees of inherent scatter, so it chips rather than
  *   spikes and is hard to dodge deliberately. Matches what the archetype
  *   already is in melee ("a nuisance, not a threat").
@@ -174,7 +221,7 @@ export const ENEMY_WEAPONS: Readonly<Record<EnemyArchetype, EnemyWeapon>> = {
   },
   elite: {
     archetype: "elite",
-    // 2x damage, 2x cooldown window: 32 / 3.8 === 8 * 2 / 1.9.
+    // 2x damage, 2x cooldown window: 48 / 3.8 === 12 * 2 / 1.9.
     speed: 3.6,
     damage: PROJECTILE_DAMAGE * 2 * ELITE_DAMAGE_MULTIPLIER,
     radius: PROJECTILE_RADIUS,
@@ -185,7 +232,12 @@ export const ENEMY_WEAPONS: Readonly<Record<EnemyArchetype, EnemyWeapon>> = {
   },
   edgeCase: {
     archetype: "edgeCase",
-    // 0.5x damage, 0.5x cooldown window: 1.6 / 0.95 === 8 * 0.4 / 1.9.
+    // 0.5x damage, 0.5x cooldown window: 2.4 / 0.95 === 12 * 0.4 / 1.9.
+    // Written this way and not as an exact 2.4 on purpose: `12 * 0.5 * 0.4` is
+    // 2.4000000000000004 in binary floating point, and that is precisely the
+    // value for which the identity above holds as *exact* equality. An
+    // arithmetically tidier `PROJECTILE_DAMAGE / 5` lands one ULP off and
+    // fails `enemyWeapons.test.ts`. The old `8` was exact by luck, not design.
     speed: 7.5,
     damage: PROJECTILE_DAMAGE * 0.5 * EDGE_CASE_DAMAGE_MULTIPLIER,
     radius: PROJECTILE_RADIUS,

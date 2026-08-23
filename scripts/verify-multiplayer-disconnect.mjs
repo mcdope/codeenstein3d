@@ -196,6 +196,43 @@ async function scenarioGuestDisconnect(browser, engineName) {
   const { hostContext, guestContext, hostPage, guestPage } = await setupSession(browser, engineName);
 
   try {
+    // **Both peers are made invulnerable for this scenario** — the same
+    // narrow, `?testHooks=1`-gated `debugSetGodMode` hook, and the same
+    // reasoning, that `verify-multiplayer-transition.mjs` already applies to
+    // its host: this script proves transport teardown and disconnect
+    // detection, not that a bot can survive the demo campaign's combat while
+    // standing still. Each id is set on *both* pages because every peer runs
+    // its own engine and they must agree, exactly as that script does.
+    //
+    // Added 2026-08-23, when the enemy-damage raise (a flat 1.5x) tipped this
+    // over: the guest died inside the evade window below and the "not yet
+    // marked disconnected" check read `status="dead"` instead of `"alive"`.
+    //
+    // **Loosening that check to `!== "disconnected"` was the other option and
+    // is the worse one**: a dead guest does not merely fail one assertion, it
+    // makes the run *skip* the loot-source check further down (see the
+    // `disconnect-conversion no-op` branch). Tolerating the death would have
+    // locked in that silent coverage loss; preventing it restores the check.
+    //
+    // **The host is included, and the first version of this fix wrongly left
+    // it out.** The argument for excluding it was that "the local (host)
+    // player is still alive" is a real assertion about the disconnect logic
+    // not wiping the team, which god mode would make vacuous. Running it that
+    // way disproved the premise: the host then died to combat on its own and
+    // the scenario ended with "every player was eliminated", taking three
+    // checks down with it and leaving `getPlayerStatus` returning null. The
+    // assertion cannot be about combat survival, because the host cannot
+    // reliably survive — and it loses nothing it was actually protecting,
+    // since a disconnect-induced team wipe does not route through `damage()`
+    // (the only thing `godMode` guards) but sets status directly. This is the
+    // hazard the surrounding comment already warned about from an earlier
+    // occurrence: "the host died too".
+    for (const id of ["guest-1", "host"]) {
+      for (const page of [hostPage, guestPage]) {
+        await page.evaluate((who) => window.__codeensteinMultiplayerTestHooks.debugSetGodMode(who, true), id);
+      }
+    }
+
     // Give the guest a head start away from its own spawn's immediate
     // vicinity before it goes permanently uncontrollable — the only
     // mitigation available for a peer about to lose its browser entirely.
@@ -207,6 +244,18 @@ async function scenarioGuestDisconnect(browser, engineName) {
     await Promise.all([startEvading(guestPage), startEvading(hostPage)]);
     await hostPage.waitForTimeout(8000);
     await stopEvading(guestPage);
+
+    // Assert the setup step took effect rather than trusting that the call
+    // above did not throw. A silently-refused `debugSetGodMode` would put this
+    // scenario straight back on the combat-variance substrate it was just
+    // taken off, and the only symptom would be the "not yet marked
+    // disconnected" check below reading `status="dead"` — which names the
+    // wrong cause and is exactly how this failed in the first place.
+    check(
+      "guest: still alive going into the teardown (god mode took effect)",
+      (await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1"))) === "alive",
+      "a dead guest here means the god-mode call was refused, not that the disconnect logic misbehaved",
+    );
 
     const statusRightAfterClose = await (async () => {
       console.log("  Closing the guest's browser context (a real transport-level teardown)...");

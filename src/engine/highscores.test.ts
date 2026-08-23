@@ -325,19 +325,48 @@ describe("difficultyOf", () => {
 
 describe("difficultyOf against the shipped default board", () => {
   it("resolves a real difficulty for every shipped row, so no dashes ship", async () => {
-    // The claim that made regenerating the board unnecessary, checked against
-    // the actual shipped bytes rather than argued from the generator's
-    // source. Those rows predate the `difficulty` field entirely, so every
-    // value here comes back through the replay-recovery path — if that path
-    // ever breaks, or a future board is generated without replays attached,
-    // the first-time visitor's board silently becomes a column of dashes and
-    // this is what says so.
+    // The guarantee, checked against the actual shipped bytes rather than
+    // argued from the generator's source: a first-time visitor must never see
+    // a column of dashes.
+    //
+    // **This used to also assert `entry.difficulty === undefined`**, on the
+    // grounds that the shipped rows predated the field and therefore proved
+    // the replay-recovery path worked. That stopped being true when the board
+    // was regenerated on 2026-08-23 for the enemy-damage raise: the generator
+    // records the field now, so the rows carry it and `difficultyOf`
+    // short-circuits on line one. Asserting its absence was pinning an
+    // incidental property of one particular generated board, not the
+    // guarantee — so the guarantee is what stays here, and the recovery path
+    // gets its own case below rather than riding on a coincidence.
     localStorage.clear();
     const board = await loadHighscoresForDisplay();
     expect(board.length).toBeGreaterThan(0);
     for (const entry of board) {
-      expect(entry.difficulty, `${entry.playerName ?? entry.levelName} should predate the field`).toBeUndefined();
-      expect(difficultyOf(entry), `${entry.playerName ?? entry.levelName} recovered from replay`).toBeDefined();
+      expect(difficultyOf(entry), `${entry.playerName ?? entry.levelName} resolves a difficulty`).toBeDefined();
+    }
+  });
+
+  it("still recovers a difficulty from the replay when the field is absent", async () => {
+    // The coverage the case above used to provide by accident. Strips the
+    // field from every shipped row and re-asks, which is exactly the shape of
+    // a run recorded before the board tracked difficulty — those exist in real
+    // players' storage and must not degrade to a dash. Driven off the shipped
+    // bytes rather than a fixture so it also fails if a future board is
+    // generated without replays attached.
+    localStorage.clear();
+    const board = await loadHighscoresForDisplay();
+    expect(board.length).toBeGreaterThan(0);
+    for (const entry of board) {
+      // Both halves of the premise, stated, so the comparison below cannot
+      // pass as `undefined === undefined` on a row that has neither a field
+      // nor a replay to recover from.
+      expect(entry.difficulty, `${entry.levelName} carries the field to compare against`).toBeDefined();
+      const withoutField = { ...entry, difficulty: undefined };
+      expect(withoutField.difficulty).toBeUndefined();
+      expect(
+        difficultyOf(withoutField),
+        `${entry.playerName ?? entry.levelName} recovered from replay`,
+      ).toBe(entry.difficulty);
     }
   });
 });

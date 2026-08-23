@@ -699,8 +699,8 @@ Three archetypes, distinguished by two booleans on `Enemy`, not by a stat table.
 | Trigger | function/method entity | same, `complexity ≥ 40` | corridor dressing, and the tail of a `switch`-heavy entity's pack |
 | Pack size | `1 + floor(c/5)` | `ceil(min(c*35*2, 8*350) / 350)`, ≤ 8 | 1 |
 | HP | `max(35, round(c*35/count))`, anchor-weighted in a guarded (private/protected) room | `min(c*35*2, 2800)` split across the pack, each member ≤ 350 | 25–35 uniform |
-| Melee dmg | 10 | 20 | 4 |
-| Bolt dmg | 8 | **32** | **1.6** |
+| Melee dmg | 15 | 30 | 6 |
+| Bolt dmg | 12 | **48** | **2.4** |
 | Bolt speed | 5 | **3.6** | **7.5** |
 | Bolt spread | 0° | 0° | **7°** |
 | Melee interval | 0.8 s | 0.8 s | 0.8 s |
@@ -992,7 +992,7 @@ day one (§3.3).
 | `deaths`, `nearDeath`, `timeBelowThreshold` | E | deaths per level; dips below 25% that recovered; time below it | `damageTaken`, `playerDeath` | zero near-deaths across a campaign = no stakes (this is exactly how Easy's damage floor got raised) |
 
 `damageBySource` exists today with six sources (`telemetry.ts`) but no archetype
-attribution — `enemyMelee` merges an Elite's 20-damage bite with an Edge Case's 4.
+attribution — `enemyMelee` merges an Elite's 30-damage bite with an Edge Case's 6.
 The archetype split is new and is what makes threat scoring checkable.
 
 ### 2.4 Encounter and pacing
