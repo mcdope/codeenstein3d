@@ -80,7 +80,7 @@ Two deliberate limits worth knowing before extending it. It hashes the enemy **r
 
 ## Feature Flags
 
-Hardcoded `export const X_ENABLED = <bool>` constants — no build config or env var, flip the source and rebuild. All default to whatever's actually shipping.
+Hardcoded `export const X_ENABLED` constants — no build config or env var, flip the source and rebuild. All default to whatever's actually shipping. One (`TEST_HOOKS_BUILD_ENABLED`) is a build-time expression rather than a literal, which is deliberate and is what lets the bundler eliminate it.
 
 | Flag | Default | File | What it gates |
 |---|---|---|---|
@@ -95,6 +95,7 @@ Hardcoded `export const X_ENABLED = <bool>` constants — no build config or env
 | `DISTANCE_FOG_ENABLED` | `true` | `src/engine/raycaster.ts` | The distance fog ("farther = darker"): per-column black overlay `fillRect` plus the floor caster's per-scanline/per-pixel shading. Exists to *measure*, not to ship off — the 2026-07 perf audit's A/B found fog costs under 0.1ms/frame (below the harness's detection floor) even on a 160×160 map, so it stays on. Threaded as `renderScene`'s `fog` parameter, same pattern as `antialiasing` above. |
 | `FLOOR_FAST_PATH_ENABLED` | `true` | `src/engine/raycaster.ts` | The floor caster writing one 32-bit word per pixel (u32 view over the same `ImageData`) and blitting with one full `putImageData`, instead of four byte stores per pixel. On by default since the 2026-08 frame-budget audit (Phase 6): −0.5ms/frame at 640×400 and −1.4ms at 1280×800 on **clock-equalized** A/Bs (`perf:bench --flag floorfast --scenario c2-2bg` — a plain light-duty A/B read the same win as a +1.3ms regression, purely from a DVFS bin). Output equivalence is proven in `raycaster.test.ts`; the classic byte path is retained one flip away. |
 | `FLOOR_HALF_RES_ENABLED` | `false` | `src/engine/raycaster.ts` | Unconditional half-resolution floor cast + upscale. A **visible** change (floor texels twice as chunky), kept off and flag-only so the fidelity/cost trade stays measurable (`perf:bench --flag floorhalf`). The shipping half-res path is the automatic one below, not this. |
+| `TEST_HOOKS_BUILD_ENABLED` | `import.meta.env.DEV` | `src/engine/engine.ts` | Whether the `window.__codeenstein*TestHooks` globals are compiled in at all. The odd one out in this table: not a design choice but a **build-time** constant, so a production bundle folds the entire branch away rather than shipping it behind a runtime check. `postbuild` fails the build if a hook survives into `dist/` anyway — see [Build](#build). |
 | `AUTO_HALF_RES_FLOOR_ENABLED` | `true` | `src/engine/raycaster.ts` | Pairs the half-res floor automatically whenever the canvas is wider than the classic 640 — which is what makes the "Sharp" render-quality setting structurally *1280×800 + half-res floor*, never the unpaired combo (measured 14.5ms busy full-res vs 5.5ms paired). Flippable for benchmarking (`--flag floorhalfauto`) so the unpaired case stays measurable. |
 
 Benchmarking these: `npm run perf:bench -- --flag aa|scaling|fog --scenario s1-idle,...` runs an interleaved A/B with the flag temporarily flipped in-source (guarded restore); see `scripts/run-perf-benchmark.mjs`'s header and `npm run perf:report` for the chart report.

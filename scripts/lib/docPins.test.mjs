@@ -50,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { DIFFICULTY_MULTIPLIERS, ROLLBACKS_BY_DIFFICULTY } from "../../src/difficulty";
-import { AMMO_META, AMMO_TYPES, STARTING_SHELLS } from "../../src/engine/ammo";
+import { AMMO_META, AMMO_TYPES, CARRYOVER_CAP_MULTIPLE, STARTING_SHELLS } from "../../src/engine/ammo";
 import {
   ATTACK_DAMAGE,
   EDGE_CASE_DAMAGE_MULTIPLIER,
@@ -61,8 +61,10 @@ import {
 import { GORE_MULTIPLIERS } from "../../src/engine/effects";
 import { TOOL_SLOTS } from "../../src/engine/hudLayout";
 import {
+  AMMO_SCALE_REFERENCE_HP,
   ELITE_BONUS_WEAPON_DROP_CHANCE,
   NORMAL_KILL_WEAPON_DROP_CHANCE,
+  HEALTH_SCALE_REFERENCE_HP,
   REGULAR_KILL_NO_DROP_CHANCE,
   SHELLS_DROP_AMOUNT,
 } from "../../src/engine/loot";
@@ -92,7 +94,18 @@ function constantFromSource(rel, name) {
   return Number(match[1]);
 }
 
-/** Every `export const X_ENABLED = <bool>` under `src/`, with its file. */
+/**
+ * Every `export const X_ENABLED` under `src/`, with its file and its default.
+ *
+ * **`value` is `null` when the default is not a boolean literal**, and that
+ * case is the reason this comment is long. The regex used to be
+ * `= (true|false);`, which reads as "every flag" and is not: it silently
+ * skipped `TEST_HOOKS_BUILD_ENABLED = import.meta.env.DEV`, so 13 flags existed
+ * while the pinned table had 12 rows and the enumeration pin passed. An
+ * enumeration pin that quietly excludes members is worse than none, because it
+ * reads as coverage. Match the declaration, then decide what to assert about
+ * the default — never filter the collection by what is convenient to assert.
+ */
 function featureFlags() {
   const found = [];
   const walk = (dir) => {
@@ -101,8 +114,9 @@ function featureFlags() {
       if (statSync(full).isDirectory()) walk(full);
       else if (name.endsWith(".ts") && !name.endsWith(".test.ts")) {
         const rel = full.slice(repoRoot.length).replace(/^\//, "");
-        for (const m of readFileSync(full, "utf8").matchAll(/^export const ([A-Z0-9_]+_ENABLED) = (true|false);/gm)) {
-          found.push({ name: m[1], value: m[2], file: rel });
+        for (const m of readFileSync(full, "utf8").matchAll(/^export const ([A-Z0-9_]+_ENABLED) = ([^;]+);/gm)) {
+          const literal = /^(true|false)$/.test(m[2].trim()) ? m[2].trim() : null;
+          found.push({ name: m[1], value: literal, expr: m[2].trim(), file: rel });
         }
       }
     }
@@ -232,9 +246,93 @@ describe("developer docs — the reference tables a change has to move with it",
       expect(doc.includes(`\`${flag.name}\``), `architecture.md's Feature Flags table has no row for ${flag.name} (${flag.file})`).toBe(true);
       const row = doc.split("\n").find((l) => l.includes(`\`${flag.name}\``) && l.startsWith("|"));
       expect(row, `${flag.name} is mentioned in architecture.md but not as a table row`).toBeTruthy();
-      expect(row.includes(`\`${flag.value}\``), `architecture.md gives ${flag.name} the wrong default (source says ${flag.value})`).toBe(true);
+      // A non-literal default (`import.meta.env.DEV`) has no `true`/`false` to
+      // pin, so the row is only required to quote the expression. The row must
+      // still exist — that is the half this pin is actually for.
+      const expected = flag.value === null ? flag.expr : flag.value;
+      expect(
+        row.includes(`\`${expected}\``),
+        `architecture.md gives ${flag.name} the wrong default (source says ${expected})`,
+      ).toBe(true);
       expect(row.includes(`\`src/${flag.file.replace(/^src\//, "")}\``), `architecture.md points ${flag.name} at the wrong file (source: ${flag.file})`).toBe(true);
     }
+  });
+
+  it("pins the quantities the 2026-08-24 audit found rotting unpinned", () => {
+    // Every one of these had drifted in at least one doc, and nothing could
+    // notice. Edge Case HP was the worst: stated correctly in two places and
+    // contradicted in two others, all in the same file.
+    const enemies = "src/map/generation/enemies.ts";
+    const lo = constantFromSource(enemies, "EDGE_CASE_HP_MIN");
+    const hi = constantFromSource(enemies, "EDGE_CASE_HP_MAX");
+    pin("doc/dev/balancing-telemetry.md", `${lo}\u2013${hi} uniform`);
+    pin("doc/dev/game-design.md", `(${lo}-${hi} HP since the enemy-health pass)`);
+
+    const cap = constantFromSource(enemies, "ELITE_MEMBER_HP_CAP");
+    const members = constantFromSource(enemies, "ELITE_MAX_MEMBERS");
+    pin("doc/dev/balancing-telemetry.md", `\`ELITE_MAX_MEMBERS = ${members}\``);
+    pin("doc/dev/balancing-telemetry.md", `\`ELITE_MEMBER_HP_CAP = ${cap}\``);
+    // The derived room ceiling, written with a thousands separator the way the
+    // prose does. Pinned separately because it is the number a reader acts on.
+    expect(
+      read("doc/dev/balancing-telemetry.md").includes(`${(cap * members).toLocaleString("en-US")} base`),
+      `balancing-telemetry.md's Elite room ceiling is stale (source: ${cap} x ${members})`,
+    ).toBe(true);
+
+    pin("doc/dev/balancing-telemetry.md", `\`CARRYOVER_CAP_MULTIPLE = ${CARRYOVER_CAP_MULTIPLE}\``);
+    pin("doc/dev/decisions.md", `\`CARRYOVER_CAP_MULTIPLE = ${CARRYOVER_CAP_MULTIPLE}\``);
+    pin("doc/dev/balancing-telemetry.md", `\`AMMO_SCALE_REFERENCE_HP = ${AMMO_SCALE_REFERENCE_HP}\``);
+    pin("doc/dev/balancing-telemetry.md", `\`HEALTH_SCALE_REFERENCE_HP = ${HEALTH_SCALE_REFERENCE_HP}\``);
+    pin("doc/dev/decisions.md", `\`AMMO_SCALE_REFERENCE_HP = ${AMMO_SCALE_REFERENCE_HP}\``);
+  });
+
+  it("lists every highscore-board column the panel actually renders", () => {
+    // Enumeration pin: `hud-and-ui.md` describes the board in prose, and the
+    // Difficulty and RB columns were added without it. Reads the real <th>
+    // list so a future column cannot be added silently either.
+    const header = read("src/ui/highscorePanel.ts").match(/<tr>(<th[^]*?)<\/tr>/)[1];
+    const columns = [...header.matchAll(/<th[^>]*>([^<]+)<\/th>/g)].map((m) => m[1]);
+    expect(columns.length, "highscorePanel.ts's header row did not parse").toBeGreaterThan(5);
+    // Scoped to the Highscores section, not the whole page. Mutation-testing
+    // this pin is what showed why: matched against the whole file, adding a
+    // "Streak" column passed, because the end-of-level stats table two
+    // sections up happens to contain the word "Streaks". A document-wide
+    // substring search over short column names is close to vacuous.
+    const page = read("doc/user/hud-and-ui.md");
+    const start = page.indexOf("\n## Highscores\n");
+    expect(start, "hud-and-ui.md has no Highscores section").toBeGreaterThan(-1);
+    const after = page.indexOf("\n## ", start + 1);
+    const doc = page.slice(start, after === -1 ? undefined : after).toLowerCase();
+    // `#` and `Hash` are described rather than named, so they are exempt by
+    // name; everything else must appear as a word in the prose.
+    const described = new Set(["#", "Hash"]);
+    const missing = columns.filter((c) => !described.has(c) && !doc.includes(c.toLowerCase()));
+    expect(missing, `hud-and-ui.md's highscore paragraph never mentions: ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("lists every localStorage key the game writes in privacy.md", () => {
+    // Enumeration pin, and the one with teeth: privacy.md is the page a reader
+    // checks to see what persists, and it had fallen three keys behind. Reads
+    // the literals out of `src/` rather than a maintained list.
+    const keys = new Set();
+    const walk = (dir) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (name.endsWith(".ts") && !name.endsWith(".test.ts"))
+          for (const m of readFileSync(full, "utf8").matchAll(/"(codeenstein-[a-z-]+)"/g)) keys.add(m[1]);
+      }
+    };
+    walk(join(repoRoot, "src"));
+    // Two exemptions, each for a stated reason rather than convenience:
+    // `-rollbacks-disabled` is harness-only (nothing in the UI writes it, and
+    // it is read solely under `isTestHooksActive()`), and `-workspace` /
+    // `-bgm-folder` are `showDirectoryPicker` ids the browser owns, not
+    // localStorage — privacy.md covers those in prose instead of the table.
+    const notStored = new Set(["codeenstein-rollbacks-disabled", "codeenstein-workspace", "codeenstein-bgm-folder"]);
+    const doc = read("doc/user/privacy.md");
+    const missing = [...keys].filter((k) => !notStored.has(k) && !doc.includes(k)).sort();
+    expect(missing, `privacy.md's storage table never mentions: ${missing.join(", ")}`).toEqual([]);
   });
 
   it("counts the engine and multiplayer modules", () => {
@@ -286,6 +384,15 @@ describe("developer docs — the reference tables a change has to move with it",
         `${w.name}'s magazine/reload row is stale (source: ${w.magazineSize} / ${w.reloadSec.toFixed(1)}s)`,
       ).toBe(true);
       expect(row.includes(`${w.ammoType}`), `${w.name}'s pool is stale in balancing-telemetry.md (source: ${w.ammoType})`).toBe(true);
+      // Added 2026-08-24. This pin looked like it covered the weapon table and
+      // did not: it read `magazineSize`/`reloadSec`/`ammoType` and nothing
+      // else, so gdb's 12 -> 16 moved the Dmg/pellet column with nothing
+      // watching, and the doc happened to be right only because the same
+      // commit edited it by hand.
+      expect(
+        row.includes(`| ${w.damagePerPellet} | ${w.pellets} |`),
+        `${w.name}'s damage/pellets are stale in balancing-telemetry.md (source: ${w.damagePerPellet} / ${w.pellets})`,
+      ).toBe(true);
     }
   });
 
