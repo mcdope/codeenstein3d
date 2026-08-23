@@ -1,4 +1,4 @@
-# 🔫 Codeenstein 3D
+# Codeenstein 3D
 
 **Turn your legacy code into a playable retro 3D shooter.**
 

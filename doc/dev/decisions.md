@@ -560,7 +560,7 @@ Canonical URL is `https://codeenstein3d.mcdope.org/` — the intended hosting do
 
 The Open Graph/Twitter Card image (`public/og-image.png`, 1200x630) was generated the same way as the favicon set — same source "CODE" logo, cropped to its real content bbox — but composited onto an *opaque* `#1a1a1f` canvas rather than kept transparent, since social platforms render OG image transparency unpredictably (often flattened to black or white depending on the client). The tagline is rendered directly onto the image in `LiberationMono-Bold.ttf`, matching the game's `ui-monospace` UI font stack.
 
-`main.ts`'s `document.title = "🔫 Codeenstein 3D (Build: ...)"` (notes Task 58) runs at module load and is intentionally left untouched — it's a live debug aid for catching a stale cached bundle, not page metadata. `og:title`/`twitter:title` are separate static meta tags unaffected by that runtime overwrite, so a crawler reading the static `<head>` (or even one that runs JS, since only `document.title` changes, not the meta tags) always sees the stable, non-timestamped title.
+`main.ts`'s `document.title = "Codeenstein 3D (Build: ...)"` (notes Task 58) runs at module load and is intentionally left untouched — it's a live debug aid for catching a stale cached bundle, not page metadata. `og:title`/`twitter:title` are separate static meta tags unaffected by that runtime overwrite, so a crawler reading the static `<head>` (or even one that runs JS, since only `document.title` changes, not the meta tags) always sees the stable, non-timestamped title.
 
 ## Secrets Are Kept Out Mechanically, Not by Discipline
 

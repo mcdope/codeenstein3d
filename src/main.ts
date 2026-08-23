@@ -85,7 +85,7 @@ import { guestPlayerId, HOST_PLAYER_ID } from "./multiplayer/sessionSetupTypes";
 // vite.config.ts's `define` for where `__BUILD_TIME__`/`__BUILD_REF__` come
 // from — the latter is HEAD's tag if it's exactly tagged, otherwise its
 // short commit hash.
-document.title = `🔫 Codeenstein 3D (Build: ${__BUILD_TIME__} @ ${__BUILD_REF__})`;
+document.title = `Codeenstein 3D (Build: ${__BUILD_TIME__} @ ${__BUILD_REF__})`;
 
 /** Builds a `StatsScreenInfo` from an `EngineStats` pair, or `undefined` if
  * telemetry wasn't recorded this run (`PLAYER_STATS_ENABLED` off and no
