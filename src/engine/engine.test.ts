@@ -7021,10 +7021,10 @@ describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
         size,
       );
       const { engine, input } = makeEngine(map);
-      for (let i = 0; i < 600; i++) {
+      for (let i = 0; i < 150; i++) {
         input.fireQueued = true;
-        if (i % 50 === 0) input.reload = true;
-        engine.advance(0.016);
+        if (i % 25 === 0) input.reload = true;
+        engine.advance(0.05);
       }
       const players = (engine as unknown as { players: Map<string, { telemetry?: unknown }> }).players;
       expect(players.get("local")!.telemetry).toBeUndefined();
@@ -7033,7 +7033,11 @@ describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
     }
-  });
+    // Explicit timeout: this drives the engine in a loop, and CI runs the suite
+    // under coverage instrumentation where that is several times slower than
+    // locally — the trap documented in testing.md, which the first version of
+    // this very test walked straight into at 600 iterations.
+  }, 20_000);
 
   it("covers the off side of the terminal and out-of-ammo record sites too", () => {
     // The paths the combat pass above cannot reach: collecting a static ammo
@@ -7051,7 +7055,7 @@ describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
       );
       const { engine, input } = makeEngine(map);
       // Fire without ever reloading, so the magazine empties and stays empty.
-      for (let i = 0; i < 900; i++) {
+      for (let i = 0; i < 200; i++) {
         input.fireQueued = true;
         engine.advance(0.05);
       }
@@ -7061,5 +7065,5 @@ describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
     } finally {
       Object.defineProperty(window, "location", { value: original, configurable: true });
     }
-  });
+  }, 20_000);
 });
