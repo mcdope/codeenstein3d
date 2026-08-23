@@ -237,6 +237,10 @@ type RenderQuality = "classic" | "sharp";
 /** localStorage key for the standing render-quality preference — same
  * "declared up here" reasoning as `GORE_KEY` above. */
 const RENDER_QUALITY_KEY = "codeenstein-render-quality";
+type AutomapOrientation = "facing" | "north";
+/** localStorage key for the standing automap-orientation preference — same
+ * "declared up here" reasoning as `GORE_KEY` above. */
+const AUTOMAP_ROTATE_KEY = "codeenstein-automap-rotate";
 
 const tabLocal = requireElement<HTMLButtonElement>("#tab-local");
 const tabContinue = requireElement<HTMLButtonElement>("#tab-continue");
@@ -270,6 +274,7 @@ const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select")
 /** Dimmed alongside the select while a run holds the difficulty fixed. */
 const difficultyLabel = requireElement<HTMLLabelElement>("#difficulty-label");
 const renderQualitySelect = requireElement<HTMLSelectElement>("#render-quality-select");
+const automapRotateSelect = requireElement<HTMLSelectElement>("#automap-rotate-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
 const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
 const bgmVolumeInput = requireElement<HTMLInputElement>("#bgm-vol");
@@ -1290,6 +1295,18 @@ renderQualitySelect.value = currentRenderQuality;
 renderQualitySelect.addEventListener("change", () => {
   currentRenderQuality = renderQualitySelect.value as RenderQuality;
   saveRenderQuality(currentRenderQuality);
+});
+
+let currentAutomapOrientation: AutomapOrientation = loadAutomapOrientation();
+
+automapRotateSelect.value = currentAutomapOrientation;
+// Applies immediately rather than at the next level launch, unlike gore and
+// render quality: it changes nothing about how a level is built or sized, only
+// how one overlay is drawn, so there is nothing to defer.
+automapRotateSelect.addEventListener("change", () => {
+  currentAutomapOrientation = automapRotateSelect.value as AutomapOrientation;
+  saveAutomapOrientation(currentAutomapOrientation);
+  activeEngine?.setAutomapRotate(currentAutomapOrientation === "facing");
 });
 
 // Same standing-preference shape as gore/difficulty, on "input" rather than
@@ -3621,6 +3638,9 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     undefined,
     rollbacksRemaining,
   );
+  // Standing preference, applied from this level's first frame rather than
+  // only when the select is next touched.
+  activeEngine.setAutomapRotate(currentAutomapOrientation === "facing");
 
   hud.showLevelStart(
     {
@@ -4397,6 +4417,24 @@ function saveRenderQuality(quality: RenderQuality): void {
   }
 }
 
+function loadAutomapOrientation(): AutomapOrientation {
+  try {
+    const raw = localStorage.getItem(AUTOMAP_ROTATE_KEY);
+    if (raw === "facing" || raw === "north") return raw;
+  } catch {
+    // Fall through to the default.
+  }
+  return "facing";
+}
+
+function saveAutomapOrientation(orientation: AutomapOrientation): void {
+  try {
+    localStorage.setItem(AUTOMAP_ROTATE_KEY, orientation);
+  } catch (err) {
+    console.warn("[settings] Failed to save automap orientation:", err);
+  }
+}
+
 /** Read the saved difficulty, falling back to `DEFAULT_DIFFICULTY` on any
  * missing/invalid value or if storage is unavailable — same shape as
  * `loadGoreLevel`. */
@@ -5003,6 +5041,7 @@ async function startReplay(entry: HighscoreEntry, opts: { autoRecord?: boolean }
         // a legacy board be diagnosed by hand in dev.
         segment.rotSpeedMultiplier,
       );
+      activeEngine.setAutomapRotate(currentAutomapOrientation === "facing");
       // Live play gets the spawn-tile reveal, input attach and initial stats
       // push from `start()`; playback drives `advance()` itself and would
       // otherwise skip all three, leaving the recorded and replayed

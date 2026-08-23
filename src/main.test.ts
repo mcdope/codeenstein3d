@@ -8537,6 +8537,37 @@ describe("main.ts — Settings tab & render quality", () => {
     expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save render quality:", expect.any(Error));
   });
 
+  it("initializes the automap-orientation select to facing-up and persists a change", async () => {
+    await importMain();
+    const select = document.querySelector<HTMLSelectElement>("#automap-rotate-select")!;
+    expect(select.value).toBe("facing");
+    select.value = "north";
+    select.dispatchEvent(new Event("change"));
+    expect(localStorage.getItem("codeenstein-automap-rotate")).toBe("north");
+  });
+
+  it("restores a saved automap orientation and reads corrupt values as facing-up", async () => {
+    localStorage.setItem("codeenstein-automap-rotate", "north");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#automap-rotate-select")!.value).toBe("north");
+
+    localStorage.setItem("codeenstein-automap-rotate", "sideways-ish");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#automap-rotate-select")!.value).toBe("facing");
+  });
+
+  it("logs a warning instead of throwing when saving the automap orientation fails", async () => {
+    await importMain();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const warnSpy = vi.spyOn(console, "warn");
+    const select = document.querySelector<HTMLSelectElement>("#automap-rotate-select")!;
+    select.value = "north";
+    select.dispatchEvent(new Event("change"));
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save automap orientation:", expect.any(Error));
+  });
+
   it("sizes the canvas per quality at level launch — sharp becomes 1280×800, and only at launch", async () => {
     await importMain();
     const canvas = document.querySelector<HTMLCanvasElement>("canvas.scene-canvas")!;

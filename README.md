@@ -63,7 +63,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Deterministic replay** — record and playback entire multi-level campaigns frame-for-frame
 - ✅ **Export replays as video** — record any "Watch Replay" playback as a downloadable webm, from the transport bar or a one-click Highscores "Export" shortcut
 - ✅ **Export a cleared level as a PNG** — a top-down, actually-textured image of the level you just won, for sharing (only ever available for a level you've already finished)
-- ✅ **Automap** — toggle with Tab, non-blocking (keep moving/fighting while it's open); shows the whole level layout, like the corner minimap
+- ✅ **Automap** — toggle with Tab, non-blocking (keep moving/fighting while it's open); shows the whole level layout, like the corner minimap, and rotates with you by default (switchable to north-up in Settings)
 - ✅ **Fullscreen & gamepad** — canvas stays crisp, gamepad works alongside keyboard/mouse
 
 ### Audio & Polish  
@@ -218,7 +218,7 @@ Commits follow [Conventional Commits](https://www.conventionalcommits.org/) with
 - **R** — Reload the equipped weapon (also happens automatically when a magazine runs dry)
 - **F** — Read nearby lore terminal (hold W/S to scroll) OR open fake wall to reveal secret
 - **G** — Call for help (multiplayer only): marks you on every teammate's map for ~5s with a ring, a siren and a banner; ~8s cooldown
-- **Tab** — Toggle automap (non-blocking — keep moving/fighting while open)
+- **Tab** — Toggle automap (non-blocking — keep moving/fighting while open; rotates with you unless set to north-up)
 - **Alt+Enter** — Toggle fullscreen
 - **Esc** — Pause (freezes action under "PAUSED" overlay)
 - **Right-Ctrl** — Toggle FPS/frame-time display (top-right)

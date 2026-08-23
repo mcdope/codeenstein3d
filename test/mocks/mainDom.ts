@@ -104,6 +104,11 @@ export function buildIndexDom(): void {
             <option value="classic" selected>Classic (640×400)</option>
             <option value="sharp">Sharp (1280×800)</option>
           </select>
+          <label id="automap-rotate-label" for="automap-rotate-select">Automap orientation</label>
+          <select id="automap-rotate-select" class="settings-select">
+            <option value="facing" selected>Rotate with you</option>
+            <option value="north">Fixed (north up)</option>
+          </select>
           <label id="master-vol-label" for="master-vol">Master Volume</label>
           <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
           <label id="sfx-vol-label" for="sfx-vol">SFX Volume</label>

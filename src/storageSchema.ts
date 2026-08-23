@@ -4,9 +4,9 @@
 /**
  * Versioning for everything this game persists in `localStorage`.
  *
- * **Why this exists.** Ten keys are written across `main.ts` and
+ * **Why this exists.** Eleven keys are written across `main.ts` and
  * `highscores.ts` (`codeenstein-player-name`, `-gore-level`, `-difficulty`,
- * `-render-quality`, `-master-volume`, `-sfx-volume`, `-bgm-volume`,
+ * `-render-quality`, `-automap-rotate`, `-master-volume`, `-sfx-volume`, `-bgm-volume`,
  * `-campaign-save`, `-highscores`, `-wad-pack`) and none of them carried a version. A shape change to any of
  * them — a new field in the campaign save, a different highscore packing —
  * would have been indistinguishable from data written by the current build, so

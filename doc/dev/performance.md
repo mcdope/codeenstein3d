@@ -43,6 +43,55 @@ Verified to fail: injecting a raw `ctx.strokeRect` into `drawHud` turns it red w
 
 `npm run perf:report -- perf_runs/<dir> [--findings perf-findings.json]` (`scripts/build-perf-report.mjs`) renders one or more run directories — findings only when passed explicitly via `--findings`; a bare invocation with no directory prints usage and exits — into the self-contained `perf-report.html` — interval CDFs, busy box-plots with per-run dots, phase stacks, A/B dumbbells annotated with the calibration floor, heap timelines, and the ranked findings with their outcomes.
 
+## The 2026-08 penalty did not reproduce on a 2026-08-23 machine
+
+Recorded because it undercuts the evidence for rules this codebase follows
+everywhere, and because the next person to measure should know before they
+start rather than after.
+
+The model in [`perf-review-2026-08-02.md`](perf-review-2026-08-02.md) is that any
+draw Skia cannot emit as an axis-aligned quad forces a coverage pass costing
+~10ms/frame, fixed and all-or-nothing. Its headline datum: **one `ctx.fill()`
+per frame took 59.3 fps to 43.7**. That finding is why `outlineRect` exists,
+why `pathSprites` bakes a 128-step rotation atlas instead of calling
+`ctx.rotate`, and what `renderCost.test.ts` guards.
+
+Trying to answer the rotated-`drawImage` question that review left open
+(`:222`), a probe was built in its own shape — a steady baseline held at the
+vsync edge, then exactly one extra call per frame — and run **headed** on
+Chrome 151 with a real GPU (NVIDIA RTX 4060 Ti via ANGLE, confirmed not
+SwiftShader), interleaved across four rounds:
+
+| arm | fps | median | frames >20ms |
+|---|---|---|---|
+| baseline | 58.8 | 16.70ms | 2.1% |
+| + one axis-aligned `drawImage` | 59.6 | 16.70ms | 0.7% |
+| + one **rotated** `drawImage` | 59.5 | 16.70ms | 0.8% |
+| + one `ctx.fill()` — **the control** | 59.4 | 16.70ms | 1.1% |
+
+**The control is the result.** `fill` was included precisely because the review
+measured it cratering, and it did not move. So this says nothing about rotated
+quads being cheap; it says the instrument could not see the effect it was built
+to detect, which is a broken experiment rather than a null.
+
+What it does not distinguish: a probe too unlike the real render path, versus a
+penalty that has genuinely gone away in a newer Chrome or on different hardware.
+Both are live. **Do not read this as permission to start calling `ctx.fill()`**
+— but equally, do not treat the 43.7 figure as reproducible without re-taking
+it. Anyone re-measuring should run the `fill` control first and only trust the
+run if it fires.
+
+**One real-play data point, added 2026-08-23**: the rotating automap was
+playtested by the user on their own machine and reported as *"works excellent,
+no noticeable frametime impact"*. That is subjective and is not a frame-time
+capture, so it does not settle the question above. It does bound it usefully in
+one direction, though — the penalty as documented is roughly **15 fps**, which
+is not a subtle thing to sit behind in play. So whatever the probe's failure
+means, a full coverage-pass penalty is not being paid by one rotated
+`drawImage` per frame in the shipped automap. Whether that is because the
+penalty no longer applies, or because one blit never triggered it where
+thousands of rotated quads would have, is still open.
+
 ## Gotchas (each cost the audit real time)
 
 - **Never pass `?testHooks=1` to a cell that should measure normal play** — it switches real telemetry recording on (`engine.ts`, `PLAYER_STATS_ENABLED ‖ testHooks`). Level readiness is detected from the `[perf] level:` console line instead. The bot cell (`s5`) can't avoid it; its numbers are labeled accordingly.

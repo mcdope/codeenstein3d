@@ -29,7 +29,7 @@
 | `F` | Read a nearby lore terminal, or open a fake wall to reveal a secret room |
 | `G` | **Multiplayer only** — call for help. Marks you on every teammate's minimap and automap for about five seconds, with a sonar ring, a siren and a banner naming you. About an eight-second wait before you can call again, and it does nothing in single-player |
 | `W` / `S` (while reading) | Scroll a lore terminal's text if it overflows the box |
-| `Tab` | Toggle the automap (does not pause — you can keep moving and fighting while it's open) |
+| `Tab` | Toggle the automap (does not pause — you can keep moving and fighting while it's open; it turns with you unless you set it to north-up) |
 | `Alt`+`Enter` | Toggle fullscreen |
 | `Escape` | Pause / unpause |
 | `Right Ctrl` | Toggle the FPS / frame-time readout |

@@ -795,11 +795,18 @@ async function main() {
     writeIfChanged("minimap.png", await grabCrop(page, { ...minimapRect, scale: 4, label: "minimap" }));
 
     // --- the automap ------------------------------------------------------
-    await page.evaluate(() => window.__codeensteinTestHooks.debugRevealMap());
+    // No `debugRevealMap()` any more: the automap dropped fog of war, so the
+    // whole carved level is drawn from the moment it loads and there is nothing
+    // left to reveal. (The hook still exists; it just no longer affects this
+    // shot.)
     await page.evaluate(() => document.querySelector("canvas").dispatchEvent(new KeyboardEvent("keydown", { code: "Tab" })));
     await pump(page, FRAME_MS * 3);
     const CELL_PX = 3;
-    const span = Math.max(map.width, map.height) * CELL_PX;
+    // sqrt(2), because the automap now defaults to rotating with the player's
+    // facing: a square map turned 45 degrees needs its diagonal, and the old
+    // axis-aligned span clipped the corners. It failed *silently* —
+    // `assertNotFlat` is perfectly happy with a clipped crop.
+    const span = Math.max(map.width, map.height) * CELL_PX * Math.SQRT2;
     const automapRect = {
       x: Math.max(0, RENDER_W / 2 - span / 2 - 10),
       y: Math.max(0, (RENDER_H - 94) / 2 - span / 2 - 10),

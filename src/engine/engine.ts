@@ -1214,6 +1214,9 @@ export class RaycasterEngine {
    * secret wall sliding away) — every player's own `pathField`'s
    * invalidation signal. */
   private gridVersion = 0;
+  /** See `setAutomapRotate`. Defaults to the shipped preference (facing-up);
+   * `main.ts` pushes the player's actual choice in at construction. */
+  private automapRotate = true;
   /** Every individual tile mutation since the last drained
    * `captureReconciliationSnapshot()` call — `gridVersion` alone tells a
    * guest *that* something changed, not *what*; multiplayer-reconciliation-
@@ -2167,6 +2170,21 @@ export class RaycasterEngine {
    * isn't safe here: both carry real shared-simulation side effects (secret-
    * wall discovery, `fireQueued`) unrelated to closing a purely local
    * overlay. */
+  /**
+   * Whether the automap rotates so the player's facing is up, or stays
+   * north-up. A standing user preference (`codeenstein-automap-rotate`), pushed
+   * in rather than read from storage here, so the engine keeps knowing nothing
+   * about `localStorage`.
+   *
+   * Purely presentational — it changes no simulation state, crosses no wire,
+   * and is not in any snapshot, so two peers may legitimately have it set
+   * differently and stay in lockstep. Applies on the next frame; there is
+   * nothing to defer to a level boundary.
+   */
+  setAutomapRotate(rotate: boolean): void {
+    this.automapRotate = rotate;
+  }
+
   dismissLoreOverlay(): void {
     if (!this.isMultiplayerSession()) return;
     const local = this.players.get(this.localPlayerId);
@@ -3781,6 +3799,8 @@ export class RaycasterEngine {
         this.levelTime,
         this.isMultiplayerSession() ? this.drops : [],
         this.collectTeammateMapMarkers(this.localPlayerId),
+        this.gridVersion,
+        this.automapRotate,
       );
     }
 
