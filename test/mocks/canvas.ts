@@ -21,6 +21,7 @@ export type MockCanvasContext = {
     | "restore"
     | "translate"
     | "rotate"
+    | "scale"
     | "beginPath"
     | "closePath"
     | "moveTo"
@@ -36,7 +37,8 @@ export type MockCanvasContext = {
     | "fillText"
     | "strokeText"
     | "drawImage"
-    | "putImageData"] : ReturnType<typeof vi.fn>;
+    | "putImageData"
+    | "getTransform"] : ReturnType<typeof vi.fn>;
 } & {
   fillStyle: string | CanvasGradient | CanvasPattern;
   strokeStyle: string | CanvasGradient | CanvasPattern;
@@ -60,11 +62,41 @@ function blankImageData(width: number, height: number) {
 }
 
 export function createMockCanvasContext(canvas: HTMLCanvasElement): MockCanvasContext {
+  // The *linear* part of the CTM — `a b c d`, no translation — with a
+  // save/restore stack. Tracked rather than stubbed because `pathSprites.ts`
+  // reads it back to decide what resolution to pre-render a glyph at, via
+  // `Math.hypot(m.a, m.b)`. A stub returning identity would make every
+  // scale-aware test vacuously green; one returning `{ a: s }` alone would hide
+  // the bug that actually matters, because under `drawAutomap`'s facing-up
+  // rotate `a` is `s·cos θ` and only the hypot recovers `s`. Translation is
+  // deliberately not tracked: nothing reads `e`/`f`, and carrying it would
+  // invite tests that assert on the transform instead of on the recorded draw
+  // arguments, which is the house rule (see this file's header).
+  let m = { a: 1, b: 0, c: 0, d: 1 };
+  const stack: (typeof m)[] = [];
   const ctx = {
-    save: vi.fn(),
-    restore: vi.fn(),
+    save: vi.fn(() => {
+      stack.push({ ...m });
+    }),
+    restore: vi.fn(() => {
+      m = stack.pop() ?? { a: 1, b: 0, c: 0, d: 1 };
+    }),
     translate: vi.fn(),
-    rotate: vi.fn(),
+    rotate: vi.fn((angle: number) => {
+      // Post-multiplied, matching the real 2D context: M' = M · R.
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      m = {
+        a: m.a * cos + m.c * sin,
+        b: m.b * cos + m.d * sin,
+        c: -m.a * sin + m.c * cos,
+        d: -m.b * sin + m.d * cos,
+      };
+    }),
+    scale: vi.fn((sx: number, sy: number) => {
+      m = { a: m.a * sx, b: m.b * sx, c: m.c * sy, d: m.d * sy };
+    }),
+    getTransform: vi.fn(() => ({ ...m, e: 0, f: 0 })),
     beginPath: vi.fn(),
     closePath: vi.fn(),
     moveTo: vi.fn(),
