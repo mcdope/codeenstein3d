@@ -231,6 +231,32 @@
             </select>
             <p class="muted">Gore and render quality apply from the next level you launch. Difficulty does too, but locks once a run starts — a score is only comparable if it held for the whole run.</p>
 
+            <!-- TEMPORARY. Two throwaway knobs for the "revisit enemy dmg"
+                 playtest — see src/playtestScales.ts, which documents why they
+                 exist and what deleting them involves. main.ts hides this whole
+                 block unless import.meta.env.DEV, so it never reaches a built
+                 bundle; the ids still have to be mirrored in
+                 test/mocks/mainDom.ts or requireElement throws at import. -->
+            <div id="playtest-scales">
+              <hr class="sidebar-divider" />
+              <p class="sidebar-section-title">Playtest (dev build only)</p>
+              <label id="enemy-damage-scale-label" for="enemy-damage-scale-select" class="settings-label">Enemy damage</label>
+              <select id="enemy-damage-scale-select" class="settings-select">
+                <option value="1" selected>1× (today)</option>
+                <option value="1.5">1.5×</option>
+                <option value="2">2×</option>
+                <option value="3">3×</option>
+              </select>
+              <label id="kill-heal-scale-label" for="kill-heal-scale-select" class="settings-label">Heal per kill</label>
+              <select id="kill-heal-scale-select" class="settings-select">
+                <option value="1" selected>1× (today)</option>
+                <option value="0.67">0.67×</option>
+                <option value="0.5">0.5×</option>
+                <option value="0.33">0.33×</option>
+              </select>
+              <p class="muted">Both apply from the next level you launch, and neither is locked mid-run. Enemy damage covers melee and bolts only — traps, acid and your own rocket splash are unchanged. Heal per kill covers what a kill drops, not health lying on the floor. <strong>A run using anything but 1× posts no score.</strong></p>
+            </div>
+
             <hr class="sidebar-divider" />
 
             <p class="sidebar-section-title">Audio</p>

@@ -21,6 +21,8 @@ import type { InputSnapshot } from "./engine/input";
 import type { ReplayLevelSegment } from "./engine/replay";
 import type { EngineCarryover } from "./engine/engine";
 import type { DifficultyLevel } from "./difficulty";
+// Temporary — see `playtestScales.ts`.
+import { ENEMY_DAMAGE_SCALES, KILL_HEAL_SCALES } from "./playtestScales";
 import { GHIDRA_WEAPON_INDEX } from "./engine/weapons";
 import { COUNTDOWN_TICKS } from "./engine/transitionConstants";
 
@@ -380,6 +382,109 @@ describe("main.ts — module import / initial DOM wiring", () => {
     expect(document.querySelector<HTMLSelectElement>("#gore-select")!.value).toBe("normal");
     expect(document.querySelector<HTMLSelectElement>("#difficulty-select")!.value).toBe("normal");
   });
+
+  // ---- Temporary — delete alongside `playtestScales.ts`. ----
+
+  // Same reasoning as the gore round-trip loop above, and the same three
+  // hand-maintained places `tsc` cannot connect: the ladder in
+  // `playtestScales.ts`, the `<option>` list in `index.html`, and the mirror of
+  // that list in `test/mocks/mainDom.ts`. Miss the ladder and the value
+  // silently reverts to 1x on reload — a playtest that quietly measures the
+  // control arm. Miss the option and the `<select>` refuses the value and
+  // reads as empty.
+  for (const scale of ENEMY_DAMAGE_SCALES) {
+    it(`offers the ${scale}x enemy-damage option and round-trips it through storage`, async () => {
+      localStorage.setItem("codeenstein-playtest-enemy-damage-scale", String(scale));
+      await importMain();
+      expect(document.querySelector(`#enemy-damage-scale-select option[value="${scale}"]`)).not.toBeNull();
+      expect(document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!.value).toBe(String(scale));
+    });
+  }
+
+  for (const scale of KILL_HEAL_SCALES) {
+    it(`offers the ${scale}x kill-heal option and round-trips it through storage`, async () => {
+      localStorage.setItem("codeenstein-playtest-kill-heal-scale", String(scale));
+      await importMain();
+      expect(document.querySelector(`#kill-heal-scale-select option[value="${scale}"]`)).not.toBeNull();
+      expect(document.querySelector<HTMLSelectElement>("#kill-heal-scale-select")!.value).toBe(String(scale));
+    });
+  }
+
+  it("initializes both playtest selects at identity and persists a change to each", async () => {
+    await importMain();
+    const damage = document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!;
+    const heal = document.querySelector<HTMLSelectElement>("#kill-heal-scale-select")!;
+    expect(damage.value).toBe("1");
+    expect(heal.value).toBe("1");
+
+    damage.value = "2";
+    damage.dispatchEvent(new Event("change"));
+    heal.value = "0.5";
+    heal.dispatchEvent(new Event("change"));
+
+    expect(localStorage.getItem("codeenstein-playtest-enemy-damage-scale")).toBe("2");
+    expect(localStorage.getItem("codeenstein-playtest-kill-heal-scale")).toBe("0.5");
+  });
+
+  it("keeps each playtest knob independent of the other", async () => {
+    // The handlers rebuild the whole `currentPlaytestScales` object, so a
+    // spread that dropped the sibling field would reset one knob every time
+    // the other was touched — invisible in the UI, and it would silently make
+    // half of a two-variable session measure the wrong thing.
+    localStorage.setItem("codeenstein-playtest-kill-heal-scale", "0.33");
+    await importMain();
+    const damage = document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!;
+    damage.value = "3";
+    damage.dispatchEvent(new Event("change"));
+    expect(localStorage.getItem("codeenstein-playtest-kill-heal-scale")).toBe("0.33");
+    expect(document.querySelector<HTMLSelectElement>("#kill-heal-scale-select")!.value).toBe("0.33");
+  });
+
+  it("falls back to identity for a saved playtest scale that is not on the ladder", async () => {
+    // Includes a value that was never offered but parses fine as a number —
+    // a range check would accept 1.25 and the playtest would then be run at a
+    // multiplier nobody chose.
+    localStorage.setItem("codeenstein-playtest-enemy-damage-scale", "1.25");
+    localStorage.setItem("codeenstein-playtest-kill-heal-scale", "nonsense");
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!.value).toBe("1");
+    expect(document.querySelector<HTMLSelectElement>("#kill-heal-scale-select")!.value).toBe("1");
+  });
+
+  it("shows the playtest block in a dev build", async () => {
+    // vitest runs with `import.meta.env.DEV === true`, i.e. the dev-server
+    // case. The production half of this gate cannot be exercised from here —
+    // `DEV` is substituted at build time, not readable state — so what a
+    // built bundle does is pinned by the `hidden` toggle being driven by
+    // `import.meta.env.DEV` alone and nothing else.
+    await importMain();
+    expect(document.querySelector<HTMLDivElement>("#playtest-scales")!.hidden).toBe(false);
+  });
+
+  it("logs a warning instead of throwing when saving a playtest scale fails", async () => {
+    await importMain();
+    const setItemSpy = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    const warnSpy = vi.spyOn(console, "warn");
+    const damage = document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!;
+    damage.value = "2";
+    expect(() => damage.dispatchEvent(new Event("change"))).not.toThrow();
+    expect(warnSpy).toHaveBeenCalledWith("[settings] Failed to save playtest scale:", expect.any(Error));
+    setItemSpy.mockRestore();
+  });
+
+  it("falls back to identity when reading storage throws outright", async () => {
+    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("storage disabled");
+    });
+    await importMain();
+    expect(document.querySelector<HTMLSelectElement>("#enemy-damage-scale-select")!.value).toBe("1");
+    expect(document.querySelector<HTMLSelectElement>("#kill-heal-scale-select")!.value).toBe("1");
+    getItemSpy.mockRestore();
+  });
+
+  // ---- end temporary block ----
 
   it("restores a saved player name, and persists an edit as it is typed", async () => {
     localStorage.setItem("codeenstein-player-name", "Tobi");
@@ -6687,6 +6792,28 @@ describe("main.ts — rollbacks (arcade continues)", () => {
       logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
     );
     expect(rollbackState()).toMatchObject({ remaining: 0, used: 0 });
+  });
+
+  // Temporary — delete alongside `playtestScales.ts`.
+  it("refuses a leaderboard entry for a run played at a non-identity playtest scale", async () => {
+    // Hard so the death ends the run outright, with no rollback screen in the
+    // way — the same reason the test above picks it.
+    localStorage.setItem("codeenstein-difficulty", "hard");
+    localStorage.setItem("codeenstein-playtest-enemy-damage-scale", "2");
+    const logSpy = await launchHazardRun();
+    await dieInTheAcid(logSpy);
+
+    await waitUntil(() =>
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Playtest damage/heal scales are active — not recording a leaderboard entry."),
+    );
+    // Ordering, not decoration: the guard has to come *before* the level-1
+    // one, or a scaled run that cleared a level would sail past both and post
+    // a score. This run also dies on level 1, so seeing the playtest message
+    // instead of that one is what pins which guard fired.
+    expect(
+      logSpy.mock.calls.some((c) => c[0] === "%c[highscores] Died on the very first level — not recording a leaderboard entry."),
+    ).toBe(false);
+    expect(localStorage.getItem("codeenstein-highscores")).toBeNull();
   });
 
   it("falls back to the plain one-button panic screen once they are spent", async () => {

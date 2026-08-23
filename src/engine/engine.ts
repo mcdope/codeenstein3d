@@ -13,6 +13,8 @@
  * and leaves the DOM HUD/overlays to the caller.
  */
 import { DEFAULT_DIFFICULTY, DIFFICULTY_MULTIPLIERS, type DifficultyLevel, type DifficultyMultipliers } from "../difficulty";
+// Temporary — see `playtestScales.ts`'s header. Goes when the experiment does.
+import { DEFAULT_PLAYTEST_SCALES, type PlaytestScales } from "../playtestScales";
 import { eliteScalingFor, type EliteScalingMultipliers } from "./multiplayerScaling";
 import { createResumablePrng, randomSeed } from "../prng";
 import { CORRECTION_SMOOTH_MS, SNAP_THRESHOLD_TILES } from "./reconciliationConstants";
@@ -1577,6 +1579,25 @@ export class RaycasterEngine {
      * and synthesizing a partial carryover to carry it would zero the
      * player's health (see `createPlayerState`'s `if (carryover)` branch). */
     private readonly rollbacksRemaining = 0,
+    /**
+     * **Temporary playtest knobs — see `playtestScales.ts`'s header.** Default
+     * identity, so every caller that omits it (multiplayer's
+     * `buildSessionEngine`, replay playback's `buildEngineFor`, and every
+     * harness) plays exactly today's balance. Only `main.ts`'s single-player
+     * construction passes a real value, and only in a dev build.
+     *
+     * One object rather than two scalars: appended last like
+     * `localChosenName`/`rollbacksRemaining` above (every argument here is
+     * positional), and a single append is also a single removal when the
+     * experiment ends.
+     *
+     * Deliberately **not** folded into `SIMULATION_BALANCE` — that would move
+     * `balanceHash` and invalidate every shipped replay for an experiment that
+     * ships nothing. The consequence is the one worth knowing: a run played at
+     * a non-identity scale would *replay* at identity, which is why `main.ts`
+     * refuses to record a highscore (and therefore a replay) for one.
+     */
+    private readonly playtestScales: PlaytestScales = DEFAULT_PLAYTEST_SCALES,
   ) {
     // `{alpha: false}` was A/B'd in the 2026-08 frame-budget audit: no
     // measurable effect on busy or pacing on this Chrome/compositor stack
@@ -4337,8 +4358,9 @@ export class RaycasterEngine {
       this.eliteScalingMultipliers.damage,
     );
     if (this.projectiles.length > beforeShots) audio.playEnemyShoot();
-    // Difficulty scales enemy-*dealt* damage only — melee bites and ranged
-    // bolts, not trap/hazard/self-inflicted (rocket splash) damage.
+    // Difficulty (and the temporary playtest knob riding along with it — see
+    // `enemyDamageScale`) scales enemy-*dealt* damage only: melee bites and
+    // ranged bolts, not trap/hazard/self-inflicted (rocket splash) damage.
     for (const [id, dmg] of damageByPlayer) {
       // `updateEnemies` only ever adds `hit.amount` entries to this map
       // (`ATTACK_DAMAGE` is a positive constant, `damageMultiplier` is always
@@ -4346,7 +4368,7 @@ export class RaycasterEngine {
       // <= 0 today; kept as a defensive guard against a future change to
       // either invariant.
       /* v8 ignore next -- @preserve */
-      if (dmg > 0) this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyMelee", this.takeDamageBy(id), this.takeHurtFrom(id));
+      if (dmg > 0) this.damage(id, dmg * this.enemyDamageScale(), "enemyMelee", this.takeDamageBy(id), this.takeHurtFrom(id));
     }
 
     if (this.teamTelemetry) {
@@ -4401,7 +4423,7 @@ export class RaycasterEngine {
       // from `updateProjectiles()`'s own per-player return value instead of
       // threading a new id through a dedicated callback.
       if (victim.telemetry) recordEnemyBoltHit(victim.telemetry);
-      this.damage(id, dmg * this.difficultyMultipliers.damage, "enemyRanged", this.takeDamageBy(id), this.takeHurtFrom(id));
+      this.damage(id, dmg * this.enemyDamageScale(), "enemyRanged", this.takeDamageBy(id), this.takeHurtFrom(id));
     }
   }
 
@@ -4639,6 +4661,20 @@ export class RaycasterEngine {
     }
   }
 
+  /**
+   * The factor every enemy-dealt damage figure is multiplied by: the
+   * difficulty tier's own `damage`, times the temporary playtest knob.
+   *
+   * A helper rather than the expression inlined at both sites, because there
+   * are exactly two of them (melee in `updateEnemyAi`, bolts in
+   * `updateProjectiles`) and wiring only one is the obvious way to get this
+   * subtly wrong — the tests assert both. It is also the single line to delete
+   * when the experiment ends. See `playtestScales.ts`.
+   */
+  private enemyDamageScale(): number {
+    return this.difficultyMultipliers.damage * this.playtestScales.enemyDamage;
+  }
+
   /** Scale a base loot/pickup amount by the difficulty's `ammoDropRate`
    * (Easy is more generous, Hard scarcer) — always at least 1, so rounding
    * down on Hard can never zero out a pickup entirely. */
@@ -4717,8 +4753,28 @@ export class RaycasterEngine {
     const dropSeq = this.dropSeqByEnemyIndex.get(enemyIndex) ?? 0;
     this.dropSeqByEnemyIndex.set(enemyIndex, dropSeq + 1);
     drop.id = `${enemyIndex}:${dropSeq}`;
+    // Resolved once, up here, because both the temporary health scale below
+    // and the telemetry line further down need the same number — and doing the
+    // `?? defaultLootAmountFor` fallback twice would leave the second copy's
+    // unset-`amount` branch unreachable, since anything the scale rewrites
+    // necessarily has an explicit amount by then.
+    let baseAmount = drop.amount ?? this.defaultLootAmountFor(drop.kind);
+    // Temporary playtest knob — see `playtestScales.ts`. Applied here rather
+    // than at the two places a health drop is created, because this is where
+    // both of them meet: the guaranteed regular-kill pack (`damageEnemy`) and
+    // the Elite pack `dropEliteLoot` pushes through `lootCtx.pushDrop`. It
+    // also lands *before* the telemetry lines below read the amount, so
+    // `lootRolled`/`lootDropped` keep reporting what the drop is really worth
+    // rather than what it would have been worth unscaled. Static, generator-
+    // placed health pickups do not come through here and are left alone, which
+    // is the intended scope. `Math.max(1, …)` mirrors the flooring the callers
+    // already apply: a scaled-down drop is never worth zero.
+    if (drop.kind === "health" && this.playtestScales.killHeal !== 1) {
+      baseAmount = Math.max(1, Math.round(baseAmount * this.playtestScales.killHeal));
+      drop.amount = baseAmount;
+    }
     this.drops.push(drop);
-    const amount = this.scaledLootAmount(drop.amount ?? this.defaultLootAmountFor(drop.kind));
+    const amount = this.scaledLootAmount(baseAmount);
     if (this.teamTelemetry) recordLootRolled(this.teamTelemetry, drop.kind, amount);
     // Emitted at *spawn*, so a drop nobody ever walks over is still visible.
     // `fromArch` is what makes self-sustain measurable rather than merely
