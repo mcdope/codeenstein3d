@@ -90,6 +90,7 @@
 import { installVirtualClock } from "./lib/virtualClock.mjs";
 import { resolveBrowserEngine } from "./lib/browserEngine.mjs";
 import { envNumber } from "./lib/envNumber.mjs";
+import { consumedFrames } from "./lib/replayProgress.mjs";
 
 const DEV_SERVER_URL = process.env.CODEENSTEIN_DEV_URL ?? "http://localhost:5183";
 const LEVEL_LIMIT = envNumber("CODEENSTEIN_REPLAY_LEVEL_LIMIT", null, { integer: true, min: 1 });
@@ -219,7 +220,12 @@ async function playEntry(page, rowIndex, expected) {
     if (state.ended) return state;
     if (LEVEL_LIMIT !== null && state.levels.length >= LEVEL_LIMIT) return { ...state, truncatedByLimit: true };
 
-    const consumed = state.levels.reduce((sum, l) => sum + l.framesConsumed, 0) + (state.probe?.frameIndex ?? 0);
+    // Completed levels plus a *coherent* in-flight one: mid-transition the
+    // probe reports the outgoing level's counters under the incoming level's
+    // index, and that level is already in `state.levels`. See
+    // `replayProgress.mjs` — counting it twice failed a frame-exact playback
+    // against the budget below.
+    const consumed = consumedFrames(state, expected.levels);
     if (TRACE) {
       console.log(
         `    [entry ${rowIndex}] chunk ${chunks}: level ${state.probe?.levelIndex}, frame ${state.probe?.frameIndex}/${state.probe?.framesRecorded}, ${consumed}/${totalRecorded} frames, ${ticks} ticks`,
