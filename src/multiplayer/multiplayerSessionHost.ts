@@ -43,6 +43,7 @@
  */
 import {
   REVIVE_HEALTH,
+  TEST_HOOKS_BUILD_ENABLED,
   type BotPlayerState,
   type EngineCarryover,
   type EngineStats,
@@ -165,15 +166,26 @@ export interface MultiplayerSessionHandle {
    * `null` before any level has started, or if `id` isn't a connected
    * player. */
   getBotPlayerState(id: PlayerId): BotPlayerState | null;
+  /**
+   * **Optional because they are absent from a production build**, not because a
+   * caller may skip them. These three are the only route by which the engine's
+   * mutating debug methods could be reached from outside: nothing puts this
+   * handle on `window` today, but that is a property of the current code rather
+   * than an invariant, and any future affordance that exposed the handle would
+   * carry them along. Attaching them only under `TEST_HOOKS_BUILD_ENABLED` makes
+   * that impossible by construction instead of by convention, and
+   * `scripts/check-bundle-hygiene.mjs` fails the build if the wiring reappears.
+   * Call them as `handle.debugSetGodMode?.(…)`.
+   */
   /** Test-only, mutating — see `RaycasterEngine.debugInjectDesync`'s doc
    * comment. */
-  debugInjectDesync(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
+  debugInjectDesync?(injection: { kind: "position"; deltaTiles: number } | { kind: "extraRngDraw" }): void;
   /** Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s doc
    * comment. */
-  debugSetGodMode(playerId: PlayerId, enabled: boolean): void;
+  debugSetGodMode?(playerId: PlayerId, enabled: boolean): void;
   /** Test-only, mutating — see `RaycasterEngine.debugClearExitRoomEnemies`'s
    * doc comment. */
-  debugClearExitRoomEnemies(): void;
+  debugClearExitRoomEnemies?(): void;
   /** Real round-trip-time read via `RTCPeerConnection.getStats()` — step 11
    * Phase 2b (`connectionStats.ts`). Every method here reflects only *this*
    * peer's own local observation, not a network-wide or authoritative view
@@ -741,9 +753,20 @@ export function runMultiplayerSessionAsHost(
     // both fallback outcomes are reachable through a real call, no ignore
     // needed.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
-    debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
-    debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
-    debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
+    // Spread, so a `vite build` drops the wiring — see the interface's note.
+    /* v8 ignore next -- build-time constant: `TEST_HOOKS_BUILD_ENABLED` is
+       `import.meta.env.DEV`, which vitest always runs with `true`, so the empty
+       arm is unreachable from a test without a textual source edit. Note the
+       contrast with the `&&` gates elsewhere in this change, which need no
+       ignore: `&&` evaluates every operand on a truthy constant and therefore
+       scores as covered, while a ternary only ever evaluates one arm. @preserve */
+    ...(TEST_HOOKS_BUILD_ENABLED
+      ? {
+          debugInjectDesync: (injection: Parameters<RaycasterEngine["debugInjectDesync"]>[0]) => engine!.debugInjectDesync(injection),
+          debugSetGodMode: (playerId: PlayerId, enabled: boolean) => engine!.debugSetGodMode(playerId, enabled),
+          debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
+        }
+      : {}),
     getConnectionStats: (id) => {
       const link = links.get(id);
       return link ? readConnectionStats(link.peerConnection) : Promise.resolve(null);

@@ -55,6 +55,26 @@ describe("check-bundle-hygiene", () => {
     expect(r.stderr).toContain("shipping to players");
   });
 
+  it.each(["debugInjectDesync", "debugSetGodMode", "debugClearExitRoomEnemies"])(
+    "fails when the %s handle wiring ships",
+    (member) => {
+      const r = run(bundle(`${CLEAN}const h={${member}:(a,b)=>e.${member}(a,b)};`));
+      expect(r.status).toBe(1);
+      expect(r.stderr).toContain(`${member}:`);
+    },
+  );
+
+  it.each(["debugInjectDesync", "debugSetGodMode", "debugClearExitRoomEnemies"])(
+    "still allows %s as a class method, which cannot be tree-shaken",
+    (member) => {
+      // The distinction the trailing colon exists for. These are members of
+      // RaycasterEngine, a live class, so they ship no matter what — banning the
+      // bare name would make this check permanently and unfixably red.
+      const r = run(bundle(`${CLEAN}class E{${member}(a,b){this.x=b}}`));
+      expect(r.status, r.stderr).toBe(0);
+    },
+  );
+
   it("fails when a required diagnostic stops shipping", () => {
     // The half that stops the absence checks being satisfiable by a build that
     // simply lost everything.

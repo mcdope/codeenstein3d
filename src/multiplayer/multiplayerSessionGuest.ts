@@ -36,7 +36,8 @@
  */
 import { onJsonMessage, sendJson } from "./dataChannelMessaging";
 import { ChunkReassembler, isValidMapDimensions } from "./chunkedTransfer";
-import type { EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "../engine/engine";
+import { TEST_HOOKS_BUILD_ENABLED } from "../engine/engine";
+import type { EngineCarryover, EngineStats, PlayerId, RaycasterEngine, RosterSnapshotEntry } from "../engine/engine";
 import { readConnectionStats } from "./connectionStats";
 import { isValidInputSnapshot } from "./inputValidation";
 import type { ConnectionStateSource, MultiplayerSessionHandle } from "./multiplayerSessionHost";
@@ -574,9 +575,20 @@ export function runMultiplayerSessionAsGuest(
     // See `multiplayerSessionHost.ts`'s identical getter for why this one
     // needs no ignore comment.
     getBotPlayerState: (id) => engine?.getBotPlayerState(id) ?? null,
-    debugInjectDesync: (injection) => engine!.debugInjectDesync(injection),
-    debugSetGodMode: (playerId, enabled) => engine!.debugSetGodMode(playerId, enabled),
-    debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
+    // See `MultiplayerSessionHandle`'s note — dev builds only.
+    /* v8 ignore next -- build-time constant: `TEST_HOOKS_BUILD_ENABLED` is
+       `import.meta.env.DEV`, which vitest always runs with `true`, so the empty
+       arm is unreachable from a test without a textual source edit. Note the
+       contrast with the `&&` gates elsewhere in this change, which need no
+       ignore: `&&` evaluates every operand on a truthy constant and therefore
+       scores as covered, while a ternary only ever evaluates one arm. @preserve */
+    ...(TEST_HOOKS_BUILD_ENABLED
+      ? {
+          debugInjectDesync: (injection: Parameters<RaycasterEngine["debugInjectDesync"]>[0]) => engine!.debugInjectDesync(injection),
+          debugSetGodMode: (playerId: PlayerId, enabled: boolean) => engine!.debugSetGodMode(playerId, enabled),
+          debugClearExitRoomEnemies: () => engine!.debugClearExitRoomEnemies(),
+        }
+      : {}),
     // Only ever has one link, toward the host — see this method's own doc
     // comment on `MultiplayerSessionHandle`.
     getConnectionStats: (id) => (connection && id === HOST_PLAYER_ID ? readConnectionStats(connection) : Promise.resolve(null)),

@@ -2853,16 +2853,16 @@ if (TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()) {
     // short end-to-end run — see `RaycasterEngine.debugInjectDesync`'s own
     // doc comment). Never called from real gameplay code.
     getRngState: () => activeMultiplayerSession?.getRngState() ?? null,
-    injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync(injection),
+    injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync?.(injection),
     // Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s own doc
     // comment. For `scripts/verify-multiplayer-transition.mjs`: lets the
     // host reach a real level's real exit without needing to survive the
     // demo campaign's full combat gauntlet first, while leaving other
     // players (e.g. the guest) fully vulnerable.
-    debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode(id, enabled),
+    debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode?.(id, enabled),
     // Test-only, mutating — see `RaycasterEngine.debugClearExitRoomEnemies`'s
     // own doc comment.
-    debugClearExitRoomEnemies: () => activeMultiplayerSession?.debugClearExitRoomEnemies(),
+    debugClearExitRoomEnemies: () => activeMultiplayerSession?.debugClearExitRoomEnemies?.(),
     hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
     // A *frozen* value, unlike getRngState() above — see
     // MultiplayerSessionHandle.getLastReconciliationRngState's own doc

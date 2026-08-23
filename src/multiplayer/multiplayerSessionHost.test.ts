@@ -463,7 +463,7 @@ describe("runMultiplayerSessionAsHost", () => {
     const worker = fakeWorker();
     const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
     const before = handle.getRngState();
-    handle.debugInjectDesync({ kind: "extraRngDraw" });
+    handle.debugInjectDesync?.({ kind: "extraRngDraw" });
     expect(handle.getRngState()).not.toBe(before);
     expect(handle.hasActiveRenderOffset("host")).toBe(false);
   });
@@ -472,14 +472,14 @@ describe("runMultiplayerSessionAsHost", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
     const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
-    expect(() => handle.debugSetGodMode("host", true)).not.toThrow();
+    expect(() => handle.debugSetGodMode?.("host", true)).not.toThrow();
   });
 
   it("debugClearExitRoomEnemies delegates to the underlying engine", () => {
     const channels = linkedChannels();
     const worker = fakeWorker();
     const handle = runMultiplayerSessionAsHost(channels.links, makeCanvas(), fakeResult(), worker);
-    expect(() => handle.debugClearExitRoomEnemies()).not.toThrow();
+    expect(() => handle.debugClearExitRoomEnemies?.()).not.toThrow();
   });
 
   describe("network/netcode-quality telemetry (step 11 Phase 2b)", () => {

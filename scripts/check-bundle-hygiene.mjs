@@ -43,6 +43,18 @@ const BANNED = [
   "__codeensteinCampaignTestHooks",
   "__codeensteinReplayTestHooks",
   "__codeensteinMultiplayerTestHooks",
+  // The `MultiplayerSessionHandle` wiring for the engine's mutating debug
+  // methods. The trailing colon is the whole point: it matches the
+  // *object-literal property* (`debugSetGodMode:(a,b)=>e.debugSetGodMode(a,b)`)
+  // and not the class method (`debugSetGodMode(e,t){…}`), which is a member of a
+  // live class and cannot be tree-shaken. Banning the bare name would therefore
+  // be permanently red; banning the wiring is what is actually enforceable, and
+  // it is also the thing that matters — nothing puts the handle on `window`
+  // today, so the wiring is the only route by which these could ever be reached
+  // from outside a dev build.
+  "debugInjectDesync:",
+  "debugSetGodMode:",
+  "debugClearExitRoomEnemies:",
 ];
 
 /**
