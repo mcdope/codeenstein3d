@@ -14,7 +14,7 @@ The bottom status bar is one full-width bezel, laid out like DOOM's — but with
 - **KEYS** — one pip per locked room on the level, in that room's own colour
   (hollow while you still need it, filled once you're holding it — a key is permanent and opens every door of its room, so which *colours* you hold is what decides whether the door in front of you opens; a level with nothing locked shows a dash)
 - **SCORE** — your running campaign total, updated live
-- **the ammo table** — every pool at once, on the far right: `BULL`, `SHEL`, `SMG`, `RCKT`, `GAS`. The row for whatever you are holding is lit. There is no second number because there is no ammo cap in this game — what you see is what you have
+- **the ammo table** — every pool at once, on the far right: `BULL`, `SHEL`, `SMG`, `RCKT`, `GAS`. The row for whatever you are holding is lit. There is no second number because nothing caps a pool while you are playing a level — what you see is what you have. (There is one ceiling, but it applies only at the moment you *enter* a level: you carry in at most three times what that level would hand a fresh player, per pool.)
 
 The crosshair turns red over a valid target, and shows tick marks for weapons that fire in a spread cone. Pulling the trigger on an empty weapon shows a fading "Out of ammo!" toast instead of just doing nothing.
 
@@ -52,7 +52,7 @@ All of the game's settings live behind the gear (⚙) tab in the sidebar's tab b
 - **Load WAD Texture Pack** — pick a DOOM `.wad` file to source real wall/door/floor textures from instead of the built-in default look. The game automatically picks common, broadly-compatible textures/flats out of the WAD (no picker), choosing a *separate* wall/floor/door set for each of the game's stylesets so levels still look different from one another, and falls back silently to the defaults for anything it can't find — a status line under the button reports what was actually used, per styleset.
 - **Or pick an online texture pack** — a curated list of free, license-checked WADs and texture packs below the local-file button, no download or file picker needed. Each entry shows its license and credits, with an "info" link to the project's homepage; a license flagged in red (currently only HACX) carries a real usage restriction — read it before you rely on that pack for anything beyond casual play. Clicking a name loads it exactly like a local file would, updating the same status line — and it is remembered, so it comes back on its own next time. **Use built-in textures** appears once anything is loaded and puts the original look back, forgetting the choice. See [Credits & Third-Party Licenses](../../README.md#credits--third-party-licenses) in the main README for the full list with clickable attribution.
 
-Gore, Difficulty, Render quality, the volume sliders and your **online texture pack** are standing preferences, independent of any specific campaign run — pick a pack from the Online list and it is restored automatically on your next visit. The BGM folder and a **local** `.wad` file stay session-only: a browser gives a page no durable handle to a file you picked, so neither the chosen music folder nor a local WAD survives a reload (only the BGM *volume* persists, not which folder is loaded). Picking a local file therefore also clears a remembered online pack, rather than letting it override your choice next time.
+Gore, Difficulty, Render quality, Automap orientation, the volume sliders and your **online texture pack** are standing preferences, independent of any specific campaign run — pick a pack from the Online list and it is restored automatically on your next visit. The BGM folder and a **local** `.wad` file stay session-only: a browser gives a page no durable handle to a file you picked, so neither the chosen music folder nor a local WAD survives a reload (only the BGM *volume* persists, not which folder is loaded). Picking a local file therefore also clears a remembered online pack, rather than letting it override your choice next time.
 
 ## The file tree
 
@@ -62,9 +62,36 @@ One workspace is loaded at a time, as it always has been: loading a repository r
 
 Switching tabs is purely a change of view: it never disturbs the level you're playing, and the folders you expanded stay expanded when you come back. The tab the game is running from is marked, so you can tell at a glance from anywhere — including the tabs that show no tree — and the mark doubles as a transport readout: **▶** while the level is running, **❚❚** whenever it isn't — a pause, reading a lore terminal, a briefing you haven't dismissed yet, or the summary between levels. **The mark only exists while a level does.** Once a run ends, or before you've started one, or if a load fails and drops you back to the file tree, the tab carries no mark at all: there is no level to report a transport state for, and a **❚❚** there would be offering to resume something that isn't running.
 
+## The end-of-level and end-of-run screens
+
+Three screens use the same layout: **Commit Summary** when you clear a level, **Build
+Successful** when you finish the campaign, and **Kernel Panic** when you die. Each opens
+with the headline for that outcome and then lists how the level — or, on the two run-end
+screens, the whole run — actually went:
+
+| Row | What it is |
+|---|---|
+| **Kills** | How many enemies you killed |
+| **Weapon accuracy** | Shots that hit, as a percentage. Read it as a rough guide rather than a precise figure: a shotgun blast counts as **one** shot but each of its seven pellets that lands counts as a hit, so a level you fought mostly with the shotgun can read well above 100% |
+| **Loot collected** | Every pickup you walked over |
+| **Time survived** | Wall-clock time |
+| **Closest call** | The lowest your System Stability got |
+| **Damage taken** | Split into Melee, Ranged and Traps, so you can see what actually hurt you |
+| **Score bonuses** | Health, Ammo, Speed and Accuracy — the four end-of-level bonuses, each shown separately |
+| **Bonus features** | Path, Map, Lore, Secrets and Streaks — what you earned for exploring rather than for fighting |
+
+The **Commit Summary** additionally shows Lines refactored and Bugs squashed, and offers
+**Export Map as PNG** for the level you just cleared.
+
+These rows were written in July and switched off in the same change that added them, so
+**no build before this one showed them** — and the Accuracy figure under Score bonuses
+was scoring zero the whole time, because it divided by a shot count nothing recorded.
+Both work now, which is why a run can score slightly higher than the same run would have
+before.
+
 ## Highscores
 
-The **Highscores** button opens a top-10 leaderboard with columns for player, score, level/campaign name, the codebase's total lines/complexity, levels cleared, **the difficulty it was played on**, **RB** (how many rollbacks the run spent restarting a level), when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons.
+The **Highscores** button opens a top-10 leaderboard with columns for player, score, level/campaign name, the codebase's total lines/complexity, levels cleared, **the difficulty it was played on**, **RB** (how many rollbacks the run spent restarting a level), when the run ended, and an AST hash of the *whole workspace* (so you can compare runs against the exact same code, regardless of which level either run happened to end on). Entries with a recorded replay show **Watch** and **Export** buttons. Two other things can appear in that column instead: **rules changed**, for a run recorded before a balance change, which cannot be replayed faithfully and so is not offered; and a plain dash, for a run with no recording at all.
 
 If you haven't set any scores of your own yet, the board shows 3 example entries from the bundled Demo Campaign instead of an empty list, each watchable — these disappear the moment you set a real score of your own. They're named **Casual**, **Gamer** and **Pro** after the playtest bot's own skill profiles, which is what makes their scores differ.
 

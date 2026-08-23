@@ -24,7 +24,7 @@ tab you were on. Use the arrow keys or **Back**/**Next** to move through it, **S
 **Escape** to dismiss it. It won't come back once dismissed; everything it covers is written
 out below and in the rest of this guide.
 
-The sidebar has six tabs. Five of them are ways to start a run — four single-player, plus **Multiplayer**, covered in its own [guide](multiplayer.md) — and the sixth, the gear (⚙), holds the game's settings, covered in [HUD & UI](hud-and-ui.md#the-settings-tab).
+The sidebar's tabs are the ways to start a run, plus the gear (⚙), which holds the game's settings and is covered in [HUD & UI](hud-and-ui.md#the-settings-tab). How many you see varies: **Continue** is hidden until you have a saved run, and **Multiplayer** — covered in its own [guide](multiplayer.md) — only appears if the build you are playing was given a signaling server, so a first visit to a fresh copy typically shows four.
 
 - **Local** — click **Select Workspace** and pick a folder on your machine. Anything with source code works, from a single script to a large repo.
 - **Continue** — only appears once you have a saved run. Click **Continue Run** to resume exactly where you left off (health, ammo, weapons, and campaign position all restored).
@@ -45,7 +45,7 @@ From there you explore, fight, loot, and make your way to the level's exit tile.
 
 ## Ending a level
 
-- **Reach the exit** → a **Commit Summary** overlay shows stats ("Lines refactored", "Bugs squashed") and a **Continue** button loads the next level, carrying your health, ammo, and weapons forward. An **Export Map as PNG** button also appears below the canvas — it downloads a top-down image of the level you just cleared, textured the same as what you actually saw in-game, for sharing. It's only ever available for a level you've already finished.
+- **Reach the exit** → a **Commit Summary** overlay shows how the level went and a **Continue** button loads the next level, carrying your health, ammo, and weapons forward. An **Export Map as PNG** button also appears below the canvas — it downloads a top-down image of the level you just cleared, textured the same as what you actually saw in-game, for sharing. It's only ever available for a level you've already finished.
   - **The exit only works once its own room is clear.** Standing on the exit tile does nothing at all while any enemy that spawned in that same room is still alive — no message, it just doesn't trigger. Clear the room first.
 - **Run out of levels** (you've cleared the whole tree) → **Build Successful**.
 - **Die** → **Kernel Panic**. If your run still has a **rollback** left, the screen offers one: **Roll back** restarts the level you died on exactly as you entered it, and **Give up** ends the run and returns you to the file tree. With none left there is no choice to make — the run is over, same as it always was.
