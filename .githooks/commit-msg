@@ -1,0 +1,5 @@
+#!/bin/sh
+# The commit *message* is a separate channel and leaked independently on
+# 2026-08-23 — the message of the very commit that scrubbed the values named
+# one of them. Scan it too.
+exec node scripts/check-secrets.mjs --message "$1"

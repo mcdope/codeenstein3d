@@ -561,3 +561,34 @@ Canonical URL is `https://codeenstein3d.mcdope.org/` — the intended hosting do
 The Open Graph/Twitter Card image (`public/og-image.png`, 1200x630) was generated the same way as the favicon set — same source "CODE" logo, cropped to its real content bbox — but composited onto an *opaque* `#1a1a1f` canvas rather than kept transparent, since social platforms render OG image transparency unpredictably (often flattened to black or white depending on the client). The tagline is rendered directly onto the image in `LiberationMono-Bold.ttf`, matching the game's `ui-monospace` UI font stack.
 
 `main.ts`'s `document.title = "🔫 Codeenstein 3D (Build: ...)"` (notes Task 58) runs at module load and is intentionally left untouched — it's a live debug aid for catching a stale cached bundle, not page metadata. `og:title`/`twitter:title` are separate static meta tags unaffected by that runtime overwrite, so a crawler reading the static `<head>` (or even one that runs JS, since only `document.title` changes, not the meta tags) always sees the stable, non-timestamped title.
+
+## Secrets Are Kept Out Mechanically, Not by Discipline
+
+On 2026-08-23 four `user@host` SSH lane targets were found in `notes` and
+`history.md` — copied out of the gitignored `ssh-hosts.env`, in a public repo,
+where they had sat for three weeks. They were then **published a second time in
+the pull request description of the PR that removed them**, minutes after the
+rule against doing exactly that had been written down.
+
+The second leak is the one that set the design. Intent, a written rule, and
+having just thought about the problem were all present, and none of them worked.
+So the control is `scripts/check-secrets.mjs` on a pre-commit hook, a commit-msg
+hook, and a CI job that also reads the PR description.
+
+Three decisions inside it are worth keeping:
+
+- **Two layers.** Exact matching against the real values has no false positives
+  but needs the values; shape matching needs nothing but has false positives.
+  Neither alone covers both a local commit and a fork PR.
+- **The scanner never prints the matched text.** It reports `path:line [rule]`.
+  Reporting the value would put it in a public CI log — the same mistake in a
+  new place. Pinned by a test.
+- **Shape rules can be suppressed per path; exact rules never can.** Files whose
+  purpose is host-shaped examples (`ssh-hosts.env.dist`, the coturn ACL config,
+  the multiplayer server's IPv4 fixtures) would otherwise fire forever. No doc
+  or notes file is on that list, deliberately.
+
+`VITE_*` values are excluded from the denylist: Vite inlines them into the
+shipped client bundle, so they are public by construction and matching on them
+flagged `package.json`, `index.html` and the sitemap.
+
