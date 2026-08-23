@@ -19,7 +19,7 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import { STYLE_SET_IDS, type GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
+import { RaycasterEngine, SIMULATION_BALANCE, TEST_HOOKS_BUILD_ENABLED, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
 import { STARTING_SHELLS } from "./engine/ammo";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
@@ -2657,18 +2657,22 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // this object would make that check trivially true before any engine exists,
 // racing every `waitUntil(() => !!testHooks())` in `main.test.ts` that
 // expects it to mean exactly that. This is also the only place
-// `debugSetGodMode`/`injectDesync` are reachable at all — gating them behind
-// `import.meta.env.DEV` (via `isTestHooksActive()`) means a real production
+// `debugSetGodMode`/`injectDesync` are reachable at all — gating them on
+// `TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()` means a real production
 // build never ships the code path that lets a player fake invulnerability or
 // desync state through the console, not just a URL param it happens to
-// ignore.
+// ignore. Both terms are needed: `isTestHooksActive()` alone is a function
+// call the minifier does not inline, and gating on it alone shipped this
+// whole block — inert, but present — from 2026-07-26 until it was caught.
+// `scripts/check-bundle-hygiene.mjs` now fails the build if it returns.
 //
 // `__codeensteinReplayTestHooks` below is a *third* separate global for the
 // same reason this one is separate from `__codeensteinTestHooks`: the test
 // suite treats the presence of that object as "an engine has been
 // constructed", and anything installed at module-import time would make that
 // check trivially true before any engine exists.
-if (isTestHooksActive()) {
+// See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+if (TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()) {
   // A *fourth* separate global, for the same module-import-time reason the
   // other three are separate (see the comment above).
   //
@@ -4468,7 +4472,8 @@ function loadDifficulty(): DifficultyLevel {
  * would no longer write).
  */
 function rollbacksDisabled(): boolean {
-  if (!isTestHooksActive()) return false;
+  // See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+  if (!TEST_HOOKS_BUILD_ENABLED || !isTestHooksActive()) return false;
   try {
     return localStorage.getItem(ROLLBACKS_DISABLED_KEY) === "1";
   } catch {
