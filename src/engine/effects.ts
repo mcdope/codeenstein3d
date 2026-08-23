@@ -11,6 +11,7 @@
  * drawing. Timers are frame-based (damage flash, tracers) where the brief is
  * specified in frames, and time-based for the blood physics.
  */
+import { withOverlayScale } from "./overlayScale";
 import { drawDisc, fillLine } from "./pathSprites";
 import { projectPoint } from "./sprites";
 import type { Player } from "./player";
@@ -287,7 +288,12 @@ export function makeBulletTrace(
   return { x1: 0.5, y1: 1, x2: toX / width, y2: toY / height, frames: BULLET_TRACE_FRAMES, color };
 }
 
-/** Width, in canvas pixels, of a tracer line. */
+/** Width of a tracer line, in design pixels (see `overlayScale.ts`) — which is
+ * why `drawBulletTraces` is the one thing in this module drawn in the overlay
+ * layer's space. Everything else here is either a full-canvas fill or driven
+ * entirely by normalised fractions, so it is resolution-independent already;
+ * this is a real constant width, and left in device pixels it would be the one
+ * effect still drawn half-weight next to the weapon it leaves. */
 const TRACE_WIDTH = 2;
 
 /** Draw all live tracers in their own color, fading with remaining frames.
@@ -295,13 +301,13 @@ const TRACE_WIDTH = 2;
  * in a frame costs ~10ms of frame budget on a GPU-accelerated canvas (see
  * `pathSprites.ts`), and a shotgun blast puts seven of them on screen at once. */
 export function drawBulletTraces(ctx: CanvasRenderingContext2D, traces: BulletTrace[]): void {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
-  for (const t of traces) {
-    const alpha = 0.9 * Math.max(0, t.frames / BULLET_TRACE_FRAMES);
-    ctx.fillStyle = withAlpha(t.color, alpha);
-    fillLine(ctx, t.x1 * w, t.y1 * h, t.x2 * w, t.y2 * h, TRACE_WIDTH);
-  }
+  withOverlayScale(ctx, (w, h) => {
+    for (const t of traces) {
+      const alpha = 0.9 * Math.max(0, t.frames / BULLET_TRACE_FRAMES);
+      ctx.fillStyle = withAlpha(t.color, alpha);
+      fillLine(ctx, t.x1 * w, t.y1 * h, t.x2 * w, t.y2 * h, TRACE_WIDTH);
+    }
+  });
 }
 
 /** Create a flame stream spanning `leftX`..`rightX` (the widest and narrowest

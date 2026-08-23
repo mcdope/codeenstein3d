@@ -8,9 +8,16 @@
  * hard-coded literals (12 / 205 / 275 / 375, score right-aligned at `w - 12`),
  * so it did not scale. At the "Sharp" 1280x800 preset that left roughly 800
  * blank pixels between the keys and the score. A layout that is a *pure
- * function of the canvas width* can be tested at every preset without the
- * canvas mock, which is what makes that defect regressible rather than
- * re-discoverable.
+ * function of its width* can be tested at every width without the canvas mock,
+ * which is what makes that defect regressible rather than re-discoverable.
+ *
+ * Note what this module is and is not a precedent for. It is a precedent for
+ * the *shape* — pure function, `it.each` over presets, relational assertions —
+ * but it never scaled anything: `HUD_HEIGHT` and every padding, pip, cell and
+ * font size here is a literal. Making those literals mean the same visual size
+ * at every preset is `overlayScale.ts`'s job, not this module's, and the two
+ * compose: this places panels inside a box, that decides how big the box's
+ * pixels are.
  *
  * Returning rects rather than drawing is the same convention `renderMinimap`
  * already follows with `MinimapPanelRect` — the caller gets geometry and
@@ -18,7 +25,10 @@
  * would blit into, instead of re-deriving positions.
  */
 
-/** One panel's box, in canvas pixels. */
+/** One panel's box, in design pixels (`overlayScale.ts`) — the space
+ * `withOverlayScale` puts the context in before `drawHud` runs. It was canvas
+ * pixels before the overlay layer scaled; at the Classic preset the two are
+ * the same number, which is why nothing below had to change. */
 export interface HudPanelRect {
   x: number;
   y: number;
@@ -41,7 +51,7 @@ export interface HudLayout {
 }
 
 /**
- * Height, in canvas pixels, of the native status bar at the bottom.
+ * Height, in design pixels, of the native status bar at the bottom.
  *
  * **Derived from the ammo table, not chosen.** Five rows at a 12px pitch put
  * baselines at +16/+28/+40/+52/+64; 8px of bottom margin clears the descenders
@@ -106,10 +116,14 @@ const KEYS_MIN = HUD_PAD * 2 + KEY_COLS * KEY_PIP + (KEY_COLS - 1) * KEY_PIP_GAP
 /**
  * The bar's contents stop widening past this, and centre instead.
  *
- * Classic (640) and Sharp (1280) both stretch fully, so every real preset uses
- * the whole width. It exists for the measurement-only `?renderRes=2560x1600`
- * case, where eight panels sharing 2,560px would each be ~300px wide holding
- * one 9px label — the bar would read as empty rather than as a status bar.
+ * Now that the overlay layer scales, every shipped preset hands `layoutHud` a
+ * 640-wide design box, so this cap is unreachable in production — it exists
+ * for the measurement-only `?renderRes=2560x1600` case, where eight panels
+ * sharing 2,560px would each be ~300px wide holding one 9px label and the bar
+ * would read as empty rather than as a status bar. Left at 1280 rather than
+ * lowered to the design width: it is a legibility ceiling on the *pure
+ * function*, and shrinking it to something no production call can reach would
+ * make the one case it guards worse for no gain.
  */
 export const HUD_MAX_CONTENT_W = 1280;
 
@@ -175,19 +189,25 @@ export const LABEL_SCORE = "SCORE";
  * nothing. `canvasH` is read only to place the bar against the bottom edge.
  */
 /**
- * **The bar is fixed-pixel, deliberately, and does not scale with resolution.**
+ * **`canvasW`/`canvasH` are design pixels, and in production they are always
+ * 640x400.**
  *
- * Every other overlay is too — the minimap's `maxPixels`, the viewmodel's
- * fixed travel, the crosshair, the toasts. The "Sharp" preset is exactly 2x
- * and CSS-scales back to the same display size, so the whole overlay layer is
- * uniformly half-size there. Scaling only the HUD would hand it twice the
- * visual weight of the weapon in your hands.
+ * This used to say the bar was deliberately fixed-pixel and that scaling the
+ * overlay layer was a separate item which "should move all three together or
+ * none". That item has since shipped: `drawHud` calls this from inside
+ * `withOverlayScale`, so at every preset it is handed the design box rather
+ * than the backing store, and the bar scales because the whole overlay layer
+ * does (see `overlayScale.ts`).
  *
- * The defect this module fixes was *horizontal* — panels clustered left with
- * dead space after them — and that is fixed at every width. Making the overlay
- * layer scale as a whole is a separate item touching `viewmodel.ts` and
- * `renderMinimap` as well as this, and it should move all three together or
- * none.
+ * The consequence for the rest of this module is worth stating plainly rather
+ * than leaving to be re-derived: **at both shipped presets this function is
+ * called with exactly (640, 400)**. `HUD_MAX_CONTENT_W`, the uniform-squeeze
+ * branch and the cumulative-edge rounding are therefore contract cases of a
+ * pure function, reachable only through a non-8:5 `?renderRes` override — not
+ * behaviour any player will see. They are kept, and kept tested, because this
+ * is a pure function whose domain is wider than its production range, and
+ * because the arithmetic that made them necessary is exactly the arithmetic a
+ * future preset would re-enter.
  */
 export function layoutHud(canvasW: number, canvasH: number): HudLayout {
   const bar: HudPanelRect = { x: 0, y: canvasH - HUD_HEIGHT, w: canvasW, h: HUD_HEIGHT };

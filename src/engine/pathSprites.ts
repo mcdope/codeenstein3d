@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Tobias Bäumer — part of Codeenstein 3D (see LICENSE)
 
+import { contextScale } from "./overlayScale";
+
 /**
  * Pre-rendered glyphs for every non-rectangular shape the renderer used to
  * draw straight onto the scene canvas each frame.
@@ -81,9 +83,10 @@ function probeOffscreenCanvas(): boolean {
  * the drawing it replaced in nothing at all, not even in call sequence.
  */
 export interface Glyph {
-  /** Sprite box width in canvas pixels — must cover the shape plus any
-   * stroke width, or the pre-rendered copy is clipped where the live drawing
-   * was not. */
+  /** Sprite box width in *design* pixels (see `overlayScale.ts`) — must cover
+   * the shape plus any stroke width, or the pre-rendered copy is clipped where
+   * the live drawing was not. The pre-render allocates `width * s` device
+   * pixels for it, so a glyph stays as sharp as the canvas allows. */
   readonly width: number;
   readonly height: number;
   /** Where the anchor point sits inside the sprite box. */
@@ -96,30 +99,70 @@ export interface Glyph {
 /**
  * Pre-rotated copies per full turn, for `drawRotatedGlyph`. 128 steps is
  * 2.8° of quantisation; on the largest glyph drawn this way (the compass
- * needle, 7px from anchor to tip) that moves the tip by 0.34px — below the
- * canvas's own pixel grid, and the alternative (one sprite plus a live
- * `rotate()`) would hand the rasteriser a rotated quad, which is exactly the
- * non-axis-aligned geometry this module exists to avoid.
+ * needle, 7 design px from anchor to tip) that moves the tip by 0.34 design px
+ * — below the canvas's own pixel grid at Classic, and 0.68 device px at Sharp,
+ * where the needle is twice as many pixels across. The alternative (one sprite
+ * plus a live `rotate()`) would hand the rasteriser a rotated quad, which is
+ * exactly the non-axis-aligned geometry this module exists to avoid.
+ *
+ * Every glyph keeps all 128 steps at every preset — see `MAX_ATLAS_WIDTH`.
  */
 const ROTATION_STEPS = 128;
 
-/** Widest atlas strip we will allocate; a glyph whose strip would exceed this
- * gets proportionally fewer rotation steps rather than a failed allocation. */
+/**
+ * Widest atlas strip we will allocate *per unit of scale*; a glyph whose strip
+ * would exceed it gets proportionally fewer rotation steps rather than a failed
+ * allocation.
+ *
+ * **Multiplied by the scale, not held fixed.** A fixed cap is measured in device
+ * pixels, so doubling the resolution doubles every tile and halves the step
+ * count — the compass needle drops from 128 steps to 73, making the needle snap
+ * more coarsely at exactly the preset that exists to look better. Letting the
+ * cap grow with the scale keeps the step count identical at every preset, so
+ * quantisation stays a fixed fraction of the glyph rather than a fixed number
+ * of device pixels, which is how every other part of this change behaves. The
+ * strip is one tile tall, so even the widest case here is a few hundred
+ * thousand pixels — the cap is a guard against a pathologically large glyph,
+ * not a memory budget.
+ */
 const MAX_ATLAS_WIDTH = 4096;
 
 interface RotationAtlas {
   canvas: HTMLCanvasElement;
-  /** Square tile side; every step occupies one tile of the strip. */
+  /** Square tile side in *device* pixels; every step occupies one tile. */
   tile: number;
   steps: number;
+  /** Device pixels per design pixel this strip was baked at — the divisor that
+   * turns `tile` back into the design-space size to blit at. */
+  scale: number;
 }
 
-/** Built sprites, keyed by glyph identity — glyphs are module constants or
- * memoised factory results, so identity is stable for the process. A `null`
- * entry records "this one could not be pre-rendered", so a failed build is
- * attempted once rather than on every frame. */
-const spriteCache = new Map<Glyph, HTMLCanvasElement | null>();
-const atlasCache = new Map<Glyph, RotationAtlas | null>();
+/**
+ * Built sprites, keyed by glyph identity and then by the scale they were baked
+ * at — glyphs are module constants or memoised factory results, so identity is
+ * stable for the process. A `null` entry records "this one could not be
+ * pre-rendered", so a failed build is attempted once rather than on every frame.
+ *
+ * **The scale has to be part of the key, not folded into the glyph.** A sprite
+ * baked for Classic and blitted at Sharp is the pixel-doubled, blurry thing
+ * this whole change exists to avoid; and the second key level rather than a
+ * cache-wide reset means switching render preset mid-session (or a screenshot
+ * script capturing both) re-bakes once and then keeps both sets warm, instead
+ * of thrashing. In practice the inner map holds exactly one entry, because
+ * `renderRes` does not change without a reload.
+ */
+const spriteCache = new Map<Glyph, Map<number, HTMLCanvasElement | null>>();
+const atlasCache = new Map<Glyph, Map<number, RotationAtlas | null>>();
+
+/** The per-scale slot for `key` in a two-level cache, created on first use. */
+function scaleSlot<K, V>(cache: Map<K, Map<number, V>>, key: K): Map<number, V> {
+  let slot = cache.get(key);
+  if (!slot) {
+    slot = new Map<number, V>();
+    cache.set(key, slot);
+  }
+  return slot;
+}
 
 /** A detached canvas of the given size with a context, or `null` if either
  * step fails. Never appended to the DOM. */
@@ -135,53 +178,94 @@ function makeSurface(width: number, height: number): { canvas: HTMLCanvasElement
   }
 }
 
-function spriteFor(glyph: Glyph): HTMLCanvasElement | null {
-  const cached = spriteCache.get(glyph);
+function spriteFor(glyph: Glyph, scale: number): HTMLCanvasElement | null {
+  const slot = scaleSlot(spriteCache, glyph);
+  const cached = slot.get(scale);
   if (cached !== undefined) return cached;
   let sprite: HTMLCanvasElement | null = null;
-  const surface = makeSurface(glyph.width, glyph.height);
+  const surface = makeSurface(glyph.width * scale, glyph.height * scale);
   if (surface) {
+    // The glyph's own `draw` never learns about the scale — it keeps drawing in
+    // design pixels, exactly as it does in the direct-draw fallback. That is
+    // what keeps the fallback this module's correctness reference: the two
+    // paths run identical code against identically-transformed contexts.
+    surface.ctx.scale(scale, scale);
     glyph.draw(surface.ctx, glyph.anchorX, glyph.anchorY);
     sprite = surface.canvas;
   }
-  spriteCache.set(glyph, sprite);
+  slot.set(scale, sprite);
   return sprite;
 }
 
-function atlasFor(glyph: Glyph): RotationAtlas | null {
-  const cached = atlasCache.get(glyph);
-  if (cached !== undefined) return cached;
-  // A rotated glyph sweeps its whole box around the anchor, so the tile has
-  // to be square and wide enough for the box's furthest corner in any
-  // orientation — the diagonal of the anchor-to-edge extents.
+/**
+ * Square tile side in device pixels, and how many of them fit the strip.
+ *
+ * A rotated glyph sweeps its whole box around the anchor, so the tile has to
+ * be square and wide enough for the box's furthest corner in any orientation —
+ * the diagonal of the anchor-to-edge extents.
+ *
+ * Both the tile and the cap are in device pixels and both scale together, so
+ * the step count a glyph gets is the same at every preset — see
+ * `MAX_ATLAS_WIDTH`. Rotation steps still give way for a pathologically large
+ * glyph; that is why this is a shared function with a test seam rather than
+ * arithmetic inlined at the one call site that needs it.
+ */
+function atlasMetrics(glyph: Glyph, scale: number): { tile: number; steps: number } {
   const reachX = Math.max(glyph.anchorX, glyph.width - glyph.anchorX);
   const reachY = Math.max(glyph.anchorY, glyph.height - glyph.anchorY);
-  const tile = Math.ceil(2 * Math.hypot(reachX, reachY)) + 2;
-  const steps = Math.max(1, Math.min(ROTATION_STEPS, Math.floor(MAX_ATLAS_WIDTH / tile)));
+  const tile = Math.ceil((Math.ceil(2 * Math.hypot(reachX, reachY)) + 2) * scale);
+  const budget = MAX_ATLAS_WIDTH * scale;
+  return { tile, steps: Math.max(1, Math.min(ROTATION_STEPS, Math.floor(budget / tile))) };
+}
+
+function atlasFor(glyph: Glyph, scale: number): RotationAtlas | null {
+  const slot = scaleSlot(atlasCache, glyph);
+  const cached = slot.get(scale);
+  if (cached !== undefined) return cached;
+  const { tile: deviceTile, steps } = atlasMetrics(glyph, scale);
   let atlas: RotationAtlas | null = null;
-  const surface = makeSurface(tile * steps, tile);
+  const surface = makeSurface(deviceTile * steps, deviceTile);
   if (surface) {
     for (let i = 0; i < steps; i++) {
       surface.ctx.save();
-      surface.ctx.translate(i * tile + tile / 2, tile / 2);
+      surface.ctx.translate(i * deviceTile + deviceTile / 2, deviceTile / 2);
+      surface.ctx.scale(scale, scale);
       surface.ctx.rotate((i / steps) * Math.PI * 2);
       glyph.draw(surface.ctx, 0, 0);
       surface.ctx.restore();
     }
-    atlas = { canvas: surface.canvas, tile, steps };
+    atlas = { canvas: surface.canvas, tile: deviceTile, steps, scale };
   }
-  atlasCache.set(glyph, atlas);
+  slot.set(scale, atlas);
   return atlas;
 }
 
-/** Draw `glyph` with its anchor at (`x`, `y`). */
+/**
+ * Draw `glyph` with its anchor at (`x`, `y`), in design pixels.
+ *
+ * The scale is read off the context rather than passed in, because every
+ * caller is already inside `withOverlayScale` and threading a factor through
+ * ten call sites is ten chances to pass the wrong one. The destination size
+ * comes from the sprite's own device dimensions divided by that scale, not
+ * from `glyph.width`: `makeSurface` rounds the allocation up, so at s=1 this
+ * reproduces the bare `drawImage(sprite, dx, dy)` it replaced exactly, rather
+ * than quietly squeezing a ceil'd sprite into a fractional box.
+ *
+ * The destination is deliberately **not** rounded to whole device pixels.
+ * Sub-pixel blit origins are what the shipped Classic renderer already does
+ * (`drawFlameBurst` and `drawMuzzleFlash` carry bob and recoil), so rounding
+ * here would change Classic as well as Sharp — losing the unchanged-preset
+ * control that the before/after screenshots depend on — to fix an artefact
+ * that no one has reported at the resolution where it already occurs.
+ */
 export function drawGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, x: number, y: number): void {
-  const sprite = OFFSCREEN_AVAILABLE ? spriteFor(glyph) : null;
+  const scale = contextScale(ctx);
+  const sprite = OFFSCREEN_AVAILABLE ? spriteFor(glyph, scale) : null;
   if (!sprite) {
     glyph.draw(ctx, x, y);
     return;
   }
-  ctx.drawImage(sprite, x - glyph.anchorX, y - glyph.anchorY);
+  ctx.drawImage(sprite, x - glyph.anchorX, y - glyph.anchorY, sprite.width / scale, sprite.height / scale);
 }
 
 /**
@@ -191,7 +275,8 @@ export function drawGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, x: number
  * fallback does.
  */
 export function drawRotatedGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, angle: number, x: number, y: number): void {
-  const atlas = OFFSCREEN_AVAILABLE ? atlasFor(glyph) : null;
+  const scale = contextScale(ctx);
+  const atlas = OFFSCREEN_AVAILABLE ? atlasFor(glyph, scale) : null;
   if (!atlas) {
     // Undone with inverse transforms rather than save/restore, so the
     // fallback borrows nothing from the caller's state stack — several
@@ -208,8 +293,12 @@ export function drawRotatedGlyph(ctx: CanvasRenderingContext2D, glyph: Glyph, an
   // `%` keeps the sign of its left operand, so a negative bearing needs the
   // extra `+ steps` before the second wrap.
   const step = ((Math.round(turns * atlas.steps) % atlas.steps) + atlas.steps) % atlas.steps;
-  const half = atlas.tile / 2;
-  ctx.drawImage(atlas.canvas, step * atlas.tile, 0, atlas.tile, atlas.tile, x - half, y - half, atlas.tile, atlas.tile);
+  // Source rect in the strip's device pixels; destination in the caller's
+  // design pixels. Confusing the two is silent at s=1 and draws the compass
+  // needle at twice its size at Sharp.
+  const side = atlas.tile / atlas.scale;
+  const half = side / 2;
+  ctx.drawImage(atlas.canvas, step * atlas.tile, 0, atlas.tile, atlas.tile, x - half, y - half, side, side);
 }
 
 /**
@@ -286,28 +375,32 @@ export function fillLine(ctx: CanvasRenderingContext2D, x1: number, y1: number, 
   }
 }
 
-/** Radius the disc sprites below are rendered at. Large enough that scaling
- * one up to a point-blank explosion still reads as a circle, small enough to
- * stay a trivial allocation. */
+/** Radius the disc sprites below are rendered at, in design pixels. Large
+ * enough that scaling one up to a point-blank explosion still reads as a
+ * circle, small enough to stay a trivial allocation. Baked at `radius * s`, so
+ * a disc keeps the same source-pixels-per-device-pixel ratio at every preset
+ * rather than getting softer as the canvas gets sharper. */
 const DISC_SPRITE_RADIUS = 64;
 
-/** Opaque disc sprites by `"r,g,b"` — one per colour the game blends. */
-const discSprites = new Map<string, HTMLCanvasElement | null>();
+/** Opaque disc sprites by `"r,g,b"`, then by the scale they were baked at —
+ * one per colour the game blends. */
+const discSprites = new Map<string, Map<number, HTMLCanvasElement | null>>();
 
-function discSprite(rgb: string): HTMLCanvasElement | null {
-  const cached = discSprites.get(rgb);
+function discSprite(rgb: string, scale: number): HTMLCanvasElement | null {
+  const slot = scaleSlot(discSprites, rgb);
+  const cached = slot.get(scale);
   if (cached !== undefined) return cached;
   let sprite: HTMLCanvasElement | null = null;
-  const size = DISC_SPRITE_RADIUS * 2;
-  const surface = makeSurface(size, size);
+  const radius = DISC_SPRITE_RADIUS * scale;
+  const surface = makeSurface(radius * 2, radius * 2);
   if (surface) {
     surface.ctx.fillStyle = `rgb(${rgb})`;
     surface.ctx.beginPath();
-    surface.ctx.arc(DISC_SPRITE_RADIUS, DISC_SPRITE_RADIUS, DISC_SPRITE_RADIUS, 0, Math.PI * 2);
+    surface.ctx.arc(radius, radius, radius, 0, Math.PI * 2);
     surface.ctx.fill();
     sprite = surface.canvas;
   }
-  discSprites.set(rgb, sprite);
+  slot.set(scale, sprite);
   return sprite;
 }
 
@@ -325,7 +418,7 @@ function discSprite(rgb: string): HTMLCanvasElement | null {
  * with smoothing off for the chunky wall-texture look.
  */
 export function drawDisc(ctx: CanvasRenderingContext2D, rgb: string, alpha: number, cx: number, cy: number, r: number): void {
-  const sprite = OFFSCREEN_AVAILABLE ? discSprite(rgb) : null;
+  const sprite = OFFSCREEN_AVAILABLE ? discSprite(rgb, contextScale(ctx)) : null;
   if (!sprite) {
     ctx.fillStyle = `rgba(${rgb},${alpha})`;
     ctx.beginPath();
@@ -347,4 +440,18 @@ export function drawDisc(ctx: CanvasRenderingContext2D, rgb: string, alpha: numb
  * given environment takes, rather than inferring it from draw calls. */
 export function offscreenSpritesAvailable(): boolean {
   return OFFSCREEN_AVAILABLE;
+}
+
+/**
+ * Test seam: how many pre-rotated copies `glyph` would get at `scale`, without
+ * allocating anything.
+ *
+ * Exists because both the tile and the strip cap are in device pixels, so it is
+ * easy to scale one and not the other — and getting it wrong costs rotation
+ * steps *as the canvas gets sharper*, which is the wrong direction and is
+ * invisible in any assertion about draw calls. The test that uses this pins the
+ * step count as equal at both presets.
+ */
+export function atlasStepsAt(glyph: Glyph, scale: number): number {
+  return atlasMetrics(glyph, scale).steps;
 }

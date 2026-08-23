@@ -101,6 +101,7 @@ export async function loadEngineModules() {
   const difficultyPath = path.join(REPO_ROOT, "src/difficulty.ts");
   const combatConstantsPath = path.join(REPO_ROOT, "src/engine/combatConstants.ts");
   const hudLayoutPath = path.join(REPO_ROOT, "src/engine/hudLayout.ts");
+  const overlayScalePath = path.join(REPO_ROOT, "src/engine/overlayScale.ts");
 
   const entryContents = [
     `export { parseFile, extensionOf } from ${JSON.stringify(registryPath)};`,
@@ -118,6 +119,10 @@ export async function loadEngineModules() {
     // from this rather than re-pinning literals that go stale when the bar's
     // layout moves.
     `export { layoutHud, HUD_HEIGHT } from ${JSON.stringify(hudLayoutPath)};`,
+    // …and `overlayFrame` to convert that geometry back into the device pixels
+    // a canvas crop is expressed in. The two are a pair now: everything the
+    // overlay layer computes is in design pixels, and every crop is not.
+    `export { overlayFrame, DESIGN_WIDTH, DESIGN_HEIGHT } from ${JSON.stringify(overlayScalePath)};`,
     `export * as COMBAT from ${JSON.stringify(combatConstantsPath)};`,
   ].join("\n");
 

@@ -28,6 +28,7 @@ import {
   TOOL_GAP,
 } from "./hudLayout";
 import { faceGlyph, faceKeyFor } from "./hudFace";
+import { withOverlayScale } from "./overlayScale";
 import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { COUNTDOWN_DISPLAY_HZ } from "./transitionConstants";
 import { NUMBER_KEY_WEAPONS, WEAPONS, type AmmoType } from "./weapons";
@@ -65,23 +66,33 @@ function playerIdLabel(id: PlayerId): string {
 /**
  * Center crosshair; turns red when an enemy is targeted. When `spreadPx` > 0
  * (a cone weapon like the shotgun) faint ticks mark the pellet spread extent.
+ *
+ * **The spread ticks were wrong at Sharp, and drawing in design space is what
+ * fixes them.** `spreadPx` comes straight off `WEAPONS[...].spreadPx`, which
+ * `pelletOffsets` feeds into `resolveShot` against `SCENE_WIDTH` — it has
+ * always been a 640-space simulation number. Reading it as device pixels was
+ * the only place that assumption was broken, so at Sharp the ticks marked half
+ * the cone the shotgun actually fires. No simulation value moves here; the
+ * crosshair simply stops lying about one.
  */
 export function drawCrosshair(
   ctx: CanvasRenderingContext2D,
   hasTarget: boolean,
   spreadPx = 0,
 ): void {
-  const cx = Math.floor(ctx.canvas.width / 2);
-  const cy = Math.floor(ctx.canvas.height / 2);
-  ctx.fillStyle = hasTarget ? "rgba(255,60,60,0.95)" : "rgba(255,255,255,0.6)";
-  ctx.fillRect(cx - 6, cy, 13, 1);
-  ctx.fillRect(cx, cy - 6, 1, 13);
+  withOverlayScale(ctx, (w, h) => {
+    const cx = Math.floor(w / 2);
+    const cy = Math.floor(h / 2);
+    ctx.fillStyle = hasTarget ? "rgba(255,60,60,0.95)" : "rgba(255,255,255,0.6)";
+    ctx.fillRect(cx - 6, cy, 13, 1);
+    ctx.fillRect(cx, cy - 6, 1, 13);
 
-  if (spreadPx > 0) {
-    ctx.fillStyle = "rgba(255,255,255,0.35)";
-    ctx.fillRect(cx - spreadPx, cy - 4, 1, 9);
-    ctx.fillRect(cx + spreadPx, cy - 4, 1, 9);
-  }
+    if (spreadPx > 0) {
+      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillRect(cx - spreadPx, cy - 4, 1, 9);
+      ctx.fillRect(cx + spreadPx, cy - 4, 1, 9);
+    }
+  });
 }
 
 /**
@@ -92,22 +103,23 @@ export function drawCrosshair(
  * FPS and frame-time are the full, intentional scope.
  */
 export function drawFpsOverlay(ctx: CanvasRenderingContext2D, fps: number, frameMs: number): void {
-  const w = ctx.canvas.width;
-  ctx.textAlign = "right";
+  withOverlayScale(ctx, (w) => {
+    ctx.textAlign = "right";
 
-  ctx.font = "9px ui-monospace, monospace";
-  ctx.fillStyle = "#5aa869";
-  ctx.fillText("FPS", w - 8, 14);
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.fillStyle = "#5aa869";
+    ctx.fillText("FPS", w - 8, 14);
 
-  ctx.font = "bold 13px ui-monospace, monospace";
-  ctx.fillStyle = fps < 30 ? "#ff5a4a" : "#4cff6a";
-  ctx.fillText(String(fps), w - 8, 30);
+    ctx.font = "bold 13px ui-monospace, monospace";
+    ctx.fillStyle = fps < 30 ? "#ff5a4a" : "#4cff6a";
+    ctx.fillText(String(fps), w - 8, 30);
 
-  ctx.font = "9px ui-monospace, monospace";
-  ctx.fillStyle = "#5aa869";
-  ctx.fillText(`${frameMs.toFixed(1)}ms`, w - 8, 44);
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.fillStyle = "#5aa869";
+    ctx.fillText(`${frameMs.toFixed(1)}ms`, w - 8, 44);
 
-  ctx.textAlign = "start";
+    ctx.textAlign = "start";
+  });
 }
 
 /**
@@ -116,22 +128,23 @@ export function drawFpsOverlay(ctx: CanvasRenderingContext2D, fps: number, frame
  * `alpha` fades it out linearly as its frame-counted timer runs down.
  */
 export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alpha: number): void {
-  const w = ctx.canvas.width;
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.textAlign = "center";
-  ctx.font = "bold 14px ui-monospace, monospace";
-  const boxW = ctx.measureText(text).width + 24;
-  const boxX = w / 2 - boxW / 2;
-  ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(boxX, 26, boxW, 24);
-  ctx.strokeStyle = "rgba(140,255,170,0.5)";
-  ctx.lineWidth = 1;
-  outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
-  ctx.fillStyle = "#8effa0";
-  ctx.fillText(text, w / 2, 42);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = "center";
+    ctx.font = "bold 14px ui-monospace, monospace";
+    const boxW = ctx.measureText(text).width + 24;
+    const boxX = w / 2 - boxW / 2;
+    ctx.fillStyle = "rgba(4,8,10,0.7)";
+    ctx.fillRect(boxX, 26, boxW, 24);
+    ctx.strokeStyle = "rgba(140,255,170,0.5)";
+    ctx.lineWidth = 1;
+    outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
+    ctx.fillStyle = "#8effa0";
+    ctx.fillText(text, w / 2, 42);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -146,23 +159,24 @@ export function drawCheatToast(ctx: CanvasRenderingContext2D, text: string, alph
  * string rather than taking one in.
  */
 export function drawOutOfAmmoToast(ctx: CanvasRenderingContext2D, alpha: number): void {
-  const w = ctx.canvas.width;
-  const text = "Out of ammo!";
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.textAlign = "center";
-  ctx.font = "bold 14px ui-monospace, monospace";
-  const boxW = ctx.measureText(text).width + 24;
-  const boxX = w / 2 - boxW / 2;
-  ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(boxX, 26, boxW, 24);
-  ctx.strokeStyle = "rgba(255,77,77,0.6)";
-  ctx.lineWidth = 1;
-  outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
-  ctx.fillStyle = "#ff4d4d";
-  ctx.fillText(text, w / 2, 42);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    const text = "Out of ammo!";
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = "center";
+    ctx.font = "bold 14px ui-monospace, monospace";
+    const boxW = ctx.measureText(text).width + 24;
+    const boxX = w / 2 - boxW / 2;
+    ctx.fillStyle = "rgba(4,8,10,0.7)";
+    ctx.fillRect(boxX, 26, boxW, 24);
+    ctx.strokeStyle = "rgba(255,77,77,0.6)";
+    ctx.lineWidth = 1;
+    outlineRect(ctx, boxX + 0.5, 26.5, boxW - 1, 23);
+    ctx.fillStyle = "#ff4d4d";
+    ctx.fillText(text, w / 2, 42);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -176,23 +190,24 @@ export function drawOutOfAmmoToast(ctx: CanvasRenderingContext2D, alpha: number)
  * trigger) and can genuinely land in the same second.
  */
 export function drawAcidOverflowToast(ctx: CanvasRenderingContext2D, alpha: number): void {
-  const w = ctx.canvas.width;
-  const text = "Memory leak — acid rising!";
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.textAlign = "center";
-  ctx.font = "bold 14px ui-monospace, monospace";
-  const boxW = ctx.measureText(text).width + 24;
-  const boxX = w / 2 - boxW / 2;
-  ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(boxX, 56, boxW, 24);
-  ctx.strokeStyle = "rgba(255,157,31,0.6)";
-  ctx.lineWidth = 1;
-  outlineRect(ctx, boxX + 0.5, 56.5, boxW - 1, 23);
-  ctx.fillStyle = "#ff9d1f";
-  ctx.fillText(text, w / 2, 72);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    const text = "Memory leak — acid rising!";
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = "center";
+    ctx.font = "bold 14px ui-monospace, monospace";
+    const boxW = ctx.measureText(text).width + 24;
+    const boxX = w / 2 - boxW / 2;
+    ctx.fillStyle = "rgba(4,8,10,0.7)";
+    ctx.fillRect(boxX, 56, boxW, 24);
+    ctx.strokeStyle = "rgba(255,157,31,0.6)";
+    ctx.lineWidth = 1;
+    outlineRect(ctx, boxX + 0.5, 56.5, boxW - 1, 23);
+    ctx.fillStyle = "#ff9d1f";
+    ctx.fillText(text, w / 2, 72);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /** Gate tones for HUD use, by value rather than shared import — the same
@@ -222,39 +237,40 @@ export function drawLockedDoorToast(
   colorIndex: number,
   blockerColorIndex = -1,
 ): void {
-  const w = ctx.canvas.width;
-  const text = `You need the ${HUD_GATE_NAMES[colorIndex]} key!`;
-  // The second line exists because naming the key was not enough: keys are
-  // chained, so the one being asked for is usually behind another door and the
-  // player was left with a colour and no lead (measured at 71% of doors at the
-  // moment they are first met). `-1` is "the key you want is reachable" — the
-  // case this toast has always covered, and it stays a single line.
-  const lead = blockerColorIndex >= 0 ? `→ find the ${HUD_GATE_NAMES[blockerColorIndex]} key first` : null;
-  const tone = HUD_GATE_COLORS[colorIndex];
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.textAlign = "center";
-  ctx.font = "bold 14px ui-monospace, monospace";
-  const leadWidth = lead === null ? 0 : ctx.measureText(lead).width;
-  const boxW = Math.max(ctx.measureText(text).width, leadWidth) + 24;
-  const boxX = w / 2 - boxW / 2;
-  const boxH = lead === null ? 24 : 42;
-  ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(boxX, 86, boxW, boxH);
-  ctx.strokeStyle = tone;
-  ctx.lineWidth = 1;
-  outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, boxH - 1);
-  ctx.fillStyle = tone;
-  ctx.fillText(text, w / 2, 102);
-  if (lead !== null) {
-    // Tinted as the *blocking* gate, not the asked-for one: the whole point of
-    // the line is to send the player at a different door, and the colour is
-    // what they will actually match against the world.
-    ctx.fillStyle = HUD_GATE_COLORS[blockerColorIndex];
-    ctx.fillText(lead, w / 2, 120);
-  }
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    const text = `You need the ${HUD_GATE_NAMES[colorIndex]} key!`;
+    // The second line exists because naming the key was not enough: keys are
+    // chained, so the one being asked for is usually behind another door and the
+    // player was left with a colour and no lead (measured at 71% of doors at the
+    // moment they are first met). `-1` is "the key you want is reachable" — the
+    // case this toast has always covered, and it stays a single line.
+    const lead = blockerColorIndex >= 0 ? `→ find the ${HUD_GATE_NAMES[blockerColorIndex]} key first` : null;
+    const tone = HUD_GATE_COLORS[colorIndex];
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = "center";
+    ctx.font = "bold 14px ui-monospace, monospace";
+    const leadWidth = lead === null ? 0 : ctx.measureText(lead).width;
+    const boxW = Math.max(ctx.measureText(text).width, leadWidth) + 24;
+    const boxX = w / 2 - boxW / 2;
+    const boxH = lead === null ? 24 : 42;
+    ctx.fillStyle = "rgba(4,8,10,0.7)";
+    ctx.fillRect(boxX, 86, boxW, boxH);
+    ctx.strokeStyle = tone;
+    ctx.lineWidth = 1;
+    outlineRect(ctx, boxX + 0.5, 86.5, boxW - 1, boxH - 1);
+    ctx.fillStyle = tone;
+    ctx.fillText(text, w / 2, 102);
+    if (lead !== null) {
+      // Tinted as the *blocking* gate, not the asked-for one: the whole point of
+      // the line is to send the player at a different door, and the colour is
+      // what they will actually match against the world.
+      ctx.fillStyle = HUD_GATE_COLORS[blockerColorIndex];
+      ctx.fillText(lead, w / 2, 120);
+    }
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -281,19 +297,24 @@ export function drawHelpPingToast(
   tone: string,
   alpha: number,
 ): void {
-  const text = `${name} NEEDS HELP`;
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.font = "bold 12px ui-monospace, monospace";
-  const boxW = ctx.measureText(text).width + 16;
-  ctx.fillStyle = "rgba(4,8,10,0.7)";
-  ctx.fillRect(HELP_PING_TOAST_X, HELP_PING_TOAST_Y, boxW, 20);
-  ctx.strokeStyle = tone;
-  ctx.lineWidth = 1;
-  outlineRect(ctx, HELP_PING_TOAST_X + 0.5, HELP_PING_TOAST_Y + 0.5, boxW - 1, 19);
-  ctx.fillStyle = tone;
-  ctx.fillText(text, HELP_PING_TOAST_X + 8, HELP_PING_TOAST_Y + 14);
-  ctx.restore();
+  // Wrapped even though it never reads the canvas: its anchors, font and box
+  // are all design-pixel literals, and an overlay left out of the scaled block
+  // is the one that ends up half-weight next to everything around it.
+  withOverlayScale(ctx, () => {
+    const text = `${name} NEEDS HELP`;
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.font = "bold 12px ui-monospace, monospace";
+    const boxW = ctx.measureText(text).width + 16;
+    ctx.fillStyle = "rgba(4,8,10,0.7)";
+    ctx.fillRect(HELP_PING_TOAST_X, HELP_PING_TOAST_Y, boxW, 20);
+    ctx.strokeStyle = tone;
+    ctx.lineWidth = 1;
+    outlineRect(ctx, HELP_PING_TOAST_X + 0.5, HELP_PING_TOAST_Y + 0.5, boxW - 1, 19);
+    ctx.fillStyle = tone;
+    ctx.fillText(text, HELP_PING_TOAST_X + 8, HELP_PING_TOAST_Y + 14);
+    ctx.restore();
+  });
 }
 
 /** Top-left anchor for `drawHelpPingToast` — clear of the minimap panel above
@@ -316,20 +337,20 @@ const HELP_PING_TOAST_Y = 90;
  * the screen, clear of the crosshair and the bottom stat bar.
  */
 export function drawKillStreakToast(ctx: CanvasRenderingContext2D, text: string, alpha: number, big: boolean): void {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
-  ctx.save();
-  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
-  ctx.textAlign = "center";
-  ctx.font = `bold ${big ? 48 : 36}px ui-monospace, monospace`;
-  const y = h * 0.28;
-  ctx.lineWidth = big ? 6 : 4;
-  ctx.strokeStyle = big ? "#7a0d0d" : "#5a3d0d";
-  ctx.strokeText(text, w / 2, y);
-  ctx.fillStyle = big ? "#ff4d4d" : "#ffcf4d";
-  ctx.fillText(text, w / 2, y);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w, h) => {
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+    ctx.textAlign = "center";
+    ctx.font = `bold ${big ? 48 : 36}px ui-monospace, monospace`;
+    const y = h * 0.28;
+    ctx.lineWidth = big ? 6 : 4;
+    ctx.strokeStyle = big ? "#7a0d0d" : "#5a3d0d";
+    ctx.strokeText(text, w / 2, y);
+    ctx.fillStyle = big ? "#ff4d4d" : "#ffcf4d";
+    ctx.fillText(text, w / 2, y);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -343,19 +364,20 @@ export function drawKillStreakToast(ctx: CanvasRenderingContext2D, text: string,
  * sync with the real tick rate rather than imported).
  */
 export function drawExitCountdownToast(ctx: CanvasRenderingContext2D, remainingTicks: number): void {
-  const w = ctx.canvas.width;
-  const seconds = Math.max(0, Math.ceil(remainingTicks / COUNTDOWN_DISPLAY_HZ));
-  ctx.save();
-  ctx.textAlign = "center";
-  ctx.font = "bold 22px ui-monospace, monospace";
-  const y = 40;
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "#0d3d1a";
-  ctx.strokeText(`Build finishing in ${seconds}s…`, w / 2, y);
-  ctx.fillStyle = "#8effa0";
-  ctx.fillText(`Build finishing in ${seconds}s…`, w / 2, y);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    const seconds = Math.max(0, Math.ceil(remainingTicks / COUNTDOWN_DISPLAY_HZ));
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "bold 22px ui-monospace, monospace";
+    const y = 40;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#0d3d1a";
+    ctx.strokeText(`Build finishing in ${seconds}s…`, w / 2, y);
+    ctx.fillStyle = "#8effa0";
+    ctx.fillText(`Build finishing in ${seconds}s…`, w / 2, y);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -370,22 +392,23 @@ export function drawExitCountdownToast(ctx: CanvasRenderingContext2D, remainingT
  * for a multiplayer session — see `renderNormalFrame`'s call site.
  */
 export function drawSpectatingBanner(ctx: CanvasRenderingContext2D, spectateTargetId: PlayerId | null): void {
-  const w = ctx.canvas.width;
-  const text =
-    spectateTargetId === null
-      ? "YOU DIED — no living teammates to spectate"
-      : `YOU DIED — spectating ${playerIdLabel(spectateTargetId)}`;
-  ctx.save();
-  ctx.textAlign = "center";
-  ctx.font = "bold 22px ui-monospace, monospace";
-  const y = 40;
-  ctx.lineWidth = 4;
-  ctx.strokeStyle = "#5a0d0d";
-  ctx.strokeText(text, w / 2, y);
-  ctx.fillStyle = "#ff8a8a";
-  ctx.fillText(text, w / 2, y);
-  ctx.textAlign = "start";
-  ctx.restore();
+  withOverlayScale(ctx, (w) => {
+    const text =
+      spectateTargetId === null
+        ? "YOU DIED — no living teammates to spectate"
+        : `YOU DIED — spectating ${playerIdLabel(spectateTargetId)}`;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.font = "bold 22px ui-monospace, monospace";
+    const y = 40;
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "#5a0d0d";
+    ctx.strokeText(text, w / 2, y);
+    ctx.fillStyle = "#ff8a8a";
+    ctx.fillText(text, w / 2, y);
+    ctx.textAlign = "start";
+    ctx.restore();
+  });
 }
 
 /**
@@ -395,21 +418,20 @@ export function drawSpectatingBanner(ctx: CanvasRenderingContext2D, spectateTarg
  * though both freeze the sim the same way.
  */
 export function drawPauseOverlay(ctx: CanvasRenderingContext2D): void {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
+  withOverlayScale(ctx, (w, h) => {
+    ctx.fillStyle = "rgba(0,4,2,0.72)";
+    ctx.fillRect(0, 0, w, h);
 
-  ctx.fillStyle = "rgba(0,4,2,0.72)";
-  ctx.fillRect(0, 0, w, h);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#37d24a";
+    ctx.font = "bold 28px ui-monospace, monospace";
+    ctx.fillText("PAUSED", w / 2, h / 2 - 6);
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#37d24a";
-  ctx.font = "bold 28px ui-monospace, monospace";
-  ctx.fillText("PAUSED", w / 2, h / 2 - 6);
-
-  ctx.fillStyle = "#8effa0";
-  ctx.font = "12px ui-monospace, monospace";
-  ctx.fillText("Click to resume, or press Esc again", w / 2, h / 2 + 20);
-  ctx.textAlign = "start";
+    ctx.fillStyle = "#8effa0";
+    ctx.font = "12px ui-monospace, monospace";
+    ctx.fillText("Click to resume, or press Esc again", w / 2, h / 2 + 20);
+    ctx.textAlign = "start";
+  });
 }
 
 /**
@@ -426,70 +448,70 @@ export function drawLoreOverlay(
   text: string,
   scrollLines: number,
 ): { maxScrollLines: number } {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
-  const boxW = Math.min(520, w - 48);
-  const innerW = boxW - 48;
+  return withOverlayScale(ctx, (w, h) => {
+    const boxW = Math.min(520, w - 48);
+    const innerW = boxW - 48;
 
-  ctx.font = "13px ui-monospace, monospace";
-  const lines = wrapText(ctx, text, innerW);
-  const lineH = 18;
-  const boxH = Math.min(h - 40, 70 + lines.length * lineH);
-  const maxVisibleLines = Math.floor((boxH - 58) / lineH);
-  const maxScrollLines = Math.max(0, lines.length - maxVisibleLines);
-  const scroll = Math.max(0, Math.min(Math.floor(scrollLines), maxScrollLines));
+    ctx.font = "13px ui-monospace, monospace";
+    const lines = wrapText(ctx, text, innerW);
+    const lineH = 18;
+    const boxH = Math.min(h - 40, 70 + lines.length * lineH);
+    const maxVisibleLines = Math.floor((boxH - 58) / lineH);
+    const maxScrollLines = Math.max(0, lines.length - maxVisibleLines);
+    const scroll = Math.max(0, Math.min(Math.floor(scrollLines), maxScrollLines));
 
-  ctx.fillStyle = "rgba(2,3,4,0.88)";
-  ctx.fillRect(0, 0, w, h);
+    ctx.fillStyle = "rgba(2,3,4,0.88)";
+    ctx.fillRect(0, 0, w, h);
 
-  const boxX = (w - boxW) / 2;
-  const boxY = (h - boxH) / 2;
-  ctx.fillStyle = "rgba(4,10,10,0.95)";
-  ctx.fillRect(boxX, boxY, boxW, boxH);
-  ctx.strokeStyle = "#3fd0e0";
-  ctx.lineWidth = 2;
-  outlineRect(ctx, boxX + 1, boxY + 1, boxW - 2, boxH - 2);
+    const boxX = (w - boxW) / 2;
+    const boxY = (h - boxH) / 2;
+    ctx.fillStyle = "rgba(4,10,10,0.95)";
+    ctx.fillRect(boxX, boxY, boxW, boxH);
+    ctx.strokeStyle = "#3fd0e0";
+    ctx.lineWidth = 2;
+    outlineRect(ctx, boxX + 1, boxY + 1, boxW - 2, boxH - 2);
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#3fd0e0";
-  ctx.font = "bold 15px ui-monospace, monospace";
-  ctx.fillText("LORE TERMINAL", w / 2, boxY + 24);
-
-  ctx.textAlign = "left";
-  ctx.font = "13px ui-monospace, monospace";
-  ctx.fillStyle = "#cdd3cd";
-  const textX = boxX + 24;
-  let y = boxY + 48;
-  for (const line of lines.slice(scroll, scroll + maxVisibleLines)) {
-    ctx.fillText(line, textX, y);
-    y += lineH;
-  }
-
-  // A slim scrollbar track + thumb along the box's right edge, only when the
-  // text actually overflows — otherwise there's nothing to scroll.
-  if (maxScrollLines > 0) {
-    const trackX = boxX + boxW - 14;
-    const trackY = boxY + 40;
-    const trackH = boxH - 56;
-    ctx.fillStyle = "rgba(63,208,224,0.2)";
-    ctx.fillRect(trackX, trackY, 4, trackH);
-    const thumbH = Math.max(16, trackH * (maxVisibleLines / lines.length));
-    const thumbY = trackY + (trackH - thumbH) * (scroll / maxScrollLines);
+    ctx.textAlign = "center";
     ctx.fillStyle = "#3fd0e0";
-    ctx.fillRect(trackX, thumbY, 4, thumbH);
-  }
+    ctx.font = "bold 15px ui-monospace, monospace";
+    ctx.fillText("LORE TERMINAL", w / 2, boxY + 24);
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#7a9490";
-  ctx.font = "11px ui-monospace, monospace";
-  ctx.fillText(
-    maxScrollLines > 0 ? "W/S to scroll · R (or click) to close" : "Press R (or click) to close",
-    w / 2,
-    boxY + boxH - 12,
-  );
-  ctx.textAlign = "start";
+    ctx.textAlign = "left";
+    ctx.font = "13px ui-monospace, monospace";
+    ctx.fillStyle = "#cdd3cd";
+    const textX = boxX + 24;
+    let y = boxY + 48;
+    for (const line of lines.slice(scroll, scroll + maxVisibleLines)) {
+      ctx.fillText(line, textX, y);
+      y += lineH;
+    }
 
-  return { maxScrollLines };
+    // A slim scrollbar track + thumb along the box's right edge, only when the
+    // text actually overflows — otherwise there's nothing to scroll.
+    if (maxScrollLines > 0) {
+      const trackX = boxX + boxW - 14;
+      const trackY = boxY + 40;
+      const trackH = boxH - 56;
+      ctx.fillStyle = "rgba(63,208,224,0.2)";
+      ctx.fillRect(trackX, trackY, 4, trackH);
+      const thumbH = Math.max(16, trackH * (maxVisibleLines / lines.length));
+      const thumbY = trackY + (trackH - thumbH) * (scroll / maxScrollLines);
+      ctx.fillStyle = "#3fd0e0";
+      ctx.fillRect(trackX, thumbY, 4, thumbH);
+    }
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "#7a9490";
+    ctx.font = "11px ui-monospace, monospace";
+    ctx.fillText(
+      maxScrollLines > 0 ? "W/S to scroll · R (or click) to close" : "Press R (or click) to close",
+      w / 2,
+      boxY + boxH - 12,
+    );
+    ctx.textAlign = "start";
+
+    return { maxScrollLines };
+  });
 }
 
 /** Greedy word-wrap of `text` into lines no wider than `maxWidth`, honoring
@@ -513,7 +535,7 @@ function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number)
   return lines;
 }
 
-/** Half-length, in canvas pixels, of the compass needle — sized to sit
+/** Half-length, in design pixels, of the compass needle — sized to sit
  * comfortably inside the minimap's compass badge circle (see
  * `MinimapPanelRect.compassBadge`) with a little margin on every side. */
 const COMPASS_NEEDLE_SIZE = 7;
@@ -575,7 +597,12 @@ export function drawCompass(
   const angleToExit = Math.atan2(exitY - playerY, exitX - playerX);
   const bearing = angleToExit - playerAngle;
 
-  drawRotatedGlyph(ctx, COMPASS_NEEDLE_GLYPH, bearing, badge.cx, badge.cy);
+  // `badge` comes from `renderMinimap`'s returned `MinimapPanelRect`, which is
+  // in design pixels, so this has to draw in the same space or the needle
+  // detaches from the badge it belongs to.
+  withOverlayScale(ctx, () => {
+    drawRotatedGlyph(ctx, COMPASS_NEEDLE_GLYPH, bearing, badge.cx, badge.cy);
+  });
 }
 
 /** Re-exported so `automap.ts` and the tests keep importing it from here —
@@ -591,32 +618,34 @@ export { HUD_HEIGHT };
  * targeted-entity name, so the UI doesn't spoil source-code details.
  */
 export function drawHud(ctx: CanvasRenderingContext2D, stats: EngineStats): void {
-  const L = layoutHud(ctx.canvas.width, ctx.canvas.height);
-  drawBarChrome(ctx, L);
+  withOverlayScale(ctx, (w, h) => {
+    const L = layoutHud(w, h);
+    drawBarChrome(ctx, L);
 
-  ctx.textAlign = "left";
-  ctx.textBaseline = "alphabetic";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "alphabetic";
 
-  drawAmmoPanel(ctx, L.panels.ammo, stats);
-  drawStabilPanel(ctx, L.panels.stabil, stats);
-  drawSwapPanel(ctx, L.panels.swap, stats);
-  drawKeysPanel(ctx, L.panels.keys, stats);
-  drawToolsPanel(ctx, L.panels.tools, stats);
-  drawFacePanel(ctx, L.panels.face, stats);
-  drawScorePanel(ctx, L.panels.score, stats);
-  drawAmmoTable(ctx, L.panels.table, stats);
+    drawAmmoPanel(ctx, L.panels.ammo, stats);
+    drawStabilPanel(ctx, L.panels.stabil, stats);
+    drawSwapPanel(ctx, L.panels.swap, stats);
+    drawKeysPanel(ctx, L.panels.keys, stats);
+    drawToolsPanel(ctx, L.panels.tools, stats);
+    drawFacePanel(ctx, L.panels.face, stats);
+    drawScorePanel(ctx, L.panels.score, stats);
+    drawAmmoTable(ctx, L.panels.table, stats);
 
-  // Cheats first, so its box keeps the exact y it had before rollbacks
-  // existed and the rollback badge stacks *above* it — the geometry tests
-  // pin the cheat badge's position, and a run can carry both at once.
-  let badgeY = L.bar.y;
-  if (stats.cheatsUsed) {
-    badgeY = drawStatusBadge(ctx, "⚠ CHEATS USED — RUN NOT RECORDED", "#ff5a4a", "rgba(255,90,74,0.6)", badgeY);
-  }
-  if (stats.rollbacksRemaining > 0) {
-    const n = stats.rollbacksRemaining;
-    drawStatusBadge(ctx, `↩ ${n} ROLLBACK${n === 1 ? "" : "S"} LEFT`, "#e0a04a", "rgba(224,160,74,0.6)", badgeY);
-  }
+    // Cheats first, so its box keeps the exact y it had before rollbacks
+    // existed and the rollback badge stacks *above* it — the geometry tests
+    // pin the cheat badge's position, and a run can carry both at once.
+    let badgeY = L.bar.y;
+    if (stats.cheatsUsed) {
+      badgeY = drawStatusBadge(ctx, w, "⚠ CHEATS USED — RUN NOT RECORDED", "#ff5a4a", "rgba(255,90,74,0.6)", badgeY);
+    }
+    if (stats.rollbacksRemaining > 0) {
+      const n = stats.rollbacksRemaining;
+      drawStatusBadge(ctx, w, `↩ ${n} ROLLBACK${n === 1 ? "" : "S"} LEFT`, "#e0a04a", "rgba(224,160,74,0.6)", badgeY);
+    }
+  });
 }
 
 /** Background, top accent and the bezel rules between panels. */
@@ -985,15 +1014,22 @@ function drawScorePanel(ctx: CanvasRenderingContext2D, rect: HudPanelRect, stats
  * notations (a hex fill against an `rgba()` stroke at 60% alpha), and
  * string-munging one into the other silently produces an invalid colour that
  * canvas ignores — leaving the badge with no outline at all.
+ *
+ * **Takes the design width rather than wrapping itself in `withOverlayScale`,
+ * because it is called from inside `drawHud`'s wrapper.** Wrapping here too
+ * would apply the scale twice and put the badge two screens off the right edge
+ * at Sharp. `withOverlayScale` reads the canvas, not the current transform, so
+ * it has no way to notice it is already inside one — which is exactly why the
+ * codebase keeps the wrapper to entry points and threads dimensions inward.
  */
 function drawStatusBadge(
   ctx: CanvasRenderingContext2D,
+  w: number,
   text: string,
   color: string,
   border: string,
   y0: number,
 ): number {
-  const w = ctx.canvas.width;
   ctx.save();
   ctx.font = "bold 9px ui-monospace, monospace";
   ctx.textAlign = "right";

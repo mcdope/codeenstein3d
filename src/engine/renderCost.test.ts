@@ -39,7 +39,7 @@
  * direct-draw fallback, which is *supposed* to use paths, and this would pass
  * vacuously.
  */
-import { beforeAll, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import type { GameMap, Mine, Tile } from "../map/types";
 import type { Player } from "./player";
@@ -119,10 +119,20 @@ beforeAll(async () => {
   } as unknown as Renderers;
 });
 
+/**
+ * The canvas size the current `describe.each` arm is running at.
+ *
+ * Module-level rather than threaded through every `sceneCtx()` call because
+ * there are two dozen of them and the alternative is two dozen chances to
+ * forget one — which would look like coverage of both presets while silently
+ * testing only the first.
+ */
+let preset: readonly [number, number] = [WIDTH, HEIGHT];
+
 /** A scene context distinct from every offscreen one, so what reaches the
  * real canvas is what gets asserted on. */
 function sceneCtx(): MockCanvasContext {
-  return createMockCanvasContext({ width: WIDTH, height: HEIGHT } as unknown as HTMLCanvasElement);
+  return createMockCanvasContext({ width: preset[0], height: preset[1] } as unknown as HTMLCanvasElement);
 }
 
 function asCtx(c: MockCanvasContext): CanvasRenderingContext2D {
@@ -166,7 +176,25 @@ function zBuffer(value = Infinity): Float64Array {
   return new Float64Array(WIDTH).fill(value);
 }
 
-describe("per-frame renderers issue no rasterising path geometry", () => {
+/**
+ * Both shipped presets.
+ *
+ * Not decoration: the overlay layer now pre-renders its glyphs at the
+ * context's own scale (`pathSprites.ts`), so Sharp bakes different-sized
+ * sprites and can take a different branch — an atlas that no longer fits its
+ * strip falls back to live rotation, which is exactly the rasterising geometry
+ * this file exists to forbid. Running at 640 alone could not see that.
+ */
+const PRESETS = [
+  [640, 400],
+  [1280, 800],
+] as const;
+
+describe.each(PRESETS)("per-frame renderers issue no rasterising path geometry at %ix%i", (w, h) => {
+  beforeEach(() => {
+    preset = [w, h];
+  });
+
   it("takes the pre-rendered fast path in this environment (otherwise the guard is vacuous)", () => {
     expect(R.offscreenSpritesAvailable()).toBe(true);
   });

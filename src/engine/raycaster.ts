@@ -22,6 +22,7 @@ import {
   type Point,
 } from "../map/types";
 import type { Player } from "./player";
+import { withOverlayScale } from "./overlayScale";
 import { drawGlyph, drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import { EDGE_CASE_COLOR, enemyColor, type TeammateMapMarker } from "./sprites";
 import { gateIdAt } from "../map/gates";
@@ -783,7 +784,9 @@ export function renderBackgroundHalfRes(
   ctx.drawImage(halfFloorCanvas, 0, 0, hw, hh, 0, 0, width, height);
 }
 
-/** The minimap panel's outer bounding box in canvas pixels, as returned by
+/** The minimap panel's outer bounding box in design pixels (`overlayScale.ts`
+ * — `renderMinimap` draws inside `withOverlayScale`, so `drawCompass` must too
+ * or the needle detaches from the badge), as returned by
  * `renderMinimap`. `compassBadge` is a small circle straddling the panel's
  * bottom-right corner — for the exit compass (see `hud.ts`'s `drawCompass`)
  * to draw into — rather than a rectangular cutout reserved inside the panel
@@ -797,7 +800,7 @@ export interface MinimapPanelRect {
   compassBadge: { cx: number; cy: number; r: number };
 }
 
-/** Outer radius, in canvas pixels, of the compass badge circle. */
+/** Outer radius, in design pixels, of the compass badge circle. */
 const COMPASS_BADGE_RADIUS = 13;
 
 /** The player marker's fill — bright enough to be unmistakably distinct from
@@ -868,6 +871,10 @@ let minimapWallLayer: {
   source: GameMap;
   gridVersion: number;
   cell: number;
+  /** Device pixels per design pixel the layer was baked at. Part of the key
+   * for the same reason `cell` is: a layer baked for one and blitted at the
+   * other is the wrong number of real pixels per tile. */
+  scale: number;
   canvas: HTMLCanvasElement;
 } | null = null;
 
@@ -881,20 +888,29 @@ function minimapWallCanvas(
   w: number,
   h: number,
   wallColor: string,
+  /** Device pixels per design pixel to bake at. Passed in rather than read off
+   * the target context: `contextScale` reports the transform of whatever
+   * context it is handed, and this baker has its own. */
+  scale: number,
 ): HTMLCanvasElement | null {
   if (
     minimapWallLayer &&
     minimapWallLayer.source === map &&
     minimapWallLayer.gridVersion === gridVersion &&
-    minimapWallLayer.cell === cell
+    minimapWallLayer.cell === cell &&
+    minimapWallLayer.scale === scale
   ) {
     return minimapWallLayer.canvas;
   }
   const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
+  // Floored at 1: a zero-sized canvas throws `InvalidStateError` on first draw
+  // rather than returning null, so it would crash the renderer instead of
+  // falling back to per-tile fills.
+  canvas.width = Math.max(1, Math.ceil(w * scale));
+  canvas.height = Math.max(1, Math.ceil(h * scale));
   const wallCtx = canvas.getContext("2d");
   if (!wallCtx) return null;
+  wallCtx.scale(scale, scale);
   // `wallColor` is deliberately NOT part of the cache key above: it's a pure
   // function of `map.styleSet`, which is fixed for the lifetime of a map, and
   // `source` (map identity) is already keyed on. A WAD load swaps texture
@@ -922,7 +938,7 @@ function minimapWallCanvas(
       if (row[x] === BRANCH_DOOR_TILE) wallCtx.fillRect(x * cell, y * cell, cell, cell);
     }
   }
-  minimapWallLayer = { source: map, gridVersion, cell, canvas };
+  minimapWallLayer = { source: map, gridVersion, cell, scale, canvas };
   return canvas;
 }
 
@@ -1025,277 +1041,279 @@ export function renderMinimap(
    * is indistinguishable from a single-player run. */
   teammates: readonly TeammateMapMarker[] = [],
 ): MinimapPanelRect {
-  const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
-  const w = map.width * cell;
-  const h = map.height * cell;
-  const pad = 8;
-  const panelX = pad - 2;
-  const panelY = pad - 2;
-  const panelW = w + 4;
-  const panelH = h + 4;
-  // Centered exactly on the panel's bottom-right corner point, so the badge
-  // straddles/overlaps it (half in, half out) — drawn last, after every grid
-  // marker below, so it reads as attached on top of the corner rather than
-  // sitting underneath the grid content.
-  const compassBadge = {
-    cx: panelX + panelW,
-    cy: panelY + panelH,
-    r: COMPASS_BADGE_RADIUS,
-  };
-  const panel: MinimapPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH, compassBadge };
+  return withOverlayScale(ctx, (_designW, _designH, scale) => {
+    const cell = Math.max(1, Math.floor(maxPixels / Math.max(map.width, map.height)));
+    const w = map.width * cell;
+    const h = map.height * cell;
+    const pad = 8;
+    const panelX = pad - 2;
+    const panelY = pad - 2;
+    const panelW = w + 4;
+    const panelH = h + 4;
+    // Centered exactly on the panel's bottom-right corner point, so the badge
+    // straddles/overlaps it (half in, half out) — drawn last, after every grid
+    // marker below, so it reads as attached on top of the corner rather than
+    // sitting underneath the grid content.
+    const compassBadge = {
+      cx: panelX + panelW,
+      cy: panelY + panelH,
+      r: COMPASS_BADGE_RADIUS,
+    };
+    const panel: MinimapPanelRect = { x: panelX, y: panelY, w: panelW, h: panelH, compassBadge };
 
-  ctx.save();
+    ctx.save();
 
-  // Semi-transparent dark backing panel — legible over the 3D scene without
-  // fully occluding it, and without washing out the high-contrast markers
-  // drawn on top (those stay at full opacity for clarity).
-  ctx.fillStyle = "rgba(4,8,10,0.6)";
-  ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
+    // Semi-transparent dark backing panel — legible over the 3D scene without
+    // fully occluding it, and without washing out the high-contrast markers
+    // drawn on top (those stay at full opacity for clarity).
+    ctx.fillStyle = "rgba(4,8,10,0.6)";
+    ctx.fillRect(panel.x, panel.y, panel.w, panel.h);
 
-  // Subtle frame around the whole panel.
-  ctx.strokeStyle = "rgba(140,255,170,0.35)";
-  ctx.lineWidth = 1;
-  outlineRect(ctx, panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
+    // Subtle frame around the whole panel.
+    ctx.strokeStyle = "rgba(140,255,170,0.35)";
+    ctx.lineWidth = 1;
+    outlineRect(ctx, panel.x + 0.5, panel.y + 0.5, panel.w - 1, panel.h - 1);
 
-  ctx.globalAlpha = 0.9;
+    ctx.globalAlpha = 0.9;
 
-  // Walls — an unopened secret wall (SECRET_WALL_TILE) renders identically to
-  // a plain one on purpose, so the minimap can't spoil its location before
-  // the player actually finds/opens it (this minimap has no fog-of-war gate
-  // at all, unlike the automap, so a distinct color here would reveal every
-  // secret room's exact position from the moment the level loads). The one
-  // intended discovery hint is the much subtler in-view overlay
-  // (`SECRET_WALL_OVERLAY`, used by `renderScene`); once opened, the tile
-  // becomes plain floor (0) and stops being drawn here at all, like any
-  // other explored room.
-  const wallLayer = minimapWallCanvas(map, cell, gridVersion, w, h, automapWall);
-  if (wallLayer) {
-    ctx.drawImage(wallLayer, pad, pad);
-  } else {
-    // No offscreen 2D context available — draw the tiles directly. Mirrors the
-    // cached layer above pass for pass, including its separate branch-door
-    // colour: lumping `BRANCH_DOOR_TILE` in with the wall fill (as this
-    // fallback used to) loses the "just push it" vs. "needs a key you may not
-    // have" distinction the cached path deliberately draws.
-    ctx.fillStyle = automapWall;
-    for (let y = 0; y < map.height; y++) {
-      const row = map.grid[y];
-      for (let x = 0; x < map.width; x++) {
-        if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
-          ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+    // Walls — an unopened secret wall (SECRET_WALL_TILE) renders identically to
+    // a plain one on purpose, so the minimap can't spoil its location before
+    // the player actually finds/opens it (this minimap has no fog-of-war gate
+    // at all, unlike the automap, so a distinct color here would reveal every
+    // secret room's exact position from the moment the level loads). The one
+    // intended discovery hint is the much subtler in-view overlay
+    // (`SECRET_WALL_OVERLAY`, used by `renderScene`); once opened, the tile
+    // becomes plain floor (0) and stops being drawn here at all, like any
+    // other explored room.
+    const wallLayer = minimapWallCanvas(map, cell, gridVersion, w, h, automapWall, scale);
+    if (wallLayer) {
+      ctx.drawImage(wallLayer, pad, pad, wallLayer.width / scale, wallLayer.height / scale);
+    } else {
+      // No offscreen 2D context available — draw the tiles directly. Mirrors the
+      // cached layer above pass for pass, including its separate branch-door
+      // colour: lumping `BRANCH_DOOR_TILE` in with the wall fill (as this
+      // fallback used to) loses the "just push it" vs. "needs a key you may not
+      // have" distinction the cached path deliberately draws.
+      ctx.fillStyle = automapWall;
+      for (let y = 0; y < map.height; y++) {
+        const row = map.grid[y];
+        for (let x = 0; x < map.width; x++) {
+          if (row[x] === 1 || row[x] === LORE_TILE || row[x] === SECRET_WALL_TILE) {
+            ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+          }
+        }
+      }
+      ctx.fillStyle = MINIMAP_BRANCH_DOOR_COLOR;
+      for (let y = 0; y < map.height; y++) {
+        const row = map.grid[y];
+        for (let x = 0; x < map.width; x++) {
+          if (row[x] === BRANCH_DOOR_TILE) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
         }
       }
     }
-    ctx.fillStyle = MINIMAP_BRANCH_DOOR_COLOR;
-    for (let y = 0; y < map.height; y++) {
-      const row = map.grid[y];
-      for (let x = 0; x < map.width; x++) {
-        if (row[x] === BRANCH_DOOR_TILE) ctx.fillRect(pad + x * cell, pad + y * cell, cell, cell);
+
+    // Lore terminals: a small glowing marker layered over their wall tile so
+    // they still stand out from a plain (or secret) wall at a glance — skipped
+    // once a terminal's been read, so it just fades back into the plain wall
+    // fill drawn above instead of glowing forever.
+    const lorePulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
+    ctx.fillStyle = `rgba(120,200,210,${lorePulse})`;
+    for (const t of map.loreTerminals) {
+      if (readTerminals.has(`${t.x},${t.y}`)) continue;
+      ctx.fillRect(pad + t.x * cell, pad + t.y * cell, cell, cell);
+    }
+
+    // Hazard (acid) tiles — a hot, non-green color so a glance never confuses
+    // them with the green pulsing exit marker drawn below.
+    ctx.fillStyle = "#ff9d1f";
+    for (const hz of map.hazards) {
+      // Grid re-checked rather than trusted: `GameMap.hazards` is the list of
+      // tiles acid was generated on, not the list it currently occupies. An
+      // Exception Handling Zone's gauntlet burns out under the player
+      // (`acidDecay.ts`), and a burned-out tile that kept its marker would send
+      // them the long way round a hazard that isn't there any more.
+      if (map.grid[hz.y]?.[hz.x] !== HAZARD_TILE) continue;
+      ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
+    }
+    for (const hz of runtimeAcidTiles) {
+      ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
+    }
+
+    // Locked doors still closed (grid is the source of truth once opened).
+    ctx.fillStyle = "#568ebe";
+    // Per gate rather than per door tile: one `fillStyle` write each instead of
+    // one for the whole set, and the marker now says *which* key it wants.
+    for (const gate of map.gates) {
+      ctx.fillStyle = MINIMAP_GATE_COLORS[gate.colorIndex];
+      for (const door of gate.doors) {
+        if (map.grid[door.y][door.x] === DOOR_TILE) {
+          ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
+        }
       }
     }
-  }
 
-  // Lore terminals: a small glowing marker layered over their wall tile so
-  // they still stand out from a plain (or secret) wall at a glance — skipped
-  // once a terminal's been read, so it just fades back into the plain wall
-  // fill drawn above instead of glowing forever.
-  const lorePulse = 0.6 + 0.4 * Math.sin(performance.now() / 200);
-  ctx.fillStyle = `rgba(120,200,210,${lorePulse})`;
-  for (const t of map.loreTerminals) {
-    if (readTerminals.has(`${t.x},${t.y}`)) continue;
-    ctx.fillRect(pad + t.x * cell, pad + t.y * cell, cell, cell);
-  }
-
-  // Hazard (acid) tiles — a hot, non-green color so a glance never confuses
-  // them with the green pulsing exit marker drawn below.
-  ctx.fillStyle = "#ff9d1f";
-  for (const hz of map.hazards) {
-    // Grid re-checked rather than trusted: `GameMap.hazards` is the list of
-    // tiles acid was generated on, not the list it currently occupies. An
-    // Exception Handling Zone's gauntlet burns out under the player
-    // (`acidDecay.ts`), and a burned-out tile that kept its marker would send
-    // them the long way round a hazard that isn't there any more.
-    if (map.grid[hz.y]?.[hz.x] !== HAZARD_TILE) continue;
-    ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
-  }
-  for (const hz of runtimeAcidTiles) {
-    ctx.fillRect(pad + hz.x * cell, pad + hz.y * cell, cell, cell);
-  }
-
-  // Locked doors still closed (grid is the source of truth once opened).
-  ctx.fillStyle = "#568ebe";
-  // Per gate rather than per door tile: one `fillStyle` write each instead of
-  // one for the whole set, and the marker now says *which* key it wants.
-  for (const gate of map.gates) {
-    ctx.fillStyle = MINIMAP_GATE_COLORS[gate.colorIndex];
-    for (const door of gate.doors) {
-      if (map.grid[door.y][door.x] === DOOR_TILE) {
-        ctx.fillRect(pad + door.x * cell, pad + door.y * cell, cell, cell);
-      }
+    // Spike traps: dull metal when safe, pulsing red when active.
+    const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+    const spikePulse = 0.6 + 0.4 * Math.sin(performance.now() / 90);
+    for (const trap of map.spikeTraps) {
+      ctx.fillStyle = activeSpikes.has(`${trap.x},${trap.y}`)
+        ? `rgba(220,40,30,${spikePulse})`
+        : "#5a5a60";
+      ctx.fillRect(pad + trap.x * cell, pad + trap.y * cell, cell, cell);
     }
-  }
 
-  // Spike traps: dull metal when safe, pulsing red when active.
-  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
-  const spikePulse = 0.6 + 0.4 * Math.sin(performance.now() / 90);
-  for (const trap of map.spikeTraps) {
-    ctx.fillStyle = activeSpikes.has(`${trap.x},${trap.y}`)
-      ? `rgba(220,40,30,${spikePulse})`
-      : "#5a5a60";
-    ctx.fillRect(pad + trap.x * cell, pad + trap.y * cell, cell, cell);
-  }
+    // Discovered, still-live proximity mines.
+    ctx.fillStyle = "#ff5050";
+    for (const mine of map.mines) {
+      if (!mine.alive || !mine.visible) continue;
+      ctx.fillRect(pad + mine.x * cell - cell / 2, pad + mine.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+    }
 
-  // Discovered, still-live proximity mines.
-  ctx.fillStyle = "#ff5050";
-  for (const mine of map.mines) {
-    if (!mine.alive || !mine.visible) continue;
-    ctx.fillRect(pad + mine.x * cell - cell / 2, pad + mine.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
-  }
+    // Goto teleporter pads.
+    ctx.fillStyle = "#a855f7";
+    for (const t of map.teleporters) {
+      ctx.fillRect(pad + t.x * cell - cell / 2, pad + t.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+    }
 
-  // Goto teleporter pads.
-  ctx.fillStyle = "#a855f7";
-  for (const t of map.teleporters) {
-    ctx.fillRect(pad + t.x * cell - cell / 2, pad + t.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
-  }
+    // Uncollected keys.
+    ctx.fillStyle = "#f2d64b";
+    for (const item of map.keys) {
+      if (item.collected) continue;
+      ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+    }
 
-  // Uncollected keys.
-  ctx.fillStyle = "#f2d64b";
-  for (const item of map.keys) {
-    if (item.collected) continue;
-    ctx.fillRect(pad + item.x * cell - cell / 2, pad + item.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
-  }
-
-  // The key the player was just pointed at by walking into a locked door
-  // empty-handed: the same marker the loop above already drew, re-filled
-  // bright and wrapped in an outward-sweeping sonar ring. Drawn on top rather
-  // than instead, so the other uncollected keys keep their normal colour and
-  // only the answer to "which one" changes.
-  if (pingedKey) {
-    const now = performance.now();
-    // Brightness on a sine like every other pulse on this panel; the ring on a
-    // sawtooth instead, so it reads as repeated outward sweeps rather than
-    // breathing in and out.
-    const pingPulse = 0.5 + 0.5 * Math.sin(now / 150);
-    const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
-    const base = Math.max(2, cell);
-    const cx = pad + pingedKey.x * cell;
-    const cy = pad + pingedKey.y * cell;
-    // Clipped to the panel: the ring is much larger than any other marker
-    // here, and a pinged key near an edge would otherwise sweep out over the
-    // 3D scene. (The compass badge straddles the corner deliberately; this
-    // would just look like a bug.)
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(panel.x, panel.y, panel.w, panel.h);
-    ctx.clip();
-    ctx.fillStyle = `rgba(255,247,196,${0.7 + 0.3 * pingPulse})`;
-    ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
-    const ring = base + 2 + sweep * PING_RING_GROWTH_PX;
-    // `outlineRect` is four `fillRect`s — `strokeRect` is banned on every
-    // normal-frame renderer, see `renderCost.test.ts`.
-    ctx.strokeStyle = `rgba(242,214,75,${0.6 * (1 - sweep)})`;
-    ctx.lineWidth = 1;
-    outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
-    ctx.restore();
-  }
-
-  // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
-  // — e.g. left behind by a disconnected player) — gated on `map.visited`,
-  // the same fog-of-war precedent `Enemy.discovered` already sets on this
-  // panel: an ungated drop would otherwise broadcast a disconnect's exact
-  // location the instant it happens, in a room nobody's been near yet. `[]`
-  // for single-player, so this loop is a no-op there.
-  ctx.fillStyle = LOOT_DROP_COLOR;
-  for (const drop of lootDrops) {
-    if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
-    ctx.fillRect(pad + drop.x * cell - cell / 2, pad + drop.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
-  }
-
-  // Exit tile (the return statement): high-contrast and pulsing so it never
-  // gets lost among walls/hazards at a glance.
-  const exitPulse = 0.65 + 0.35 * Math.sin(performance.now() / 260);
-  const exitSize = Math.max(2, cell) * (1 + 0.25 * exitPulse);
-  const exitOffset = (exitSize - Math.max(2, cell)) / 2;
-  ctx.fillStyle = `rgba(65,255,110,${0.75 + 0.25 * exitPulse})`;
-  ctx.fillRect(pad + map.exit.x * cell - exitOffset, pad + map.exit.y * cell - exitOffset, exitSize, exitSize);
-
-  // Discovered, living enemies only — see the doc comment above.
-  for (const enemy of map.enemies) {
-    if (!enemy.alive || !enemy.discovered) continue;
-    ctx.fillStyle = enemy.edgeCase ? EDGE_CASE_COLOR : enemyColor(enemy.entity.kind);
-    ctx.fillRect(
-      pad + enemy.x * cell - cell / 2,
-      pad + enemy.y * cell - cell / 2,
-      Math.max(2, cell),
-      Math.max(2, cell),
-    );
-  }
-
-  ctx.globalAlpha = 1;
-
-  // Teammates, in their own per-player colour — the same one their billboard
-  // and name label use in the 3D view. Drawn after the `globalAlpha` reset
-  // above deliberately: these are people, not scenery, and must not inherit
-  // the enemy loop's fade. Ungated by `map.visited`, unlike the loot drops
-  // above — the fog rule is there to stop the *level* leaking (a disconnect's
-  // loot advertising a room nobody has entered), and a teammate's own position
-  // says nothing about the tiles around them. `[]` in single-player.
-  for (const mate of teammates) {
-    const mx = pad + mate.x * cell;
-    const my = pad + mate.y * cell;
-    const dot = Math.max(3, cell + 1);
-    ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
-    ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
-    ctx.fillStyle = mate.color;
-    ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
-  }
-
-  // …and the sonar ring for whichever of them is calling for help. Same shape
-  // as the key ping above (bright fill, sawtooth outward sweep, clipped to the
-  // panel) but in the caller's colour and sweeping wider, so "somebody needs
-  // you" and "the key is over there" never read as the same event.
-  const helpCallers = teammates.filter((mate) => mate.helpPing);
-  if (helpCallers.length > 0) {
-    const now = performance.now();
-    const pulse = 0.5 + 0.5 * Math.sin(now / 150);
-    const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
-    ctx.save();
-    ctx.beginPath();
-    ctx.rect(panel.x, panel.y, panel.w, panel.h);
-    ctx.clip();
-    ctx.lineWidth = 1;
-    for (const mate of helpCallers) {
-      const cx = pad + mate.x * cell;
-      const cy = pad + mate.y * cell;
-      const base = Math.max(3, cell + 1) * (1 + 0.3 * pulse);
-      ctx.fillStyle = mate.color;
+    // The key the player was just pointed at by walking into a locked door
+    // empty-handed: the same marker the loop above already drew, re-filled
+    // bright and wrapped in an outward-sweeping sonar ring. Drawn on top rather
+    // than instead, so the other uncollected keys keep their normal colour and
+    // only the answer to "which one" changes.
+    if (pingedKey) {
+      const now = performance.now();
+      // Brightness on a sine like every other pulse on this panel; the ring on a
+      // sawtooth instead, so it reads as repeated outward sweeps rather than
+      // breathing in and out.
+      const pingPulse = 0.5 + 0.5 * Math.sin(now / 150);
+      const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
+      const base = Math.max(2, cell);
+      const cx = pad + pingedKey.x * cell;
+      const cy = pad + pingedKey.y * cell;
+      // Clipped to the panel: the ring is much larger than any other marker
+      // here, and a pinged key near an edge would otherwise sweep out over the
+      // 3D scene. (The compass badge straddles the corner deliberately; this
+      // would just look like a bug.)
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(panel.x, panel.y, panel.w, panel.h);
+      ctx.clip();
+      ctx.fillStyle = `rgba(255,247,196,${0.7 + 0.3 * pingPulse})`;
       ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
-      const ring = base + 2 + sweep * HELP_PING_RING_GROWTH_PX;
-      // `outlineRect` (four `fillRect`s), never `strokeRect` — see
-      // `renderCost.test.ts`.
-      ctx.strokeStyle = mate.color;
-      ctx.globalAlpha = 0.7 * (1 - sweep);
+      const ring = base + 2 + sweep * PING_RING_GROWTH_PX;
+      // `outlineRect` is four `fillRect`s — `strokeRect` is banned on every
+      // normal-frame renderer, see `renderCost.test.ts`.
+      ctx.strokeStyle = `rgba(242,214,75,${0.6 * (1 - sweep)})`;
+      ctx.lineWidth = 1;
       outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
-      ctx.globalAlpha = 1;
+      ctx.restore();
     }
+
+    // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
+    // — e.g. left behind by a disconnected player) — gated on `map.visited`,
+    // the same fog-of-war precedent `Enemy.discovered` already sets on this
+    // panel: an ungated drop would otherwise broadcast a disconnect's exact
+    // location the instant it happens, in a room nobody's been near yet. `[]`
+    // for single-player, so this loop is a no-op there.
+    ctx.fillStyle = LOOT_DROP_COLOR;
+    for (const drop of lootDrops) {
+      if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
+      ctx.fillRect(pad + drop.x * cell - cell / 2, pad + drop.y * cell - cell / 2, Math.max(2, cell), Math.max(2, cell));
+    }
+
+    // Exit tile (the return statement): high-contrast and pulsing so it never
+    // gets lost among walls/hazards at a glance.
+    const exitPulse = 0.65 + 0.35 * Math.sin(performance.now() / 260);
+    const exitSize = Math.max(2, cell) * (1 + 0.25 * exitPulse);
+    const exitOffset = (exitSize - Math.max(2, cell)) / 2;
+    ctx.fillStyle = `rgba(65,255,110,${0.75 + 0.25 * exitPulse})`;
+    ctx.fillRect(pad + map.exit.x * cell - exitOffset, pad + map.exit.y * cell - exitOffset, exitSize, exitSize);
+
+    // Discovered, living enemies only — see the doc comment above.
+    for (const enemy of map.enemies) {
+      if (!enemy.alive || !enemy.discovered) continue;
+      ctx.fillStyle = enemy.edgeCase ? EDGE_CASE_COLOR : enemyColor(enemy.entity.kind);
+      ctx.fillRect(
+        pad + enemy.x * cell - cell / 2,
+        pad + enemy.y * cell - cell / 2,
+        Math.max(2, cell),
+        Math.max(2, cell),
+      );
+    }
+
+    ctx.globalAlpha = 1;
+
+    // Teammates, in their own per-player colour — the same one their billboard
+    // and name label use in the 3D view. Drawn after the `globalAlpha` reset
+    // above deliberately: these are people, not scenery, and must not inherit
+    // the enemy loop's fade. Ungated by `map.visited`, unlike the loot drops
+    // above — the fog rule is there to stop the *level* leaking (a disconnect's
+    // loot advertising a room nobody has entered), and a teammate's own position
+    // says nothing about the tiles around them. `[]` in single-player.
+    for (const mate of teammates) {
+      const mx = pad + mate.x * cell;
+      const my = pad + mate.y * cell;
+      const dot = Math.max(3, cell + 1);
+      ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
+      ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
+      ctx.fillStyle = mate.color;
+      ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
+    }
+
+    // …and the sonar ring for whichever of them is calling for help. Same shape
+    // as the key ping above (bright fill, sawtooth outward sweep, clipped to the
+    // panel) but in the caller's colour and sweeping wider, so "somebody needs
+    // you" and "the key is over there" never read as the same event.
+    const helpCallers = teammates.filter((mate) => mate.helpPing);
+    if (helpCallers.length > 0) {
+      const now = performance.now();
+      const pulse = 0.5 + 0.5 * Math.sin(now / 150);
+      const sweep = (now % PING_SWEEP_MS) / PING_SWEEP_MS;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(panel.x, panel.y, panel.w, panel.h);
+      ctx.clip();
+      ctx.lineWidth = 1;
+      for (const mate of helpCallers) {
+        const cx = pad + mate.x * cell;
+        const cy = pad + mate.y * cell;
+        const base = Math.max(3, cell + 1) * (1 + 0.3 * pulse);
+        ctx.fillStyle = mate.color;
+        ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
+        const ring = base + 2 + sweep * HELP_PING_RING_GROWTH_PX;
+        // `outlineRect` (four `fillRect`s), never `strokeRect` — see
+        // `renderCost.test.ts`.
+        ctx.strokeStyle = mate.color;
+        ctx.globalAlpha = 0.7 * (1 - sweep);
+        outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
+        ctx.globalAlpha = 1;
+      }
+      ctx.restore();
+    }
+
+    // Player: a solid, bright triangle at the exact position pointing along the
+    // facing direction — unmistakably distinct from every other marker color.
+    const px = pad + player.posX * cell;
+    const py = pad + player.posY * cell;
+    const angle = Math.atan2(player.dirY, player.dirX);
+    const size = Math.max(4, cell * 1.4);
+    drawRotatedGlyph(ctx, minimapMarkerGlyph(size), angle, px, py);
+
+    // Compass badge: drawn last, straddling the panel's bottom-right corner —
+    // see `drawCompass` in `hud.ts` for the needle drawn into it. Painting this
+    // after every grid marker above is what makes it read as attached on top
+    // of the corner rather than sitting underneath the grid content.
+    drawGlyph(ctx, COMPASS_BADGE_GLYPH, compassBadge.cx, compassBadge.cy);
+
     ctx.restore();
-  }
 
-  // Player: a solid, bright triangle at the exact position pointing along the
-  // facing direction — unmistakably distinct from every other marker color.
-  const px = pad + player.posX * cell;
-  const py = pad + player.posY * cell;
-  const angle = Math.atan2(player.dirY, player.dirX);
-  const size = Math.max(4, cell * 1.4);
-  drawRotatedGlyph(ctx, minimapMarkerGlyph(size), angle, px, py);
-
-  // Compass badge: drawn last, straddling the panel's bottom-right corner —
-  // see `drawCompass` in `hud.ts` for the needle drawn into it. Painting this
-  // after every grid marker above is what makes it read as attached on top
-  // of the corner rather than sitting underneath the grid content.
-  drawGlyph(ctx, COMPASS_BADGE_GLYPH, compassBadge.cx, compassBadge.cy);
-
-  ctx.restore();
-
-  return panel;
+    return panel;
+  });
 }
