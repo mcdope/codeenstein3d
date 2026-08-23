@@ -142,6 +142,12 @@ only field genuinely already per-player, via `p.kills`). Dormant only because
 moment telemetry moves to `PlayerState` and someone re-enables it, so the fix
 falls out of this work for free.
 
+**Resolved, verified 2026-08-23.** The move did land (Phase 2a), and
+`captureCarryoverFor` now builds `priorPlayerStats` from `p.telemetry`, the
+per-player instance, not the shared one. Checked directly rather than assumed
+before `PLAYER_STATS_ENABLED` was flipped on that day, precisely because this
+paragraph predicted the flip would wake the bug up. It did not.
+
 ### Outward hook
 
 New `RaycasterEngine.getMultiplayerTelemetrySnapshot(id: PlayerId)`, following

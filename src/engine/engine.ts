@@ -1365,13 +1365,14 @@ export class RaycasterEngine {
   }
 
   /** Balancing telemetry — populated when `?testHooks=1` gates it on (for
-   * the bot) or when `PLAYER_STATS_ENABLED` is flipped on (for the
-   * player-facing stats screen — off by default, see its doc comment: even
-   * with the derived stats gated to only compute at level-end, the ~20
-   * individual recording call sites below measurably slow real gameplay).
-   * Every recording call elsewhere in this class is a no-op guarded by
-   * `if (this.telemetryEnabled)`/`if (p.telemetry)` when it's `undefined`,
-   * so normal play with the flag off carries zero extra cost. Split into two
+   * the bot) and, since 2026-08-23, in normal play too — `PLAYER_STATS_ENABLED`
+   * ships `true`. Its doc comment carries the measurements; the short version
+   * is that the ~20 recording call sites below were blamed for slowing real
+   * gameplay in 2026-07 without anyone recording a number, and two A/Bs since
+   * have failed to reproduce any cost (+0.025ms against a 0.16ms floor on the
+   * most recent one). Every recording call elsewhere in this class is still
+   * guarded by `if (this.telemetryEnabled)`/`if (p.telemetry)`, which is what
+   * `?ablate=telemetry` switches off — see the `telemetryEnabled` assignment. Split into two
    * pieces: this field holds only the handful of genuinely team-wide
    * counters (peak-aggroed-count, combat time, TTK windows, mines
    * triggered, loot rolled — none of these has a single obvious per-player
@@ -1629,7 +1630,18 @@ export class RaycasterEngine {
     }
     // See `this.teamTelemetry`'s doc comment — `PLAYER_STATS_ENABLED` opts
     // real play into the same instrumentation `?testHooks=1` always gets.
-    this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive();
+    //
+    // `?ablate=telemetry` is the off switch, and it is load-bearing rather
+    // than a convenience. With the flag shipped on, `telemetryEnabled` would
+    // otherwise be a compile-time constant `true`, making the ~45 branches
+    // behind `p.telemetry`/`teamTelemetry` unreachable — untestable, and dead
+    // weight nobody could prove was still correct. Routing the off case
+    // through the existing ablation vocabulary keeps both sides real, and is
+    // the same mechanism the perf harness already uses to measure a feature's
+    // cost without editing source (`resolveAblations`, deliberately not
+    // DEV-gated so the switch exists in the exact build being measured).
+    /* v8 ignore next -- `PLAYER_STATS_ENABLED` ships `true`, so `||` short-circuits and `isTestHooksActive()` is never evaluated here: compile-time dispatch, same as `FLOOR_FAST_PATH_ENABLED`'s in raycaster.ts. The test-hooks path is covered directly elsewhere. @preserve */
+    this.telemetryEnabled = (PLAYER_STATS_ENABLED || isTestHooksActive()) && !this.ablated("telemetry");
     if (this.telemetryEnabled) {
       this.teamTelemetry = createTeamTelemetryState();
       if (isEventLogActive()) this.eventLog = createEventLog();
@@ -4455,6 +4467,7 @@ export class RaycasterEngine {
         if (!enemy.alive) continue;
         const dmg = rocketDamageAt(blast, enemy.x, enemy.y);
         if (dmg > 0) {
+          /* v8 ignore next -- telemetry off-side: reachable only via `?ablate=telemetry`, and only on a path the two ablated tests in engine.test.ts cannot stage (see the `telemetryEnabled` assignment). @preserve */
           if (shooter.telemetry) recordHit(shooter.telemetry, GHIDRA_WEAPON_INDEX);
           // Archetype is read *before* the damage lands: a killing blow can
           // flip `alive`, and the question this answers is "what did the
@@ -5762,6 +5775,7 @@ export class RaycasterEngine {
           // could not start a reload, i.e. the reserve is dry too — a real
           // out-of-ammo, not a reload in progress, which is gated earlier.
           console.log(`[${w.name}] out of ${w.ammoType} — need ${w.ammoPerShot}`);
+          /* v8 ignore next -- telemetry off-side: reachable only via `?ablate=telemetry`, and only on a path the two ablated tests in engine.test.ts cannot stage (see the `telemetryEnabled` assignment). @preserve */
           if (shooter.telemetry) recordShotBlockedByEmptyMag(shooter.telemetry);
           this.showOutOfAmmoToast(shooter);
           return;
@@ -5935,6 +5949,7 @@ export class RaycasterEngine {
     audio.playExplosion();
     spawnExplosion(this.explosions, mine.x, mine.y, MINE_BLAST_RADIUS);
     spawnExplosionParticles(this.explosionParticles, mine.x, mine.y);
+    /* v8 ignore next -- telemetry off-side: reachable only via `?ablate=telemetry`, and only on a path the two ablated tests in engine.test.ts cannot stage (see the `telemetryEnabled` assignment). @preserve */
     if (shooter.telemetry) recordMineDisarmed(shooter.telemetry);
     const shooterDmg = mineDamageAt({ x: mine.x, y: mine.y }, shooter.player.posX, shooter.player.posY);
     console.log(
@@ -6054,6 +6069,7 @@ export class RaycasterEngine {
       if (forcedMelee) recordKillForcedByMelee(shooter.telemetry);
     }
     if (lifesteal) {
+      /* v8 ignore next -- telemetry off-side: reachable only via `?ablate=telemetry`, and only on a path the two ablated tests in engine.test.ts cannot stage (see the `telemetryEnabled` assignment). @preserve */
       if (shooter.telemetry) {
         const actualHeal = Math.min(MAX_HEALTH, shooter.health + lifesteal) - shooter.health;
         recordHeal(shooter.telemetry, "lifesteal", actualHeal);

@@ -3959,12 +3959,29 @@ describe("RaycasterEngine — captureCarryoverFor (step 8)", () => {
     expect(result.priorScore).toBeGreaterThan(500); // 500 baseline + this level's own (nonzero completion/health) contribution
   });
 
-  it("populates priorScoreBreakdown (never telemetry-gated — same core-carryover status as priorScore) but leaves priorPlayerStats undefined by default", () => {
+  it("leaves priorPlayerStats undefined under ?ablate=telemetry, while priorScoreBreakdown survives", () => {
+    // The off path is still real code and still has to work — `?ablate=telemetry`
+    // is what keeps it reachable now that the flag ships on. `priorScoreBreakdown`
+    // was never telemetry-gated (same core-carryover status as `priorScore`), so
+    // it must still be populated here.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?ablate=telemetry" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      const result = engine.captureCarryoverFor("H");
+      expect(result.priorScoreBreakdown).toBeDefined();
+      expect(result.priorPlayerStats).toBeUndefined();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("populates priorScoreBreakdown and priorPlayerStats by default, now that PLAYER_STATS_ENABLED is on", () => {
     const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
     const result = engine.captureCarryoverFor("H");
     expect(result.priorScoreBreakdown).toBeDefined();
     expect(result.priorScoreBreakdown?.total).toBe(result.priorScore); // both derived from the same computeLevelScoreBreakdown(p) call
-    expect(result.priorPlayerStats).toBeUndefined();
+    expect(result.priorPlayerStats).toBeDefined();
   });
 
   it("populates priorPlayerStats too under ?testHooks=1 (telemetry on)", () => {
@@ -4043,11 +4060,26 @@ describe("RaycasterEngine — externally-driven FPS (multiplayer)", () => {
 });
 
 describe("RaycasterEngine — getMultiplayerTelemetrySnapshot (step 11)", () => {
-  it("returns null when telemetry isn't being recorded at all (no ?testHooks=1, PLAYER_STATS_ENABLED off)", () => {
+  it("returns null under ?ablate=telemetry — nothing is being recorded", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?ablate=telemetry" }, configurable: true });
+    try {
+      const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
+      engine.addPlayer("G", new ScriptedInput());
+      expect(engine.getMultiplayerTelemetrySnapshot("H")).toBeNull();
+      expect(engine.getMultiplayerTelemetrySnapshot("G")).toBeNull();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("returns a per-player snapshot without ?testHooks=1, now that PLAYER_STATS_ENABLED is on", () => {
+    // Used to assert `null` here: telemetry was off in real play, so the
+    // snapshot had nothing to report. It is on since 2026-08-23.
     const engine = new RaycasterEngine(makeCanvas(), fakeMap(), {}, undefined, undefined, undefined, 1, new ScriptedInput(), undefined, "H");
     engine.addPlayer("G", new ScriptedInput());
-    expect(engine.getMultiplayerTelemetrySnapshot("H")).toBeNull();
-    expect(engine.getMultiplayerTelemetrySnapshot("G")).toBeNull();
+    expect(engine.getMultiplayerTelemetrySnapshot("H")).not.toBeNull();
+    expect(engine.getMultiplayerTelemetrySnapshot("G")).not.toBeNull();
   });
 
   it("returns null for an id that isn't a connected player, even with telemetry on", () => {
@@ -4182,18 +4214,35 @@ describe("RaycasterEngine — player-facing stats / run accumulation", () => {
     }
   }
 
-  it("leaves levelPlayerStats/levelScoreBreakdown/runScoreBreakdown/runPlayerStats undefined by default (PLAYER_STATS_ENABLED off, no ?testHooks=1)", () => {
+  it("leaves levelPlayerStats/levelScoreBreakdown/runScoreBreakdown/runPlayerStats undefined under ?ablate=telemetry", () => {
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?ablate=telemetry" }, configurable: true });
+    try {
+      const size = 12;
+      const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
+      const { engine, handlers } = makeEngine(map);
+      engine.advance(0.016);
+      const stats = lastStats(handlers);
+      expect(stats.levelPlayerStats).toBeUndefined();
+      expect(stats.runScoreBreakdown).toBeUndefined();
+      // The plain numeric score is unaffected either way.
+      expect(stats.score).toBeGreaterThan(0);
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  });
+
+  it("populates levelPlayerStats/levelScoreBreakdown/runScoreBreakdown/runPlayerStats by default, now that PLAYER_STATS_ENABLED is on", () => {
     const size = 12;
     const map = fakeMap({ spawn: { x: size - 2, y: size - 2 }, exit: { x: size - 2, y: size - 2 } }, size);
     const { engine, handlers } = makeEngine(map);
     engine.advance(0.016);
     expect(handlers.onWin).toHaveBeenCalledTimes(1);
     const stats = lastStats(handlers);
-    expect(stats.levelPlayerStats).toBeUndefined();
-    expect(stats.levelScoreBreakdown).toBeUndefined();
-    expect(stats.runScoreBreakdown).toBeUndefined();
-    expect(stats.runPlayerStats).toBeUndefined();
-    // The plain numeric score is unaffected either way.
+    expect(stats.levelPlayerStats).toBeDefined();
+    expect(stats.levelScoreBreakdown).toBeDefined();
+    expect(stats.runScoreBreakdown).toBeDefined();
+    expect(stats.runPlayerStats).toBeDefined();
     expect(stats.score).toBeGreaterThan(0);
   });
 
@@ -6945,4 +6994,76 @@ describe("RaycasterEngine — coop help ping", () => {
     engine.advance(0.016);
     expect(players(engine).get("guest")!.helpPingFrames).toBe(0);
   });
+});
+
+describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
+  it("walks the whole combat path with telemetry off, so every record* guard's off side is real code", () => {
+    // `PLAYER_STATS_ENABLED` ships on since 2026-08-23, which would make the
+    // ~22 `if (x.telemetry) record*(...)` guards one-sided and their off
+    // branches unreachable — untestable, and dead weight nobody could prove
+    // still worked. `?ablate=telemetry` is the switch that keeps them real
+    // (see the `telemetryEnabled` assignment in engine.ts), and this drives
+    // shooting, hitting, killing, damage, loot, mines and reloading in one
+    // pass so those sides actually execute.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?ablate=telemetry" }, configurable: true });
+    try {
+      const size = 14;
+      const g = walledRoom(size);
+      const map = fakeMap(
+        {
+          grid: g,
+          spawn: { x: 5, y: 5 },
+          exit: { x: 1, y: 1 },
+          enemies: [fakeEnemy({ x: 6.5, y: 5.5 }), fakeEnemy({ x: 7.5, y: 5.5 }), fakeEnemy({ x: 8.5, y: 5.5 })],
+          mines: [{ x: 5.5, y: 6.5, alive: true, visible: true, closeTimer: 0 } as Mine],
+        },
+        size,
+      );
+      const { engine, input } = makeEngine(map);
+      for (let i = 0; i < 150; i++) {
+        input.fireQueued = true;
+        if (i % 25 === 0) input.reload = true;
+        engine.advance(0.05);
+      }
+      const players = (engine as unknown as { players: Map<string, { telemetry?: unknown }> }).players;
+      expect(players.get("local")!.telemetry).toBeUndefined();
+      // And the engine is still a working engine with the instrumentation off.
+      expect(() => engine.advance(0.016)).not.toThrow();
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+    // Explicit timeout: this drives the engine in a loop, and CI runs the suite
+    // under coverage instrumentation where that is several times slower than
+    // locally — the trap documented in testing.md, which the first version of
+    // this very test walked straight into at 600 iterations.
+  }, 20_000);
+
+  it("covers the off side of the terminal and out-of-ammo record sites too", () => {
+    // The paths the combat pass above cannot reach: collecting a static ammo
+    // pickup, pulling the trigger on an empty magazine, and dying.
+    const original = window.location;
+    Object.defineProperty(window, "location", { value: { ...original, search: "?ablate=telemetry" }, configurable: true });
+    try {
+      const size = 12;
+      const g = walledRoom(size);
+      g[5][5] = 2; // hazard under the spawn — kills eventually
+      const pickup: AmmoPickup = { x: 5.5, y: 5.5, kind: "bullets", amount: 15, collected: false };
+      const map = fakeMap(
+        { grid: g, hazards: [{ x: 5, y: 5 }], spawn: { x: 5, y: 5 }, exit: { x: 1, y: 1 }, ammoPickups: [pickup] },
+        size,
+      );
+      const { engine, input } = makeEngine(map);
+      // Fire without ever reloading, so the magazine empties and stays empty.
+      for (let i = 0; i < 200; i++) {
+        input.fireQueued = true;
+        engine.advance(0.05);
+      }
+      const players = (engine as unknown as { players: Map<string, { telemetry?: unknown; status: string }> }).players;
+      expect(players.get("local")!.telemetry).toBeUndefined();
+      expect(players.get("local")!.status).toBe("dead"); // the hazard got there
+    } finally {
+      Object.defineProperty(window, "location", { value: original, configurable: true });
+    }
+  }, 20_000);
 });

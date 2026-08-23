@@ -49,15 +49,15 @@
  *     campaign levels 4/8/12.
  *  5. Final score and level count match the entry's own headline numbers.
  *
- * **Score parity is asserted under dev-only conditions.** `PLAYER_STATS_ENABLED`
- * is `false` (`playerStats.ts`) and `telemetryEnabled = PLAYER_STATS_ENABLED ||
- * isTestHooksActive()`, so `computeLevelScoreBreakdown` scores a zero accuracy
- * bonus without test hooks — and this script runs with `?testHooks=1`, as the
- * board was recorded with. That is benign in production (`buildStats` leaves
- * `runScoreBreakdown` undefined, so a player's replay shows no stats rows at
- * all) but it does mean a *production* playback would not reproduce the score.
- * Simulation parity — frame counts, win/death, the carryover ladder — is what
- * holds unconditionally, and is why check 3 leads.
+ * **Score parity now holds in production too — corrected 2026-08-23.** This
+ * used to warn that `PLAYER_STATS_ENABLED` was `false`, so
+ * `computeLevelScoreBreakdown` scored a zero accuracy bonus without test hooks
+ * and a *production* playback would not reproduce the recorded score. The flag
+ * ships `true` as of 2026-08-23, so production and this script's `?testHooks=1`
+ * run now score identically, and the bundled board — recorded under test hooks
+ * — is finally comparable with what a player actually scores. Simulation parity
+ * (frame counts, win/death, the carryover ladder) still holds unconditionally
+ * and is still why check 3 leads.
  *
  * **Chromium only, deliberately.** `verify:multiplayer-determinism` exists
  * precisely because transcendental math is not bit-identical across browser

@@ -368,7 +368,7 @@ Each of these was a live hypothesis, measured, and refuted. They are worth as mu
 
 ## 7. Features currently disabled for frame-time reasons
 
-### `PLAYER_STATS_ENABLED` (`playerStats.ts:29`) — **ship it on**
+### `PLAYER_STATS_ENABLED` (`playerStats.ts`) — **shipped on, 2026-08-23**
 The doc comment claims "the ~20 individual recording call sites measurably slow real gameplay". **Not reproducible.** `?testHooks=1` gates the identical `telemetryEnabled` flag (`engine.ts:990`), so the feature can be A/B'd with no source change at all. Sustained-fire combat, telemetry OFF vs ON vs OFF:
 
 | | fps | dropped | busy p50 | `sim` phase |
@@ -380,6 +380,18 @@ The doc comment claims "the ~20 individual recording call sites measurably slow 
 | headless, **ON** | **60.0** | **0 / 480** | **5.7** | **0.054 ms** |
 
 The recording sites cost less than the run-to-run noise — the `sim` phase is 0.1 ms of a 16.7 ms budget either way. **Recommendation: flip `PLAYER_STATS_ENABLED` to `true`.** Caveats, stated rather than assumed: this measures the per-frame recording sites, which is what the doc comment blames; it does not measure the level-end derivation (already gated to the terminal frame, `engine.ts:4510`) or the DOM stats screen's own render. Both are one-shot, not per-frame. Recovered feature value: the level-end player stats screen, currently dead code in normal play.
+
+**Done 2026-08-23, and the rerun was worth doing.** The A/B below is real but
+was taken on this build — 46 fps with ~29% of frames already dropping — which is
+the least sensitive baseline a sub-millisecond per-frame cost could be tested
+against. Re-run after P1 shipped, with the game holding the vsync edge
+(59.3–59.6 fps, ~1% dropped): clock-equalized `c2-2bg`, 4 runs per arm, headed
+Chrome — busy median **5.775ms off vs 5.800ms on, +0.025ms**, against a
+calibrated floor of **0.16ms** (2× a 1.3% CoV on 5.98ms). Dropped frames went
+*down*, 1.72% → 1.57%; `longTasks` 0 in both arms. The level-end derivation was
+measured directly instead of through a pacing cell, since it is one-shot on an
+already-stopped engine: **0.00027 ms**. Reproduce with
+`npm run perf:bench -- --flag playerstats`.
 
 ### `DECORATIONS_ENABLED` (`map/generation/props.ts:16`) — **very likely shippable, one measurement short**
 `drawDecoration` (`sprites.ts:713-770`) is **100 % `fillRect`** — 2 to 5 rects per prop, zero path geometry, so it is in the class this audit measured as free. In-situ proxy: adding 200 extra `fillRect`s per frame to the live game cost **57.8 vs 59.3 fps** (13 vs 4 dropped, within spread), and 3,000 extra cost nothing at all. Each decoration also adds one `projectPoint` allocation and one closure to the billboard sort.
