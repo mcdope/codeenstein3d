@@ -544,10 +544,26 @@ const LORE_SCROLL_SPEED = 6;
  * generous enough to trigger from a normal standing distance, unlike the
  * door's much tighter walk-into-it reach. */
 const SECRET_WALL_REACH = 0.9;
-/** Fog-of-war reveal radius (tiles) around the player each frame — feeds
- * `map.visited`, which drives both the automap and the map-completion score
- * bonus's numerator (`visitedWalkableCount`). The always-on corner minimap
- * is a separate, unrelated "radar" that ignores fog of war entirely. */
+/**
+ * Reveal radius (tiles) around the player each frame, feeding `map.visited`.
+ *
+ * **Read this before deleting anything.** The automap used to be the visible
+ * consumer of `visited` and no longer is — it dropped fog of war and draws the
+ * carved level unconditionally. What survives is not cosmetic and is easy to
+ * mistake for dead code:
+ *
+ * - `visitedWalkableCount` (the counter incremented in `markVisitedAround`) is
+ *   the numerator of the **"100% Clear" score bonus** — 750 points at a 0.95
+ *   threshold, see `scoring.ts` — and of `mapCompletionFrac` in the balancing
+ *   telemetry snapshot. This constant is therefore a *balance* number, not a
+ *   display one: changing it moves scores and invalidates recorded highscores
+ *   and replay expectations.
+ * - The multiplayer loot-drop markers on both maps still gate on `visited`, for
+ *   a coop-privacy reason rather than a discovery one
+ *   (`multiplayer-game-state-spec.md` §5).
+ *
+ * The always-on corner minimap never had fog and still doesn't.
+ */
 const VISITED_REVEAL_RADIUS = 5;
 /** Internal render/shot-resolution resolution — matches `main.ts`'s own
  * private (unexported) `SCENE_WIDTH`/`SCENE_HEIGHT` constants exactly, but

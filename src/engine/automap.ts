@@ -93,13 +93,54 @@ const TEAMMATE_OUTLINE_COLOR = "rgba(0,5,2,0.85)";
 const HELP_PING_SWEEP_MS = 900;
 const HELP_PING_RING_GROWTH_PX = 16;
 
+/** Solid rock as far as this map is concerned. An unopened `SECRET_WALL_TILE`
+ * counts, which is load-bearing rather than incidental: `secretRooms.ts` carves
+ * a secret room's *interior* out of that tile too, precisely so no map can leak
+ * it. Treating it as wall here means such a room is enclosed entirely in
+ * wall-like tiles, none of which faces open space, so `wallFacesOpenSpace`
+ * hides the whole room — exactly as fog of war used to, and for a reason that
+ * survives fog's removal. */
+function isWallLike(tile: number): boolean {
+  return tile === 1 || tile === SECRET_WALL_TILE;
+}
+
+/**
+ * Whether a wall tile borders the carved level, i.e. any of its eight
+ * neighbours is something other than rock. Only such walls are drawn — see the
+ * comment at the tile loop for why.
+ *
+ * Cheap and, more importantly, **static**: it reads only `map.grid`, so the
+ * whole tile layer is now a pure function of the grid and can be baked once
+ * per level rather than recomputed every frame (see `automapTileLayer`). That
+ * is the thing fog of war made impossible, and it is why removing fog is what
+ * unblocked the cache.
+ */
+function wallFacesOpenSpace(map: GameMap, x: number, y: number): boolean {
+  for (let dy = -1; dy <= 1; dy++) {
+    const ny = y + dy;
+    if (ny < 0 || ny >= map.height) continue;
+    const row = map.grid[ny];
+    for (let dx = -1; dx <= 1; dx++) {
+      const nx = x + dx;
+      if (nx < 0 || nx >= map.width) continue;
+      if (!isWallLike(row[nx])) return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Draw the automap as a translucent viewport overlay filling the available
  * area (margin + bottom HUD strip reserved), so most of the live game stays
  * dimly visible through it. Shows explored tiles in a fixed-size grid that
  * pans to keep the player roughly centered (clamped so it never scrolls past
- * the map's edges — same idea as Diablo's map). Only tiles with
- * `map.visited` set are shown.
+ * the map's edges — same idea as Diablo's map).
+ *
+ * **No fog of war.** The whole carved level is drawn from the moment it loads,
+ * matching the corner minimap, which never had fog. What is *not* drawn is the
+ * untouched rock the generator never carved (see `wallFacesOpenSpace`) — the
+ * job `map.visited` was incidentally doing here, and the only one of its jobs
+ * this panel still needs.
  */
 export function drawAutomap(
   ctx: CanvasRenderingContext2D,
@@ -158,11 +199,24 @@ export function drawAutomap(
   const tileY1 = Math.min(map.height, Math.ceil(camY + viewTilesH));
 
   for (let y = tileY0; y < tileY1; y++) {
-    const visitedRow = map.visited[y];
     const tileRow = map.grid[y];
     for (let x = tileX0; x < tileX1; x++) {
-      if (!visitedRow[x]) continue;
       const tile = tileRow[x];
+      // The carved-level mask that replaced fog of war. `MapGenerator`
+      // allocates a solid grid and carves the level out of it, so the great
+      // majority of wall tiles are untouched rock that no player will ever
+      // stand near — and `map.visited` used to hide them as a side effect of
+      // hiding everything unexplored. Painting them now would fill the whole
+      // viewport with `WALL_COLOR` and destroy the point of a *translucent*
+      // overlay (see `debugRevealMap`'s own doc comment, which calls the
+      // result "a screenshot that is mostly a grey field, and one no amount of
+      // real play could ever produce").
+      //
+      // So a wall is drawn only where it actually faces the level. That is the
+      // same rule `debugRevealMap` hand-rolls — open tiles plus the walls
+      // immediately around them — derived from the grid instead of from a
+      // reveal radius, which makes it static and therefore bakeable.
+      if (isWallLike(tile) && !wallFacesOpenSpace(map, x, y)) continue;
       const px = vx0 + (x - camX) * CELL_PX;
       const py = vy0 + (y - camY) * CELL_PX;
       if (tile === 1 || tile === SECRET_WALL_TILE) {
@@ -214,9 +268,17 @@ export function drawAutomap(
   }
 
   // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
-  // — e.g. left behind by a disconnected player) — gated on `map.visited`,
-  // the same rule this renderer already applies to literally everything
-  // else. `[]` for single-player, so this loop is a no-op there.
+  // — e.g. left behind by a disconnected player), and the one thing here still
+  // gated on `map.visited`.
+  //
+  // That gate used to be justified as "the same rule this renderer already
+  // applies to literally everything else". It is now the *exception* rather
+  // than the rule, and it survives on its own merits: a drop marks where a
+  // teammate dropped out, so an ungated one broadcasts their exact position
+  // the instant it happens, in a room nobody has entered. That is a coop
+  // privacy rule (`multiplayer-game-state-spec.md` §5), not a discovery one,
+  // which is why it outlived the fog it used to hide behind. `[]` for
+  // single-player, so this loop is a no-op there.
   ctx.fillStyle = LOOT_DROP_COLOR;
   for (const drop of lootDrops) {
     if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
@@ -226,20 +288,24 @@ export function drawAutomap(
     ctx.fillRect(dx, dy, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
   }
 
-  // Exit tile, once discovered.
-  if (map.visited[map.exit.y]?.[map.exit.x]) {
+  // Exit tile. Drawn unconditionally now that the terrain is: the corner
+  // minimap has always shown the exit from the moment the level loads
+  // (`renderMinimap`'s own exit block has no gate at all), so keeping a
+  // discovery gate on this one panel made the *bigger, deliberately opened*
+  // map the one that told you less.
+  {
     ctx.fillStyle = EXIT_COLOR;
     const ex = vx0 + (map.exit.x - camX) * CELL_PX;
     const ey = vy0 + (map.exit.y - camY) * CELL_PX;
     ctx.fillRect(ex, ey, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
   }
 
-  // Teammates, in their own per-player colour. Deliberately *not* gated on
-  // `map.visited`, unlike every other marker above: fog of war exists here to
-  // keep the level's own contents secret until you have walked them, and a
-  // teammate is a person rather than a piece of the level — their dot reveals
-  // nothing about the tiles around it. A coop map that hides your team is not
-  // doing its job. `[]` in single-player, so this loop is a no-op there.
+  // Teammates, in their own per-player colour. Ungated — which was a
+  // deliberate exception when the terrain was fogged, and is simply the norm
+  // now that it isn't. The distinction that still matters is with the loot
+  // drops above: a drop is level content and leaks a room, a teammate is a
+  // person and leaks only themselves, to people already on their team.
+  // `[]` in single-player, so this loop is a no-op there.
   for (const mate of teammates) {
     const mx = vx0 + (mate.x - camX) * CELL_PX;
     const my = vy0 + (mate.y - camY) * CELL_PX;
