@@ -9,6 +9,19 @@ updates:
     directory: "/" # Location of package manifests
     schedule:
       interval: "weekly"
+    groups:
+      # `@vitest/coverage-v8` peer-depends on the *exact* matching `vitest`
+      # version, and both are pinned without a caret — so a PR bumping one
+      # without the other cannot install at all. Every CI job dies at `npm ci`
+      # with ERESOLVE, before a single test runs, which reads as a catastrophic
+      # failure rather than the trivial version-skew it is.
+      #
+      # Happened on 2026-08-23 with 4.1.10 -> 4.1.11 (#147 and #148, nine red
+      # jobs each). Grouping makes it one PR that bumps both together.
+      vitest:
+        patterns:
+          - "vitest"
+          - "@vitest/*"
 
   - package-ecosystem: "github-actions"
     directory: "/"
