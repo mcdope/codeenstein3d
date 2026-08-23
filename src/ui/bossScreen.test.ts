@@ -48,7 +48,7 @@ beforeEach(() => {
   document.body.append(canvas);
   bgm = { pause: vi.fn(), resume: vi.fn() };
   content = { path: "demo-campaign/main.c", source: SOURCE };
-  document.title = "🔫 Codeenstein 3D (Build: test)";
+  document.title = "Codeenstein 3D (Build: test)";
 });
 
 afterEach(() => {
