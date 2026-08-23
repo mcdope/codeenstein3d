@@ -602,19 +602,31 @@ secret wall renders identically to a plain one).
 
 ### Automap (`drawAutomap`, `automap.ts`)
 
-Same new parameter, same gate (`map.visited` at the drop's tile — this renderer
-already gates literally everything else on it, so a loot drop is just one more
-thing that follows the existing rule, not a new one). Rendering technique: copy the
+Same new parameter, same gate: `map.visited` at the drop's tile.
+
+**Corrected 2026-08-23.** This originally read *"this renderer already gates
+literally everything else on it, so a loot drop is just one more thing that
+follows the existing rule, not a new one."* That is no longer true — the automap
+dropped fog of war, so its terrain, its exit and its teammate markers are all
+ungated and the loot drop is now the *exception* rather than an instance of the
+rule. The gate stays anyway, because the rule it followed was never the real
+reason: a drop marks where a player dropped out of the session, so an ungated
+one broadcasts their exact position the instant it happens, into a room nobody
+has entered. That is a privacy argument about a *person*, and it survives the
+loss of the discovery argument about the *level*. Rendering technique: copy the
 mine marker's exact pattern (viewport-cull first — `if (drop.x < tileX0 - 1 || ...)
 continue`, same bounds check mines already use — then a small fixed-size square at
 the drop's camera-relative position), new gold/amber color matching the minimap's
 choice for visual consistency between the two views of the same data.
 
-### `visited` as team-shared fog-of-war, not per-player
+### `visited` stays one shared grid, not per-player
 
-Both gates above assume `map.visited` continues to mean "has *anyone* been near
-this tile," not "has *this specific* player" — i.e., **fog-of-war stays one shared
-grid for the whole session, not split per player**. This is a real design choice
+The loot gate above assumes `map.visited` continues to mean "has *anyone* been
+near this tile," not "has *this specific* player" — i.e. **one shared grid for
+the whole session, not split per player**. (It said "both gates" and "fog-of-war"
+until 2026-08-23; the automap's terrain gate is gone, so the loot gate is the
+only one left, and `visited`'s other consumer is the team's shared "100% Clear"
+score bonus, which wants the same shared semantics for the same reason.) This is a real design choice
 worth stating explicitly rather than assuming: it means one teammate scouting a
 room reveals it on *everyone's* map, coop-appropriate (shared team knowledge, not
 individually re-earned per player) and simpler than the alternative (no per-player
@@ -623,10 +635,17 @@ document's own §3 prerequisite: `visited` staying a single shared structure is 
 fewer piece of state that needs to become "per player" alongside `Player`/health/
 ammo/weaponIndex.
 
-### Teammate markers, and why they are *not* fog-gated
+### Teammate markers
 
 Shipped after the loot drops above and deliberately on the opposite rule, so the
-inconsistency is a decision rather than an oversight.
+inconsistency was a decision rather than an oversight.
+
+**Rewritten 2026-08-23**, one day later, because the automap then dropped fog of
+war and the original framing — *"every other multiplayer-shared marker on these
+panels is fog-gated"* — stopped being true. The behaviour is unchanged; only the
+argument for it needed rebuilding, and it is worth keeping rather than deleting,
+because the distinction it draws is now the *only* thing deciding what either
+map holds back.
 
 `renderMinimap` and `drawAutomap` each take a `TeammateMapMarker[]`
 (`sprites.ts`) — position, that player's `colorForPlayer` colour, and whether
@@ -635,14 +654,21 @@ the renderers stay roster-unaware, and `collectTeammateMapMarkers` needs no
 `isMultiplayerSession()` check of its own because single-player's roster is only
 ever the viewer, who is skipped, so it returns `[]` naturally.
 
-**They are drawn regardless of `map.visited`.** Every other multiplayer-shared
-marker on these panels is fog-gated, for the reason set out above: a marker in an
-unvisited room leaks the *level*. A teammate is not level content. Their dot says
-where a person is standing and nothing whatsoever about the tiles around them,
-they are already visible in the 3D view with a name label above them, and the
-entire purpose of putting a team on a map is answering "where is everybody" —
-which a fog gate would defeat precisely when it matters, since the teammate you
-need to find is by definition the one somewhere you have not been.
+**They are drawn regardless of `map.visited`.** The line that matters is no
+longer fog versus no fog — the automap has no fog — but *level content versus
+people*. A loot drop is level content: it sits at a fixed place and marking it
+tells you about a room. A teammate is a person; their dot says where somebody is
+standing and nothing whatsoever about the tiles around them, they are already
+visible in the 3D view with a name label above them, and the entire purpose of
+putting a team on a map is answering "where is everybody" — which any gate would
+defeat precisely when it matters, since the teammate you need to find is by
+definition the one somewhere you have not been.
+
+That leaves exactly two things either map withholds, and they are the two that
+survive on their own reasons rather than on fog's: an undiscovered **mine**
+(its own `visible` flag, from `MINE_SIGHT_RADIUS`) and a **loot drop** in a room
+nobody has entered (the disconnect-privacy rule above). Everything else is drawn
+from the moment the level loads.
 
 The colour is `colorForPlayer`'s, the same one the 3D billboard and name label
 use, which is what finally makes `sprites.ts`' long-standing "reused for their
@@ -808,7 +834,7 @@ untouched);
 doors open for the pushing player if *they* hold a key; secret walls and lore
 terminals respond to the interacting player (`interact` is already in
 `InputSnapshot`, so the bundle carries it) — with discoveries (lore read, secret
-opened, `visited`) being team-shared, per §5's fog-of-war decision.
+opened, `visited`) being team-shared, per §5's shared-grid decision.
 
 ### Friendly fire and player collision: none, by construction
 
@@ -832,7 +858,7 @@ camera and is never billboarded. HUD, viewmodel, crosshair targeting, and the
 automap/minimap player *marker* are strictly local-player; teammates appear on
 minimap/automap as distinct-colored markers (team-shared knowledge — see §5's
 "Teammate markers" subsection, which also records why these are the one shared
-marker that is *not* fog-gated). Audio stays local-perspective; remote players' shots may play sounds
+marker that is drawn everywhere, against the loot drops that are not). Audio stays local-perspective; remote players' shots may play sounds
 (cosmetic, `Math.random` pitch variance stays fine — it never feeds the sim).
 `damage()`'s own hit SFX is the one deliberate exception to "local-perspective
 means everyone hears everything": it's scoped to whoever the local peer is
@@ -882,7 +908,7 @@ feeds it, stated here so it isn't improvised during implementation: **per-player
 `levelTimeSec` (identical for all, so the speed bonus is equal for everyone),
 `shortestPathTiles`, `mapCompletionFrac` (from the shared `visited`), lore and
 secret-room bonuses (any player's discovery counts for all — the coop-natural
-reading, consistent with shared fog-of-war). Net effect: players differentiate on
+reading, consistent with the shared `visited` grid). Net effect: players differentiate on
 combat performance and efficiency, while exploration achievements reward the team.
 
 ### The N=1 compatibility gate — sequencing, and the definition of done

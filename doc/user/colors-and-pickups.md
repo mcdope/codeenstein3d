@@ -43,18 +43,18 @@ A teammate calling for help pings the same way but is never confusable with it: 
 
 ## Reading the automap
 
-`Tab` opens the automap. Same tiles, a different palette, and two real differences in what's on it.
+`Tab` opens the automap. Same tiles, a different palette, and one real difference in what's on it.
 
 Structural things go greyscale here so the map doesn't fight the live game still rendering behind it; danger and goals keep their accent colours.
 
-![The Tab automap, drawn in greyscale over the live 3D view: the level's rooms and corridors in light grey, an orange acid pool at the top left, the gold player arrow in the middle, red, blue and green locked-door tiles, a blue teammate dot next to the player and a pink teammate ringed because they are calling for help](img/automap.png)
+![The Tab automap, drawn in greyscale over the live 3D view: the whole level's rooms and corridors outlined in light grey against the untouched rock, an orange acid pool at the top left, the gold player arrow in the middle, red, blue and green locked-door tiles, a blue teammate dot next to the player and a pink teammate ringed because they are calling for help](img/automap.png)
 
-That shot is of a level that has been walked from end to end. Early on you'd see far less of it — and the game showing through behind is not an artefact of the picture: the automap really is translucent, and really does leave you able to walk and fight while it's up.
+The whole level is drawn from the moment it loads, so that shot is what you get on arrival rather than after exploring — and the game showing through behind is not an artefact of the picture: the automap really is translucent, and really does leave you able to walk and fight while it's up.
 
 | What you see | Colour | Meaning |
 |---|---|---|
 | Wall | light grey `#c8c8ce` | |
-| Explored floor | very faint grey wash | |
+| Floor | very faint grey wash | |
 | Locked door | muted red, blue, green or violet | desaturated versions of the same four |
 | Branch door | warm tan `#b39a72` | warm against the locked door's cool — "push it" vs "needs a key" |
 | Teleporter pad | near-white `#e8eaf0` | brightest structural tone, so it still reads for navigation |
@@ -62,14 +62,17 @@ That shot is of a level that has been walked from end to end. Early on you'd see
 | Spike trap | red `#e02818` armed / grey `#8a8a90` safe | |
 | Acid | orange `#ff9d1f` | same accent as the minimap |
 | Proximity mine | bright red `#ff5050` | |
-| Exit | green `#41ff6e` | once discovered |
+| Exit | green `#41ff6e` | always, from the moment the level loads |
 | You | warm gold `#ffd23f` | the one warm colour, so it never blends into terrain or accents |
 | Teammates | their own player colour, on a dark surround | multiplayer only; brightened and ringed while one is calling for help |
 
-The two differences from the corner minimap:
+The one difference from the corner minimap:
 
-- **It's fog-of-war.** Only tiles near somewhere you've actually walked are drawn, and the exit only appears once found. The corner minimap shows you everything from the start.
 - **It doesn't draw keys at all.** The corner minimap is the only place an uncollected key shows up.
+
+It used to be two: the automap was fog-of-war and only drew tiles near somewhere you'd walked. That's gone — the corner minimap never had fog, so the small always-on panel was showing you *more* of the level than the big one you deliberately opened. Both now show the whole layout.
+
+What the map still doesn't hand you: **secret rooms** (their walls are indistinguishable from solid rock until you open them — that's deliberate and unaffected), **mines you haven't spotted**, and, in multiplayer, **loot dropped by a teammate who disconnected**, which stays hidden until someone has been near that room so it can't broadcast where they dropped out.
 
 One thing neither map will do: **an unopened secret wall is drawn exactly like a plain wall** on both. That's deliberate — a map that marked secrets would give away every one of them. The only hint is a very slight colour tint in the normal 3D view, up close.
 
