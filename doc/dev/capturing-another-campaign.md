@@ -201,6 +201,15 @@ Use a `capture/` branch marked DO NOT MERGE. And **`ssh-hosts.env` is gitignored
 fresh worktree does not have one: without it the capture reports `Lanes: local` and runs
 single-machine at roughly a fifth of the speed, with no warning. Copy it in.
 
+**Plan on three SSH lanes plus `local`, and probe rather than trusting that number.**
+`ssh-hosts.env` lists four hosts but one is commented out, and `readHostList()` filters
+`#` lines — so the runner resolves three. This count has been written down wrongly in
+both directions: an audit claiming four uncommented hosts went stale within hours of
+being written, and a follow-up calling the missing lane "worth investigating" was itself
+wrong, because that host is off on purpose. Read the file before sizing a run. For
+reference, a 400-attempt capture across those three plus local completed ~2.5h of work in
+~2.5h wall clock with every lane 66-100% busy and no orphaned dev servers left behind.
+
 A worktree also needs its own `npm ci`. Symlinking the main tree's `node_modules` looks
 like a shortcut and shares Vite's cache between two checkouts of different content.
 

@@ -125,7 +125,14 @@ const COMBO_PROFILES_FILTER = process.env.CODEENSTEIN_MP_TELEMETRY_COMBO_PROFILE
 // target here is a genuinely meaningful sample — see this file's own doc
 // comment for why these are much smaller than single-player's own defaults.
 const REQUIRED_QUALIFYING_RUNS = envNumber("CODEENSTEIN_MP_TELEMETRY_QUALIFYING_TARGET", 2, { integer: true, min: 1 });
-const ATTEMPT_CAP = envNumber("CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP", Infinity, { integer: true, min: 1 });
+// Finite by default since 2026-08-23. It was `Infinity`, and a live sweep showed
+// why that is the wrong default: `Casual/hard/2p` needed 30+ attempts to land
+// its *second* qualifying run — a well-under-10% rate — and one such combo can
+// consume a whole sweep's wall-clock on its own. 20 sits comfortably above what
+// a healthy combo needs (anything near a normal qualifying rate lands two runs
+// in a handful of attempts) while bounding the pathological case. Raise it
+// deliberately for a combo you intend to sit through; `Infinity` still works.
+const ATTEMPT_CAP = envNumber("CODEENSTEIN_MP_TELEMETRY_ATTEMPT_CAP", 20, { integer: true, min: 1 });
 // Modest by default (sequential) — several concurrent real multiplayer
 // sessions against one dedicated signaling+dev server pair is a real
 // resource-contention risk this tool hasn't been measured against; raise
@@ -959,7 +966,13 @@ async function main() {
         },
       });
       output.combos[key] = buildComboOutput(combo);
-      console.log(`  qualifying runs: ${combo.qualifyingRuns.length}/${REQUIRED_QUALIFYING_RUNS} (attempts used: ${combo.attemptsUsed})`);
+      const cappedOut = combo.qualifyingRuns.length < REQUIRED_QUALIFYING_RUNS && combo.attemptsUsed >= ATTEMPT_CAP;
+      console.log(
+        `  qualifying runs: ${combo.qualifyingRuns.length}/${REQUIRED_QUALIFYING_RUNS} (attempts used: ${combo.attemptsUsed})` +
+          // Naming the cap matters: a short combo otherwise reads as a measured
+          // near-zero win rate rather than a bounded search that gave up.
+          (cappedOut ? ` — STOPPED AT THE ${ATTEMPT_CAP}-ATTEMPT CAP, not a measured rate` : ""),
+      );
     }
     if (DISCONNECT_SCENARIO) {
       output.disconnectIsolation = await runDisconnectIsolationScenario(browser, servers.devServerUrl);
