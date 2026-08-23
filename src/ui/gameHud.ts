@@ -524,20 +524,34 @@ const STAT_COL_GAP = 8;
 /**
  * Where the label column ends, as an offset from `boxX`.
  *
- * **Content-driven rather than the box centre, because the centre wasted the
+ * **Content-driven rather than a fixed 50/50, because the halves wasted the
  * room the long values needed.** Labels here are short (`Kills`, `Closest
- * call`); values are sometimes a whole grouped sentence. Splitting 50/50 gave
- * both sides 272px in a 592px box, which left the widest label 143px of unused
- * space while the widest value was cut off — and cut off *silently*, since
- * `fillText`'s `maxWidth` squeezes glyphs rather than eliding.
+ * call`); values are sometimes a whole grouped sentence. Splitting the box in
+ * two gave both sides 272px of a 592px box, which left the widest label 143px
+ * of unused space while the widest value was cut off — and cut off *silently*,
+ * since `fillText`'s `maxWidth` squeezes glyphs rather than eliding.
  *
- * This was already the behaviour at the Classic preset before the overlay
- * layer scaled; Sharp only looked correct because its box could grow to 757px.
- * The test that should have caught it ran at 1600x900, a canvas no preset
- * produces.
+ * This was already the behaviour at the Classic preset before the overlay layer
+ * scaled; Sharp only looked correct because its box could grow to 757px. The
+ * test that should have caught it ran at 1600x900, a canvas no preset produces.
+ *
+ * **The two columns together are still centred in the box**, which is the part
+ * that is easy to lose: anchoring the label column at the left inset instead
+ * gives each row the right *width* and the wrong *place*, leaving a short stats
+ * block hard against the left edge under a centred title. Seen directly, on the
+ * level-start briefing, whose three one- and two-digit rows occupy 80px of a
+ * 420px box.
  */
-function statsSplitFor(stats: readonly [string, string][]): number {
-  return STAT_INSET + Math.max(...stats.map(([label]) => textWidth(13, label)));
+function statsSplitFor(stats: readonly [string, string][], boxW: number): number {
+  const labelW = Math.max(...stats.map(([label]) => textWidth(13, label)));
+  // What is left for a value once the labels have their column. Also the width
+  // the size ladder measures against — see `fittingSize`'s caller for why the
+  // room actually available to the right of the split is never less than this
+  // demands.
+  const valueRoom = boxW - STAT_INSET * 2 - STAT_COL_GAP - labelW;
+  const valueW = Math.max(...stats.map(([, value]) => textWidth(fittingSize(value, valueRoom), value)));
+  const blockW = labelW + STAT_COL_GAP + valueW;
+  return (boxW - blockW) / 2 + labelW;
 }
 
 /**
@@ -624,7 +638,7 @@ export function overlayLayout(w: number, h: number, content: OverlayContent): Ov
     contentEnd,
     buttons,
     lines,
-    statsSplit: stats.length > 0 ? statsSplitFor(stats) : null,
+    statsSplit: stats.length > 0 ? statsSplitFor(stats, boxW) : null,
   };
 }
 
@@ -677,6 +691,11 @@ function drawOverlayIn(ctx: CanvasRenderingContext2D, w: number, h: number, cont
       const labelX = boxX + statsSplit;
       const valueX = labelX + STAT_COL_GAP;
       const labelMaxWidth = statsSplit - STAT_INSET;
+      // The room actually left to the right of the split. Centring the block
+      // can only push the split *right* of the left inset, and it moves it by
+      // half the slack, so this works out to at least the widest value's own
+      // width — which is why sizing the ladder against the wider `valueRoom`
+      // in `statsSplitFor` cannot pick a size that then fails to fit here.
       const valueMaxWidth = boxX + boxW - STAT_INSET - valueX;
       y += STATS_LEAD;
       for (const [label, value] of content.stats) {
