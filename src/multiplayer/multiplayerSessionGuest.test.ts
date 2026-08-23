@@ -652,7 +652,7 @@ describe("runMultiplayerSessionAsGuest", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
     const before = handle.getPlayerPosition("guest");
-    handle.debugInjectDesync({ kind: "position", deltaTiles: 0.2 });
+    handle.debugInjectDesync?.({ kind: "position", deltaTiles: 0.2 });
     expect(handle.getPlayerPosition("guest")).toEqual({ x: before!.x + 0.2, y: before!.y });
     expect(typeof handle.getRngState()).toBe("number");
     expect(handle.hasActiveRenderOffset("guest")).toBe(false);
@@ -661,13 +661,13 @@ describe("runMultiplayerSessionAsGuest", () => {
   it("debugSetGodMode delegates to the underlying engine", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
-    expect(() => handle.debugSetGodMode("guest", true)).not.toThrow();
+    expect(() => handle.debugSetGodMode?.("guest", true)).not.toThrow();
   });
 
   it("debugClearExitRoomEnemies delegates to the underlying engine", () => {
     const channels = linkedChannels();
     const handle = runMultiplayerSessionAsGuest(channels.guest, makeCanvas(), fakeResult());
-    expect(() => handle.debugClearExitRoomEnemies()).not.toThrow();
+    expect(() => handle.debugClearExitRoomEnemies?.()).not.toThrow();
   });
 
   it("getLastReconciliationRngState reflects the rngState of the most recently applied snapshot, null before the first one", () => {

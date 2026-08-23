@@ -277,14 +277,18 @@ async function scenarioGuestDisconnect(browser, engineName) {
       const handle = await hostPage.waitForFunction(
         () => {
           const s = window.__codeensteinMultiplayerTestHooks.getPlayerStatus("guest-1");
-          return s === "disconnected" || s === "dead" ? s : false;
+          // `"disconnected"` exactly, not `|| "dead"`. Both peers are
+          // god-moded above, so a combat death here is unreachable — and the
+          // precondition at the `god mode took effect` check fails first, with
+          // the right message, if that ever stops being true.
+          return s === "disconnected" ? s : false;
         },
         undefined,
         { timeout: DISCONNECT_DETECT_TIMEOUT_MS },
       );
       guestStatus = await handle.jsonValue();
       check(
-        "host: the guest eventually leaves the shared simulation (disconnected, or dead in combat first)",
+        "host: the guest eventually leaves the shared simulation (disconnected)",
         true,
         `status="${guestStatus}"`,
       );
@@ -297,7 +301,7 @@ async function scenarioGuestDisconnect(browser, engineName) {
         .catch(() => "<unavailable>");
       const multiplayerStatusText = await hostPage.textContent("#multiplayer-status").catch(() => "<unavailable>");
       check(
-        "host: the guest eventually leaves the shared simulation (disconnected, or dead in combat first)",
+        "host: the guest eventually leaves the shared simulation (disconnected)",
         false,
         `guest status="${status}" host status="${hostStatus}" #multiplayer-status="${multiplayerStatusText}": ${err.message}`,
       );

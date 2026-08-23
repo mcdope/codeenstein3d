@@ -19,7 +19,7 @@ import { extensionOf, isParsable, parseFile } from "./parser/registry";
 import { MapGenerator, type GenerateOptions } from "./map/mapGenerator";
 import { STYLE_SET_IDS, type GameMap } from "./map/types";
 import { renderExportMap } from "./map/exportView";
-import { RaycasterEngine, SIMULATION_BALANCE, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
+import { RaycasterEngine, SIMULATION_BALANCE, TEST_HOOKS_BUILD_ENABLED, isTestHooksActive, resolveBotRotSpeedMultiplier } from "./engine/engine";
 import { STARTING_SHELLS } from "./engine/ammo";
 import { audio } from "./engine/audio";
 import { bgm } from "./engine/bgm";
@@ -54,7 +54,7 @@ import { randomSeed } from "./prng";
 import { CampaignReplayRecorder, ReplayPlaybackInput, type ReplayLevelSegment } from "./engine/replay";
 import { balanceHashMatches, computeBalanceHash, computeSimulationHash, simulationHashMatches, type BalanceRelevantEnemy } from "./engine/balanceHash";
 import type { ParsedFile } from "./parser/types";
-import type { BotPlayerState, EngineCarryover, EngineStats, PlayerId, RosterSnapshotEntry } from "./engine/engine";
+import type { BotPlayerState, EngineCarryover, EngineStats, PlayerId, PlayerStatus, RosterSnapshotEntry } from "./engine/engine";
 import { createSession, fetchIceServers, fetchSession, fetchSessionAsHost, postAnswer, updateSession } from "./multiplayer/signalingClient";
 import { fetchLobbyEntries } from "./multiplayer/lobby";
 import { createGuestAnswer, createHostOffer, waitForChannelsOpen } from "./multiplayer/webrtcConnection";
@@ -1701,6 +1701,18 @@ let activeMultiplayerConnection: MultiplayerConnection | null = null;
  * host clicks Start or the guest's own setup resolves; cleared once the
  * shared simulation ends (see `onMultiplayerSessionEnded`). */
 let activeMultiplayerSession: MultiplayerSessionHandle | null = null;
+/**
+ * The last session's ending, kept for `getLastSessionEnd` — see that hook.
+ *
+ * Recorded only in a dev build (the assignment sits behind the same gate the
+ * hook does), and stamped with `multiplayerConnectionGeneration` so it answers
+ * for exactly the session it came from and no other.
+ */
+let lastMultiplayerSessionEnd: {
+  generation: number;
+  reason: SessionEndReason;
+  statuses: Record<PlayerId, PlayerStatus>;
+} | null = null;
 /** Bumped at the start of every connect attempt (Host create, Join) — same
  * "supersede a stale in-flight attempt by generation check" discipline as
  * `workspaceLoadGeneration`/`beginWorkspaceLoad` above. */
@@ -2323,6 +2335,19 @@ function onMultiplayerSessionEnded(
   reason: SessionEndReason,
   comparison: ReadonlyMap<PlayerId, RosterSnapshotEntry>,
 ): void {
+  // Recorded *before* the line below throws the session away, because that is
+  // the whole point: `applyRosterRemoval` marks a peer `"disconnected"` and
+  // `endGame("over")` reaches here inside the same synchronous worker tick, so
+  // no external poller is ever scheduled while `getPlayerStatus` can still
+  // answer. `comparison` already carries the final status per player, so this
+  // costs nothing but not discarding it.
+  if (TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()) {
+    lastMultiplayerSessionEnd = {
+      generation: multiplayerConnectionGeneration,
+      reason,
+      statuses: Object.fromEntries([...comparison].map(([id, entry]) => [id, entry.status])),
+    };
+  }
   activeMultiplayerSession = null;
   activeMultiplayerConnection = null;
   multiplayerConnectionState = "idle";
@@ -2657,18 +2682,22 @@ multiplayerLobbyDialog.addEventListener("close", () => {
 // this object would make that check trivially true before any engine exists,
 // racing every `waitUntil(() => !!testHooks())` in `main.test.ts` that
 // expects it to mean exactly that. This is also the only place
-// `debugSetGodMode`/`injectDesync` are reachable at all — gating them behind
-// `import.meta.env.DEV` (via `isTestHooksActive()`) means a real production
+// `debugSetGodMode`/`injectDesync` are reachable at all — gating them on
+// `TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()` means a real production
 // build never ships the code path that lets a player fake invulnerability or
 // desync state through the console, not just a URL param it happens to
-// ignore.
+// ignore. Both terms are needed: `isTestHooksActive()` alone is a function
+// call the minifier does not inline, and gating on it alone shipped this
+// whole block — inert, but present — from 2026-07-26 until it was caught.
+// `scripts/check-bundle-hygiene.mjs` now fails the build if it returns.
 //
 // `__codeensteinReplayTestHooks` below is a *third* separate global for the
 // same reason this one is separate from `__codeensteinTestHooks`: the test
 // suite treats the presence of that object as "an engine has been
 // constructed", and anything installed at module-import time would make that
 // check trivially true before any engine exists.
-if (isTestHooksActive()) {
+// See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+if (TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()) {
   // A *fourth* separate global, for the same module-import-time reason the
   // other three are separate (see the comment above).
   //
@@ -2741,6 +2770,9 @@ if (isTestHooksActive()) {
         hasActiveRenderOffset: (id: string) => boolean;
         getLastReconciliationRngState: () => number | null;
         getPlayerStatus: (id: string) => string | null;
+        /** See the implementation below for why this exists separately from
+         * `getPlayerStatus`. */
+        getLastSessionEnd: () => { reason: string; statuses: Record<string, string> } | null;
         getPlayerDisplayName: (id: string) => string | null;
         getLootDrops: () => readonly unknown[];
         getMapExit: () => { x: number; y: number } | null;
@@ -2821,16 +2853,16 @@ if (isTestHooksActive()) {
     // short end-to-end run — see `RaycasterEngine.debugInjectDesync`'s own
     // doc comment). Never called from real gameplay code.
     getRngState: () => activeMultiplayerSession?.getRngState() ?? null,
-    injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync(injection),
+    injectDesync: (injection) => activeMultiplayerSession?.debugInjectDesync?.(injection),
     // Test-only, mutating — see `RaycasterEngine.debugSetGodMode`'s own doc
     // comment. For `scripts/verify-multiplayer-transition.mjs`: lets the
     // host reach a real level's real exit without needing to survive the
     // demo campaign's full combat gauntlet first, while leaving other
     // players (e.g. the guest) fully vulnerable.
-    debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode(id, enabled),
+    debugSetGodMode: (id, enabled) => activeMultiplayerSession?.debugSetGodMode?.(id, enabled),
     // Test-only, mutating — see `RaycasterEngine.debugClearExitRoomEnemies`'s
     // own doc comment.
-    debugClearExitRoomEnemies: () => activeMultiplayerSession?.debugClearExitRoomEnemies(),
+    debugClearExitRoomEnemies: () => activeMultiplayerSession?.debugClearExitRoomEnemies?.(),
     hasActiveRenderOffset: (id) => activeMultiplayerSession?.hasActiveRenderOffset(id) ?? false,
     // A *frozen* value, unlike getRngState() above — see
     // MultiplayerSessionHandle.getLastReconciliationRngState's own doc
@@ -2842,6 +2874,47 @@ if (isTestHooksActive()) {
     // `scripts/verify-multiplayer-disconnect.mjs` to observe a peer's status
     // flipping to `"disconnected"` and its inventory converting to loot.
     getPlayerStatus: (id) => activeMultiplayerSession?.getPlayerStatus(id) ?? null,
+    /**
+     * The roster as it stood when the session ended, plus why it ended.
+     *
+     * **Why `getPlayerStatus` cannot answer this.** `applyRosterRemoval` sets a
+     * peer `"disconnected"` and, when that tips
+     * `every(q => q.status !== "alive")`, `endGame("over")` runs in the *same*
+     * synchronous worker-tick handler — through `advance()`'s tail, into
+     * `onMultiplayerSessionEnded`, whose first act is to null the session. There
+     * is no `await`, timer or event hop in between, so a poller sees `"alive"`
+     * on its last read and `null` on its next, and never the transition. That is
+     * not a narrow race; it is unobservable by construction.
+     *
+     * **A second hook rather than a fallback inside `getPlayerStatus`.** Making
+     * that one answer post-session would flip
+     * `verify-multiplayer-transition.mjs`'s "host: alive on the new level" from
+     * a loud failure into a silent pass on a torn-down session — the exact
+     * false-positive class that script's own `grid !== null &&` guard exists to
+     * kill. Keeping them separate also lets `null` keep one meaning.
+     *
+     * **All four `SessionEndReason`s are kept**, including the guest-only
+     * provisional ones. The caller sees the reason and can judge: a
+     * `"host-disconnected"` record honestly reports the host still `"alive"` in
+     * that guest's local sim, which is exactly what you want when working out
+     * whether a disconnect was real or a transport hiccup.
+     *
+     * Keyed to `multiplayerConnectionGeneration` rather than cleared at the
+     * session-start sites, because that also covers the paths which never reach
+     * `onMultiplayerSessionEnded` at all — the early return when no workspace is
+     * loaded, and `launchLevel`'s teardown. One consequence worth knowing:
+     * pressing Cancel in the lobby bumps the generation too, so it discards a
+     * finished session's record. Harmless, and better than answering for the
+     * wrong session.
+     *
+     * Returns a plain object, never a `Map` — Playwright's serializer has no
+     * `Map` branch and would deliver `{}` silently across `page.evaluate`.
+     */
+    getLastSessionEnd: () => {
+      const record = lastMultiplayerSessionEnd;
+      if (!record || record.generation !== multiplayerConnectionGeneration) return null;
+      return { reason: record.reason, statuses: record.statuses };
+    },
     getPlayerDisplayName: (id) => activeMultiplayerSession?.getPlayerDisplayName(id) ?? null,
     getLootDrops: () => activeMultiplayerSession?.getLootDrops() ?? [],
     // Both added in step 8 (level transitions) — read-only introspection for
@@ -4468,7 +4541,8 @@ function loadDifficulty(): DifficultyLevel {
  * would no longer write).
  */
 function rollbacksDisabled(): boolean {
-  if (!isTestHooksActive()) return false;
+  // See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+  if (!TEST_HOOKS_BUILD_ENABLED || !isTestHooksActive()) return false;
   try {
     return localStorage.getItem(ROLLBACKS_DISABLED_KEY) === "1";
   } catch {

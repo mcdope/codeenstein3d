@@ -15,6 +15,8 @@
     "dev": "vite",
     "prebuild": "node scripts/fetch-online-wads.mjs",
     "build": "tsc && vite build",
+    "postbuild": "node scripts/check-bundle-hygiene.mjs",
+    "bundle:check": "node scripts/check-bundle-hygiene.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "verify:wad-parser": "node scripts/verify-wad-parser.mjs",

@@ -230,11 +230,31 @@ const FPS_UPDATE_INTERVAL = 0.5;
  * these exist purely for scripts/*.mjs and are never meant to reach a
  * production build at all. `import.meta.env.DEV` is a build-time constant
  * Vite substitutes per mode (`vite`/`npm run dev` → `true`, `vite build` →
- * `false`), so a `vite build` dead-code-eliminates every branch gated by
- * this, not just leaves the query param unrecognized — the hook code itself
- * never ships in `dist/`. All of this project's verify/balancing/perf
+ * `false`), so this function's *body* folds to `false` in a build.
+ *
+ * **That is not on its own enough to keep the hooks out of `dist/`, and
+ * assuming it was cost a month of shipping them.** A *call* to this function is
+ * not folded — the minifier would have to inline it across a module boundary,
+ * which esbuild happened to do and rolldown/oxc (Vite 8, here since 2026-07-26)
+ * does not. Between those dates every gated block shipped, inert but present.
+ * Call sites therefore gate on `TEST_HOOKS_BUILD_ENABLED` *as well*, which is a
+ * constant and does fold, and `scripts/check-bundle-hygiene.mjs` fails the
+ * build if a hook global reappears. All of this project's verify/balancing/perf
  * scripts drive a real `vite`/`npm run dev` server (never a built/`vite
  * preview` bundle), so this costs them nothing. */
+/**
+ * The build-time half of the test-hook gate, as a constant a bundler can fold.
+ *
+ * **Removing this term from a call site is what `check-bundle-hygiene` fails
+ * on** — see `scripts/check-bundle-hygiene.mjs`. It looks redundant next to
+ * `isTestHooksActive()` (which checks `import.meta.env.DEV` itself) and is not:
+ * a cross-module *function call* is not folded by the minifier, so gating on
+ * the call alone leaves the whole guarded block in the shipped bundle. Gating
+ * on this *constant* is, because Vite substitutes `import.meta.env.DEV` with a
+ * literal `false` before minification and `false && …` then collapses.
+ */
+export const TEST_HOOKS_BUILD_ENABLED = import.meta.env.DEV;
+
 export function isTestHooksActive(): boolean {
   return (
     import.meta.env.DEV &&
@@ -264,7 +284,8 @@ export function clampRotSpeedMultiplier(value: unknown): number {
  * playback.
  */
 export function resolveBotRotSpeedMultiplier(): number {
-  if (!isTestHooksActive()) return 1;
+  // See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+  if (!TEST_HOOKS_BUILD_ENABLED || !isTestHooksActive()) return 1;
   return clampRotSpeedMultiplier(new URLSearchParams(window.location.search).get("botRotSpeedMul"));
 }
 /**
@@ -283,7 +304,8 @@ export function resolveBotRotSpeedMultiplier(): number {
  * buffer records nothing can ever collect.
  */
 export function isEventLogActive(): boolean {
-  return isTestHooksActive() && new URLSearchParams(window.location.search).get("eventLog") === "1";
+  // See `TEST_HOOKS_BUILD_ENABLED` — the extra term is what makes this fold out of a build.
+  return TEST_HOOKS_BUILD_ENABLED && isTestHooksActive() && new URLSearchParams(window.location.search).get("eventLog") === "1";
 }
 /**
  * Measurement-only subsystem kill switches from `?ablate=a,b,c` — the
@@ -1708,7 +1730,7 @@ export class RaycasterEngine {
     // exclusive to this param. Every read below resolves through
     // `this.players.get(this.localPlayerId)!` (the local peer — the only one
     // a real bot/headless harness ever drives) rather than a bare `this.*`.
-    if (isTestHooksActive()) {
+    if (TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()) {
       (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks = {
         getPlayerState: () => {
           const p = this.players.get(this.localPlayerId)!;
@@ -1822,8 +1844,10 @@ export class RaycasterEngine {
         // under `scripts/lib/` calls these.
         //
         // Same inertness as every hook above — the whole object is behind
-        // `isTestHooksActive()`, which is `import.meta.env.DEV && …`, so Vite
-        // eliminates the entire block from a built bundle.
+        // `TEST_HOOKS_BUILD_ENABLED && isTestHooksActive()`, so Vite folds the
+        // entire block out of a built bundle. The first term is load-bearing:
+        // gating on the function call alone shipped this block for a month —
+        // see `TEST_HOOKS_BUILD_ENABLED`.
         debugSpawnDrop: (drop: { x: number; y: number; kind: LootKind; weaponIndex?: number }) => {
           this.drops.push({ ...drop });
         },
