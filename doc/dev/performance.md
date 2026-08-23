@@ -81,6 +81,17 @@ Both are live. **Do not read this as permission to start calling `ctx.fill()`**
 it. Anyone re-measuring should run the `fill` control first and only trust the
 run if it fires.
 
+**One real-play data point, added 2026-08-23**: the rotating automap was
+playtested by the user on their own machine and reported as *"works excellent,
+no noticeable frametime impact"*. That is subjective and is not a frame-time
+capture, so it does not settle the question above. It does bound it usefully in
+one direction, though — the penalty as documented is roughly **15 fps**, which
+is not a subtle thing to sit behind in play. So whatever the probe's failure
+means, a full coverage-pass penalty is not being paid by one rotated
+`drawImage` per frame in the shipped automap. Whether that is because the
+penalty no longer applies, or because one blit never triggered it where
+thousands of rotated quads would have, is still open.
+
 ## Gotchas (each cost the audit real time)
 
 - **Never pass `?testHooks=1` to a cell that should measure normal play** — it switches real telemetry recording on (`engine.ts`, `PLAYER_STATS_ENABLED ‖ testHooks`). Level readiness is detected from the `[perf] level:` console line instead. The bot cell (`s5`) can't avoid it; its numbers are labeled accordingly.
