@@ -109,22 +109,6 @@ export function buildIndexDom(): void {
             <option value="facing" selected>Rotate with you</option>
             <option value="north">Fixed (north up)</option>
           </select>
-          <div id="playtest-scales">
-            <label id="enemy-damage-scale-label" for="enemy-damage-scale-select">Enemy damage</label>
-            <select id="enemy-damage-scale-select" class="settings-select">
-              <option value="1" selected>1× (today)</option>
-              <option value="1.5">1.5×</option>
-              <option value="2">2×</option>
-              <option value="3">3×</option>
-            </select>
-            <label id="kill-heal-scale-label" for="kill-heal-scale-select">Heal per kill</label>
-            <select id="kill-heal-scale-select" class="settings-select">
-              <option value="1" selected>1× (today)</option>
-              <option value="0.67">0.67×</option>
-              <option value="0.5">0.5×</option>
-              <option value="0.33">0.33×</option>
-            </select>
-          </div>
           <label id="master-vol-label" for="master-vol">Master Volume</label>
           <input id="master-vol" class="volume-slider" type="range" min="0" max="100" value="50" />
           <label id="sfx-vol-label" for="sfx-vol">SFX Volume</label>

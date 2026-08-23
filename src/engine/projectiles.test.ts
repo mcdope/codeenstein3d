@@ -74,7 +74,7 @@ describe("spawnProjectile", () => {
     // Unit vector (0.6,0.8) * PROJECTILE_SPEED(5) = (3,4).
     expect(list[0].vx).toBeCloseTo(3);
     expect(list[0].vy).toBeCloseTo(4);
-    expect(list[0].damage).toBe(8);
+    expect(list[0].damage).toBe(12);
     expect(list[0].targetId).toBe("p1");
   });
 
@@ -84,7 +84,7 @@ describe("spawnProjectile", () => {
     // multiplayer's player-count Elite scaling.
     const list: Projectile[] = [];
     spawnProjectile(list, 0, 0, 1, 0, "p1", ENEMY_WEAPONS.normal, 2);
-    expect(list[0].damage).toBe(16);
+    expect(list[0].damage).toBe(24);
   });
 
   it("takes speed, damage and collision size from the archetype's weapon", () => {

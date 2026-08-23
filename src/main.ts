@@ -46,14 +46,6 @@ import {
   UNLOCKABLE_WEAPONS,
 } from "./engine/weapons";
 import { DEFAULT_DIFFICULTY, ROLLBACKS_BY_DIFFICULTY, type DifficultyLevel } from "./difficulty";
-// Temporary — see `playtestScales.ts`'s header. Goes when the experiment does.
-import {
-  DEFAULT_PLAYTEST_SCALES,
-  ENEMY_DAMAGE_SCALES,
-  KILL_HEAL_SCALES,
-  parsePlaytestScale,
-  type PlaytestScales,
-} from "./playtestScales";
 import { migrateStorage } from "./storageSchema";
 import { isAutomated } from "./automation";
 import { createIntroTour, DEFAULT_TOUR_STEPS } from "./ui/introTour";
@@ -220,12 +212,6 @@ const DIFFICULTY_KEY = "codeenstein-difficulty";
  * it. Not a player-facing setting — nothing in the UI writes it, and it is
  * only ever read under `isTestHooksActive()`. */
 const ROLLBACKS_DISABLED_KEY = "codeenstein-rollbacks-disabled";
-/** Temporary — see `playtestScales.ts`. Same "declared up here" reasoning as
- * the keys around them. Only ever read or written in a dev build; a production
- * bundle ignores both, so a hand-written key cannot talk it into a scaled run
- * (the same rule `ROLLBACKS_DISABLED_KEY` follows for its own reason). */
-const ENEMY_DAMAGE_SCALE_KEY = "codeenstein-playtest-enemy-damage-scale";
-const KILL_HEAL_SCALE_KEY = "codeenstein-playtest-kill-heal-scale";
 /** localStorage keys for the three standing volume preferences — same
  * "declared up here" reasoning as `GORE_KEY`/`DIFFICULTY_KEY` above. */
 const MASTER_VOLUME_KEY = "codeenstein-master-volume";
@@ -289,12 +275,6 @@ const difficultySelect = requireElement<HTMLSelectElement>("#difficulty-select")
 const difficultyLabel = requireElement<HTMLLabelElement>("#difficulty-label");
 const renderQualitySelect = requireElement<HTMLSelectElement>("#render-quality-select");
 const automapRotateSelect = requireElement<HTMLSelectElement>("#automap-rotate-select");
-/** Temporary — see `playtestScales.ts`. The wrapper exists purely so the whole
- * block (divider, heading, both rows, the caveat paragraph) hides behind one
- * `hidden` toggle rather than five. */
-const playtestScalesSection = requireElement<HTMLDivElement>("#playtest-scales");
-const enemyDamageScaleSelect = requireElement<HTMLSelectElement>("#enemy-damage-scale-select");
-const killHealScaleSelect = requireElement<HTMLSelectElement>("#kill-heal-scale-select");
 const masterVolumeInput = requireElement<HTMLInputElement>("#master-vol");
 const sfxVolumeInput = requireElement<HTMLInputElement>("#sfx-vol");
 const bgmVolumeInput = requireElement<HTMLInputElement>("#bgm-vol");
@@ -1275,42 +1255,6 @@ difficultySelect.addEventListener("change", () => {
   currentDifficulty = difficultySelect.value as DifficultyLevel;
   saveDifficulty(currentDifficulty);
 });
-
-/**
- * The two temporary playtest knobs — see `playtestScales.ts`.
- *
- * Same "standing preference" shape as gore/difficulty above, with two
- * deliberate departures. There is no `setDifficultyLocked` equivalent: the
- * reason difficulty locks is that a score is only comparable if the tier held
- * for the whole run, and a scaled run posts no score at all, so there is
- * nothing to protect and switching mid-session is the entire point. And the
- * whole block is hidden outside a dev build — `import.meta.env.DEV` is false in
- * *any* `vite build`, including `--mode development`, so this genuinely only
- * exists on the dev server.
- */
-let currentPlaytestScales: PlaytestScales = loadPlaytestScales();
-
-playtestScalesSection.hidden = !import.meta.env.DEV;
-enemyDamageScaleSelect.value = String(currentPlaytestScales.enemyDamage);
-killHealScaleSelect.value = String(currentPlaytestScales.killHeal);
-enemyDamageScaleSelect.addEventListener("change", () => {
-  currentPlaytestScales = { ...currentPlaytestScales, enemyDamage: Number(enemyDamageScaleSelect.value) };
-  savePlaytestScale(ENEMY_DAMAGE_SCALE_KEY, currentPlaytestScales.enemyDamage);
-});
-killHealScaleSelect.addEventListener("change", () => {
-  currentPlaytestScales = { ...currentPlaytestScales, killHeal: Number(killHealScaleSelect.value) };
-  savePlaytestScale(KILL_HEAL_SCALE_KEY, currentPlaytestScales.killHeal);
-});
-
-/** Whether either knob is off identity — i.e. whether this run is being played
- * on something other than the shipped balance, and therefore must not reach the
- * highscore board (see `recordRunHighscore`). */
-function playtestScalesActive(): boolean {
-  return (
-    currentPlaytestScales.enemyDamage !== DEFAULT_PLAYTEST_SCALES.enemyDamage ||
-    currentPlaytestScales.killHeal !== DEFAULT_PLAYTEST_SCALES.killHeal
-  );
-}
 
 /**
  * Lock or unlock the difficulty picker for the lifetime of a run.
@@ -3693,11 +3637,6 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
     undefined,
     undefined,
     rollbacksRemaining,
-    // Temporary — see `playtestScales.ts`. Passed here and *only* here: replay
-    // playback (`buildEngineFor`) must reproduce the shipped balance, and it
-    // never plays back a scaled run anyway because such a run posts no score
-    // and therefore stores no replay.
-    currentPlaytestScales,
   );
   // Standing preference, applied from this level's first frame rather than
   // only when the select is next touched.
@@ -4510,56 +4449,6 @@ function loadDifficulty(): DifficultyLevel {
 }
 
 /**
- * Read both temporary playtest knobs back — see `playtestScales.ts`.
- *
- * **Returns identity outright unless this is a dev build.** The `<select>`s are
- * hidden in a built bundle, but hiding a control is not the same as disabling
- * the behaviour behind it: without this guard a hand-written localStorage key
- * would silently rescale a shipped game. Exactly the reasoning
- * `rollbacksDisabled()` below applies to its own key.
- *
- * `parsePlaytestScale` validates against the ladders rather than a range, so a
- * value left over from an earlier set of candidates falls back to identity
- * instead of being played — same "storage is not a trusted source" rule as the
- * loaders around it.
- */
-function loadPlaytestScales(): PlaytestScales {
-  // Unreachable from a test, and not for the usual "hard to set up" reason:
-  // `import.meta.env.DEV` is substituted at build time, not read at runtime, so
-  // under vitest it is the literal `true` and this branch does not exist in the
-  // compiled test module at all. Naming what the check *cannot* see: nothing
-  // here proves a production bundle returns identity — what does is that the
-  // condition is `import.meta.env.DEV` and nothing else, so there is no state a
-  // shipped build could be in that reaches the body below.
-  /* v8 ignore next -- @preserve */
-  if (!import.meta.env.DEV) return DEFAULT_PLAYTEST_SCALES;
-  try {
-    return {
-      enemyDamage:
-        parsePlaytestScale(localStorage.getItem(ENEMY_DAMAGE_SCALE_KEY), ENEMY_DAMAGE_SCALES) ??
-        DEFAULT_PLAYTEST_SCALES.enemyDamage,
-      killHeal:
-        parsePlaytestScale(localStorage.getItem(KILL_HEAL_SCALE_KEY), KILL_HEAL_SCALES) ??
-        DEFAULT_PLAYTEST_SCALES.killHeal,
-    };
-  } catch {
-    // Fall through to identity.
-  }
-  return DEFAULT_PLAYTEST_SCALES;
-}
-
-/** Persist one playtest knob — same warn-instead-of-throw shape as
- * `saveDifficulty`, since a private-mode storage failure must not take the
- * settings panel down with it. */
-function savePlaytestScale(key: string, scale: number): void {
-  try {
-    localStorage.setItem(key, String(scale));
-  } catch (err) {
-    console.warn("[settings] Failed to save playtest scale:", err);
-  }
-}
-
-/**
  * Whether rollbacks are suppressed for this page load.
  *
  * Harness-only, and gated on `isTestHooksActive()` (DEV **and**
@@ -4670,19 +4559,6 @@ async function recordRunHighscore(
   if (cheatsUsed) {
     console.log(
       "%c[highscores] Cheats were used this run — not recording a leaderboard entry.",
-      "color:#e0483a",
-    );
-    return;
-  }
-  // Temporary — see `playtestScales.ts`. A sibling guard rather than folding
-  // into `cheatsUsed`: that flag also stamps the HUD warning and adds a line to
-  // the Kernel Panic screen, and a playtest is judging exactly those screens,
-  // so it wants them looking normal. Refusing the entry also refuses the
-  // replay it would have carried, which is what keeps a run played at a scaled
-  // balance from ever being played back at the shipped one.
-  if (playtestScalesActive()) {
-    console.log(
-      "%c[highscores] Playtest damage/heal scales are active — not recording a leaderboard entry.",
       "color:#e0483a",
     );
     return;

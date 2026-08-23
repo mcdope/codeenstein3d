@@ -136,8 +136,14 @@ describe("computeBalanceHash", () => {
 
 describe("balanceHashMatches", () => {
   it("accepts a run recorded before the guard existed", () => {
-    // Deliberate: the shipped defaultHighscore.ts has no hashes yet, and
-    // refusing them would break "Watch Replay" for every first-time visitor.
+    // Deliberate, and note the reason has changed since this was written:
+    // the shipped defaultHighscore.ts *does* carry a balanceHash per level
+    // now (it has since it was first regenerated), so this leniency no longer
+    // protects the bundled board — a stale shipped hash is refused by
+    // `simulationHashMatches` on the strict path regardless. What it still
+    // protects is a *player's own* run recorded before the guard existed,
+    // whose replay has no hash at all; refusing those would silently delete
+    // "Watch Replay" from their history.
     expect(balanceHashMatches(undefined, "anything")).toBe(true);
   });
 

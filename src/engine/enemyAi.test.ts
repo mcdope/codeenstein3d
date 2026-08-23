@@ -240,7 +240,7 @@ describe("updateEnemies", () => {
     player.posY = 5;
     const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0 });
     const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player));
-    expect(damage.get("p1") ?? 0).toBe(10);
+    expect(damage.get("p1") ?? 0).toBe(15);
     expect(e.attackCooldown).toBe(0.8);
   });
 
@@ -261,7 +261,7 @@ describe("updateEnemies", () => {
     player.posY = 5;
     const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0, elite: true });
     const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player));
-    expect(damage.get("p1") ?? 0).toBe(20);
+    expect(damage.get("p1") ?? 0).toBe(30);
   });
 
   it("scales an Elite's melee damage further by the multiplayer eliteDamageScale param, on top of its own double-damage base", () => {
@@ -272,7 +272,7 @@ describe("updateEnemies", () => {
     const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0, elite: true });
     // aimSpreadDeg defaults to 0 (this test doesn't care about it); eliteDamageScale is the 11th positional arg.
     const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player), undefined, undefined, 0, 1.5);
-    expect(damage.get("p1") ?? 0).toBe(30); // ATTACK_DAMAGE(10) * ELITE_DAMAGE_MULTIPLIER(2) * 1.5
+    expect(damage.get("p1") ?? 0).toBe(45); // ATTACK_DAMAGE(15) * ELITE_DAMAGE_MULTIPLIER(2) * 1.5
   });
 
   it("leaves a non-Elite's melee damage untouched by eliteDamageScale", () => {
@@ -282,7 +282,7 @@ describe("updateEnemies", () => {
     player.posY = 5;
     const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0 });
     const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player), undefined, undefined, 0, 2);
-    expect(damage.get("p1") ?? 0).toBe(10);
+    expect(damage.get("p1") ?? 0).toBe(15);
   });
 
   it("scales an Elite's ranged bolt damage by eliteDamageScale too", () => {
@@ -294,14 +294,14 @@ describe("updateEnemies", () => {
     const projectiles: Projectile[] = [];
     updateEnemies([e], targetsFor(player), map, 0.016, projectiles, pathFieldsFor(map, player), () => 0.5, undefined, 0, 1.5);
     expect(projectiles).toHaveLength(1);
-    // ENEMY_WEAPONS.elite.damage(32) * 1.5. Was 24 — PROJECTILE_DAMAGE(8) *
+    // ENEMY_WEAPONS.elite.damage(48) * 1.5. Was 36 — PROJECTILE_DAMAGE(12) *
     // ELITE_DAMAGE_MULTIPLIER(2) * 1.5 — before the weapon table, which gave
     // the Elite twice the damage on twice the cooldown. Its mean DPS is
     // unchanged (see enemyWeapons.test.ts); the per-bolt figure is not, and
     // that is the point of the change.
     expect(projectiles[0].damage).toBe(ENEMY_WEAPONS.elite.damage * 1.5);
-    expect(projectiles[0].damage).toBe(48);
-    // The archetype ladder must not be applied twice — 8 * 2 * 2 * 1.5 = 48
+    expect(projectiles[0].damage).toBe(72);
+    // The archetype ladder must not be applied twice — 12 * 2 * 2 * 1.5 = 72
     // by coincidence of the doubling, so pin the weapon it actually fired.
     expect(projectiles[0].archetype).toBe("elite");
     expect(e.fireCooldown).toBeGreaterThanOrEqual(ENEMY_WEAPONS.elite.cooldownMin);
@@ -332,7 +332,7 @@ describe("updateEnemies", () => {
     player.posY = 5;
     const e = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0, edgeCase: true });
     const damage = updateEnemies([e], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player));
-    expect(damage.get("p1") ?? 0).toBe(4);
+    expect(damage.get("p1") ?? 0).toBe(6);
   });
 
   it("fires a ranged bolt at a visible target within range, and sets a new cooldown", () => {
@@ -363,7 +363,7 @@ describe("updateEnemies", () => {
     // the `levelStart` roster uses), who it bit, and the pre-difficulty
     // amount. Asserted in full rather than loosely, since attribution being
     // silently wrong is exactly the failure `damageTaken.by` exists to avoid.
-    expect(onMeleeAttack).toHaveBeenCalledWith(e, 0, "p1", 10); // ATTACK_DAMAGE, no elite multiplier
+    expect(onMeleeAttack).toHaveBeenCalledWith(e, 0, "p1", 15); // ATTACK_DAMAGE, no elite multiplier
     expect(onRangedFire).not.toHaveBeenCalled();
   });
 
@@ -458,7 +458,7 @@ describe("updateEnemies", () => {
     const a = enemy({ x: 5, y: 5, aggroed: true, attackCooldown: 0 });
     const b = enemy({ x: 5, y: 5.1, aggroed: true, attackCooldown: 0 });
     const damage = updateEnemies([a, b], targetsFor(player), map, 0.016, [], pathFieldsFor(map, player));
-    expect(damage.get("p1") ?? 0).toBe(20);
+    expect(damage.get("p1") ?? 0).toBe(30);
   });
 
   it("falls back to straight-line steering when the player's tile is outside the pathing window", () => {

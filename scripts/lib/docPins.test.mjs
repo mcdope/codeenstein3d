@@ -52,6 +52,7 @@ import { describe, expect, it } from "vitest";
 import { DIFFICULTY_MULTIPLIERS, ROLLBACKS_BY_DIFFICULTY } from "../../src/difficulty";
 import { AMMO_META, AMMO_TYPES, STARTING_SHELLS } from "../../src/engine/ammo";
 import {
+  ATTACK_DAMAGE,
   EDGE_CASE_DAMAGE_MULTIPLIER,
   ELITE_DAMAGE_MULTIPLIER,
   ENEMY_WEAPONS,
@@ -294,8 +295,34 @@ describe("developer docs — the reference tables a change has to move with it",
     const dmg = (a) => ENEMY_WEAPONS[a].damage;
     expect(dmg("elite")).toBe(PROJECTILE_DAMAGE * 2 * ELITE_DAMAGE_MULTIPLIER);
     expect(dmg("edgeCase")).toBe(PROJECTILE_DAMAGE * 0.5 * EDGE_CASE_DAMAGE_MULTIPLIER);
-    pin("doc/dev/balancing-telemetry.md", `| Bolt dmg | ${dmg("normal")} | **${dmg("elite")}** | **${dmg("edgeCase")}** |`);
+    // Rounded for the doc, and only for the doc. Since `PROJECTILE_DAMAGE`
+    // went 8 -> 12 the Edge Case bolt is `12 * 0.5 * 0.4`, which in binary
+    // floating point is 2.4000000000000004 rather than 2.4 — the old 8 was
+    // exact by luck. That last bit is **load-bearing and must not be
+    // "fixed"**: writing the value as `PROJECTILE_DAMAGE / 5` gives an exact
+    // 2.4 whose `damage / meanCooldown` then lands one ULP away from
+    // `PROJECTILE_DAMAGE * multiplier / 1.9`, breaking `enemyWeapons.test.ts`'s
+    // exact-equality DPS invariant. So the constant keeps its noise and the
+    // prose keeps its readable number; the two assertions above are what tie
+    // the doc's figure to the real one.
+    const shown = (a) => Number(dmg(a).toFixed(4));
+    pin("doc/dev/balancing-telemetry.md", `| Bolt dmg | ${shown("normal")} | **${shown("elite")}** | **${shown("edgeCase")}** |`);
     pin("doc/dev/balancing-telemetry.md", `| Bolt speed | ${ENEMY_WEAPONS.normal.speed} | **${ENEMY_WEAPONS.elite.speed}** | **${ENEMY_WEAPONS.edgeCase.speed}** |`);
+  });
+
+  it("states the balance reference's archetype melee damage per archetype", () => {
+    // The row directly above the bolt one, and unpinned until 2026-08-23 —
+    // when `ATTACK_DAMAGE` went 10 -> 15 it went stale in silence while its
+    // pinned neighbour failed loudly. Same table, same failure mode, so it
+    // gets the same guard. Melee is the one place the archetype multipliers
+    // are still applied at the call site (`damageMultiplier` in `enemyAi.ts`)
+    // rather than baked into a weapon, which is why this is arithmetic here
+    // and a table lookup above.
+    const melee = (mult) => ATTACK_DAMAGE * mult;
+    pin(
+      "doc/dev/balancing-telemetry.md",
+      `| Melee dmg | ${melee(1)} | ${melee(ELITE_DAMAGE_MULTIPLIER)} | ${melee(EDGE_CASE_DAMAGE_MULTIPLIER)} |`,
+    );
   });
 
   it("states the balance reference's starting reserves and shell drops", () => {

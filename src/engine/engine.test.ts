@@ -27,8 +27,6 @@ import { EMPTY_SNAPSHOT } from "./replay";
 import { COUNTDOWN_TICKS } from "./transitionConstants";
 import { HURT_FACE_FRAMES } from "./hudFace";
 import { GDB_WEAPON_INDEX, GHIDRA_WEAPON_INDEX } from "./weapons";
-// Temporary — see `playtestScales.ts`.
-import { ENEMY_DAMAGE_SCALES, KILL_HEAL_SCALES, type PlaytestScales } from "../playtestScales";
 
 // engine.ts imports a real *value* (`textures`) from textures.ts, whose
 // module-level `TextureManager` singleton calls `document.createElement`
@@ -289,8 +287,6 @@ function makeEngine(
     playerCount?: number;
     rotSpeedMultiplier?: number;
     rollbacksRemaining?: number;
-    /** Temporary — see `playtestScales.ts`. */
-    playtestScales?: PlaytestScales;
   } = {},
 ): { engine: InstanceType<typeof RaycasterEngine>; input: ScriptedInput; handlers: ReturnType<typeof makeHandlers> } {
   const canvas = makeCanvas();
@@ -311,7 +307,6 @@ function makeEngine(
     opts.rotSpeedMultiplier,
     undefined,
     opts.rollbacksRemaining,
-    opts.playtestScales,
   );
   return { engine, input, handlers };
 }
@@ -7071,171 +7066,4 @@ describe("RaycasterEngine — telemetry ablated (?ablate=telemetry)", () => {
       Object.defineProperty(window, "location", { value: original, configurable: true });
     }
   }, 20_000);
-});
-
-/**
- * **Temporary — delete alongside `playtestScales.ts`.**
- *
- * Both knobs are asserted at *every* listed value rather than at one
- * representative, because the ladders are what the playtest is choosing
- * between: a value that silently does not apply would look like a legitimate
- * "that felt the same" result. Melee and bolts are asserted separately for the
- * same reason — they are two distinct call sites, and wiring one is the obvious
- * way to get this half-right.
- */
-describe("playtest scales", () => {
-  /** Same `?testHooks=1&eventLog=1` shape the balancing-event-log block uses;
-   * duplicated rather than hoisted so this whole block can be cut in one go. */
-  function withEventLog(body: (getHooks: () => Record<string, (...args: unknown[]) => unknown>) => void): void {
-    const original = window.location;
-    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1&eventLog=1" }, configurable: true });
-    try {
-      body(() => (window as unknown as { __codeensteinTestHooks: Record<string, (...args: unknown[]) => unknown> }).__codeensteinTestHooks);
-    } finally {
-      Object.defineProperty(window, "location", { value: original, configurable: true });
-      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
-    }
-  }
-
-  type LoggedEvent = { e: string; [k: string]: unknown };
-
-  function damageEvents(getHooks: () => Record<string, (...args: unknown[]) => unknown>, src: string): LoggedEvent[] {
-    const { events } = getHooks().drainEvents() as { events: LoggedEvent[] };
-    return events.filter((e) => e.e === "damageTaken" && e.src === src);
-  }
-
-  it.each(ENEMY_DAMAGE_SCALES)("scales an enemy's melee bite by %s", (enemyDamage) => {
-    withEventLog((getHooks) => {
-      // Well inside ATTACK_RADIUS (0.5) of the 5.5,5.5 spawn, aggroed and off
-      // cooldown, so the very first AI step bites.
-      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.7, y: 5.5, aggroed: true, discovered: true, attackCooldown: 0 })] });
-      const { engine } = makeEngine(map, makeHandlers(), { difficulty: "normal", playtestScales: { enemyDamage, killHeal: 1 } });
-      engine.simulate(0.016);
-
-      const bites = damageEvents(getHooks, "enemyMelee");
-      expect(bites, "an adjacent aggroed enemy must land a bite").toHaveLength(1);
-      expect(bites[0].amt).toBeCloseTo(10 * enemyDamage, 5); // ATTACK_DAMAGE
-    });
-  });
-
-  it.each(ENEMY_DAMAGE_SCALES)("scales an enemy's bolt by %s, on top of the difficulty tier", (enemyDamage) => {
-    withEventLog((getHooks) => {
-      // Hard rather than normal for two reasons: its 0-degree aim spread makes
-      // the hit deterministic instead of flaky, and its own 1.5x damage factor
-      // is what makes this a *composition* check — a knob that replaced the
-      // difficulty multiplier instead of multiplying with it would still pass
-      // an identity-difficulty test.
-      const map = fakeMap({ enemies: [fakeEnemy({ x: 5.5, y: 10.5, aggroed: true, discovered: true, fireCooldown: 0 })] });
-      const { engine } = makeEngine(map, makeHandlers(), { difficulty: "hard", seed: 7, playtestScales: { enemyDamage, killHeal: 1 } });
-      // The bolt covers ~5 tiles at PROJECTILE_SPEED (5); the enemy chases at
-      // 1.7 tiles/sec and cannot reach melee inside this window, so nothing
-      // else can contribute to the figure asserted below.
-      for (let i = 0; i < 120; i++) engine.simulate(0.016);
-
-      const hits = damageEvents(getHooks, "enemyRanged");
-      expect(hits.length, "an aggroed enemy in the ranged band must land a bolt").toBeGreaterThan(0);
-      expect(hits[0].amt).toBeCloseTo(8 * 1.5 * enemyDamage, 5); // PROJECTILE_DAMAGE x hard.damage
-    });
-  });
-
-  it("leaves hazard damage alone at the highest enemy-damage scale", () => {
-    // The scope claim in `PlaytestScales.enemyDamage`'s doc comment, and the
-    // one thing a "multiply everything that hurts the player" mistake would
-    // break invisibly — environmental damage runs 5-30% of a run's total
-    // depending on the repository, so folding it in would move the number the
-    // playtest is reading without ever being visible in the roster.
-    const readHazardAmt = (enemyDamage: number): number => {
-      let amt = 0;
-      withEventLog((getHooks) => {
-        const size = 12;
-        const g = walledRoom(size);
-        g[5][5] = 2; // HAZARD_TILE under the spawn
-        const map = fakeMap({ grid: g, hazards: [{ x: 5, y: 5 }] }, size);
-        const { engine } = makeEngine(map, makeHandlers(), { difficulty: "normal", playtestScales: { enemyDamage, killHeal: 1 } });
-        engine.simulate(0.5);
-        const hits = damageEvents(getHooks, "hazard");
-        expect(hits.length, "standing in acid must hurt").toBeGreaterThan(0);
-        amt = hits[0].amt as number;
-      });
-      return amt;
-    };
-    expect(readHazardAmt(3)).toBe(readHazardAmt(1));
-  });
-
-  /** The health a kill's drop was actually worth, read back off the telemetry
-   * `pushLootDrop` writes — which is also the assertion that scaling before
-   * that write keeps `lootRolled` honest rather than reporting the unscaled
-   * figure. */
-  function healthDroppedByKilling(enemy: Enemy, killHeal: number): number {
-    const original = window.location;
-    Object.defineProperty(window, "location", { value: { ...original, search: "?testHooks=1" }, configurable: true });
-    try {
-      const { engine, input } = makeEngine(fakeMap({ enemies: [enemy] }), makeHandlers(), {
-        // Below MAX_HEALTH, or the guaranteed heal is skipped entirely and
-        // both arms would read 0 — a broken experiment, not a null.
-        carryover: { health: 50, swap: 0, bullets: 999, rockets: 0, smg: 0, gas: 0 },
-        seed: 42,
-        playtestScales: { enemyDamage: 1, killHeal },
-      });
-      input.fireQueued = true;
-      engine.advance(0.016);
-      const hooks = (window as unknown as { __codeensteinTestHooks?: Record<string, () => unknown> }).__codeensteinTestHooks;
-      const snapshot = hooks!.getTelemetrySnapshot() as { lootRolled: Record<string, number> };
-      return snapshot.lootRolled.health ?? 0;
-    } finally {
-      Object.defineProperty(window, "location", { value: original, configurable: true });
-      delete (window as unknown as { __codeensteinTestHooks?: unknown }).__codeensteinTestHooks;
-    }
-  }
-
-  it.each(KILL_HEAL_SCALES)("scales a regular kill's guaranteed heal by %s", (killHeal) => {
-    // maxHp 100 makes the base grant exactly HEALTH_DROP_AMOUNT (20) — see
-    // HEALTH_SCALE_REFERENCE_HP — while hp 1 lets one pistol round finish it.
-    const dropped = healthDroppedByKilling(fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100 }), killHeal);
-    expect(dropped).toBe(Math.max(1, Math.round(20 * killHeal)));
-  });
-
-  it.each(KILL_HEAL_SCALES)("scales an Elite's health pack by %s", (killHeal) => {
-    // The second heal source, and the reason the scale lives in
-    // `pushLootDrop` rather than next to the regular-kill grant:
-    // `dropEliteLoot` never touches that code and would otherwise stay
-    // unscaled, leaving exactly the enemy whose drop matters most at 1x.
-    const dropped = healthDroppedByKilling(fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100, elite: true }), killHeal);
-    expect(dropped).toBe(Math.max(1, Math.round(50 * killHeal))); // ELITE_HEALTH_DROP_AMOUNT
-  });
-
-  it("never lets a scaled-down heal reach zero", () => {
-    // The `Math.max(1, ...)` in `pushLootDrop`, which stops a scaled-down drop
-    // from becoming a zero-value pickup sitting on the floor — worse than no
-    // pickup, because the player still walks over to it.
-    //
-    // **0.02 deliberately, and it is not on the ladder.** The obvious version
-    // of this test — a tiny enemy at the ladder's own 0.33x — cannot fail: a
-    // 5 HP body's grant is already floored to 1 by the *caller*, so deleting
-    // every line of scaling would still produce 1 and the test would stay
-    // green while proving nothing. Picking a scale steep enough that a real
-    // 20-point grant rounds to 0 is what makes the floor here, rather than the
-    // caller's, the thing under test.
-    expect(Math.round(20 * 0.02), "the arithmetic the floor is protecting against").toBe(0);
-    const dropped = healthDroppedByKilling(fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100 }), 0.02);
-    expect(dropped).toBe(1);
-  });
-
-  it("changes nothing at identity, on either axis", () => {
-    // The default every non-`main.ts` caller gets. Asserted against an engine
-    // built with no scales argument at all, so "identity" is pinned to the
-    // constructor default rather than to a value this block supplies.
-    const bite = (playtestScales?: PlaytestScales): number => {
-      let amt = 0;
-      withEventLog((getHooks) => {
-        const map = fakeMap({ enemies: [fakeEnemy({ x: 5.7, y: 5.5, aggroed: true, discovered: true, attackCooldown: 0 })] });
-        const { engine } = makeEngine(map, makeHandlers(), { difficulty: "normal", playtestScales });
-        engine.simulate(0.016);
-        amt = damageEvents(getHooks, "enemyMelee")[0].amt as number;
-      });
-      return amt;
-    };
-    expect(bite({ enemyDamage: 1, killHeal: 1 })).toBe(bite(undefined));
-    expect(healthDroppedByKilling(fakeEnemy({ x: 5.9, y: 5.5, hp: 1, maxHp: 100 }), 1)).toBe(20);
-  });
 });

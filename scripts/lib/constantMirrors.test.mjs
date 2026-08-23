@@ -160,7 +160,7 @@ describe("archetype damage multipliers the bot reasons about", () => {
     // alongside the speeds that are mirrored.
     expect(ELITE_DAMAGE_MULTIPLIER).toBe(2);
     expect(EDGE_CASE_DAMAGE_MULTIPLIER).toBe(0.4);
-    expect(ATTACK_DAMAGE).toBe(10);
+    expect(ATTACK_DAMAGE).toBe(15);
   });
 });
 
