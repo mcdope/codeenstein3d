@@ -532,7 +532,7 @@ What runs today:
 
 | Command | What it does |
 |---|---|
-| `npm run balancing:budget` | Solve a campaign's budget offline — no browser, no bot. Six flags: `--dir <path>` (default `demo-campaign`), `--difficulty <d>`, `--all-difficulties`, `--json <path>`, `--max-levels <n>`, `--kill-rate <n>`. **It has no `--help`** — passing one is an `unknown argument` error. Exits non-zero on an enemy that outlasts every round on its level. |
+| `npm run balancing:budget` | Solve a campaign's budget offline — no browser, no bot. Nine flags: `--dir <path>` (default `demo-campaign`), `--difficulty <d>`, `--all-difficulties`, `--json <path>`, `--max-levels <n>`, `--kill-rate <n>`, `--carryover-cap <n>`, `--hp-scaled-drops`, `--hp-scaled-health`. **It has no `--help`** — passing one is an `unknown argument` error. Exits non-zero on an enemy that outlasts every round on its level. |
 | `npm run balancing:corpus` | Fetch the pinned corpus of real repositories to solve against. |
 | `npm run balancing:events` | Turn a raw event log into a markdown report. |
 | `CODEENSTEIN_TELEMETRY_EVENT_LOG=<dir>` | Turn on raw event recording for a telemetry run. Off by default. |
@@ -602,11 +602,17 @@ reader does not attribute it to the event log:
 | Full `this.enemies` scan for `peakAggroedCount` / `combatTimeSec` | `engine.ts` |
 | Two `Object.values(...).reduce(...)` over `weaponTallies` in `buildStats()`, which runs once per rendered frame | `engine.ts`, called from `render()` |
 
-`PLAYER_STATS_ENABLED`'s own doc comment (`playerStats.ts`) records that
-recording on every real playthrough "measurably slowed gameplay down", and that
-the ~20 `record*` call sites were the remaining cost after the derived stats were
-already gated to level-end. That is the strongest available evidence that this path
-must not widen, and it is why §3 adds no per-frame work whatsoever.
+`PLAYER_STATS_ENABLED`'s own doc comment (`playerStats.ts`) used to record that
+recording on every real playthrough "measurably slowed gameplay down". **That claim was
+retracted at the source on 2026-08-23**: no number was ever taken for it, and two A/Bs
+since have failed to reproduce a cost — most recently +0.025ms busy against a 0.16ms
+calibrated floor, with the level-end derivation itself at 0.00027ms. The flag ships
+`true`.
+
+The list above is therefore a cost inventory rather than evidence of a measured problem.
+It is still the reason §3 adds no per-frame work whatsoever: the path is cheap *because*
+nobody has widened it, and the ~20 `record*` call sites are what a widening would
+multiply.
 
 ### 1.2 Balance constants
 
@@ -642,10 +648,11 @@ the reserve and the magazine — nothing is ever lost, so the pools below still 
 total output exactly as they did. A weapon with no `magazineSize` never reloads and
 never blocks its own trigger (`updateFiring` treats "no magazine" and "magazine full"
 identically). **Switching weapons is still instant** (`consumeWeaponRequest` → `equip`,
-no draw timer) and **cancels a reload in progress**. **Ammo still has no upper cap** —
-`engine.ts` states it outright; only the IDKFA cheat's `CHEAT_MAX_AMMO = 999` bounds
-anything, which is why the status bar's ammo table shows one number per row rather
-than current/max.
+no draw timer) and **cancels a reload in progress**. **Nothing caps a pool while a level is being played** —
+only the IDKFA cheat's `CHEAT_MAX_AMMO = 999` bounds anything mid-level, which is why
+the status bar's ammo table shows one number per row rather than current/max. There is
+one ceiling, and it applies only at the moment of *entering* a level: see
+`CARRYOVER_CAP_MULTIPLE` below.
 
 **Hitscan weapons have no damage falloff.** Damage is flat per pellet at any range.
 What falls off is *accuracy* — the Cone of Fire (`fire()` in `engine.ts`):
@@ -684,10 +691,19 @@ and `+10` add more — so the real starting ratio lands closer to 2.3–2.4× fo
 typical roster, not 1.7×. That is worth knowing before reading any level-1 economy
 number as evidence of anything.
 
-From level 2 on, carryover overrides starting ammo entirely (`EngineCarryover`,
-applied in the `RaycasterEngine` constructor), so the economy is a **campaign running balance**, not a
-per-level independent quantity. The solver must model it that way or every level
-after the first will read as far poorer than it plays.
+From level 2 on, carryover replaces starting ammo (`EngineCarryover`, applied in the
+`RaycasterEngine` constructor), so the economy is a **campaign running balance**, not a
+per-level independent quantity. The solver must model it that way or every level after
+the first will read as far poorer than it plays.
+
+**It no longer overrides it entirely, though** (`d299509`, 2026-08-21). Each pool is
+clamped on entry: `Math.min(carryover[pool], startingAmmo[pool] * CARRYOVER_CAP_MULTIPLE)`
+with `CARRYOVER_CAP_MULTIPLE = 3` (`ammo.ts`), applied at `engine.ts`'s constructor. Two
+consequences for the solver. `startingAmmo` is now load-bearing on **every** level rather
+than only the first — the ceiling is derived from it, so a level whose fresh-start
+formula is small also has a small ceiling. And a pool the level cannot supply fresh
+(rockets before ghidra is owned) is capped against its own flat reserve rather than
+against zero. `--carryover-cap <n>` models it offline.
 
 #### Enemy archetypes
 
@@ -754,11 +770,18 @@ self-splash at full strength.
 
 #### Difficulty — `DIFFICULTY_MULTIPLIERS` in `src/difficulty.ts`
 
-| | `hp` | `damage` | `ammoDropRate` | `enemyAimSpreadDeg` |
-|---|---|---|---|---|
-| easy | 0.7 | 0.85 | 1.3 | 10° |
-| normal | 1 | 1 | 1 | 4° |
-| hard | 1.5 | 1.5 | 0.7 | 0° |
+| | `hp` | `damage` | `ammoDropRate` | `enemyAimSpreadDeg` | rollbacks |
+|---|---|---|---|---|---|
+| easy | 0.7 | 0.85 | 1.3 | 10° | 2 |
+| normal | 1 | 1 | 1 | 4° | 1 |
+| hard | 1.5 | 1.5 | 0.7 | 0° | 0 |
+
+The rollback budget is a **separate table** (`ROLLBACKS_BY_DIFFICULTY`, same file), not a
+member of `DIFFICULTY_MULTIPLIERS`, because it is a retry count consumed by the app shell
+rather than a multiplier applied to a simulation quantity — the engine never reads it. It
+is listed here because it runs in the same direction as every other axis and therefore
+belongs in any difficulty comparison. The bot opts out of it entirely (see
+`codeenstein-rollbacks-disabled`), so a telemetry run's death count is unaffected.
 
 `damage` covers enemy melee and bolts only — not traps, hazards or rocket
 self-damage. `ammoDropRate` scales **both** dropped and pre-placed pickup amounts
@@ -776,7 +799,7 @@ A regular kill fires **up to four independent rolls** (the kill branch of `damag
 
 | Roll | Guaranteed? | Rate | Yields |
 |---|---|---|---|
-| Health top-up | yes, if `health < MAX_HEALTH` | 100% | 20 (×`ammoDropRate`) |
+| Health top-up | yes, if `health < MAX_HEALTH` | 100% | `max(1, round(20 × maxHp / 100))` — see `HEALTH_SCALE_REFERENCE_HP` |
 | Weighted ammo/swap | no | 80% (`REGULAR_KILL_NO_DROP_CHANCE = 0.2`) | one kind from the table below |
 | Miss-consolation Toolchain | only on the 20% miss | 5% of misses = **1% of kills** | Toolchain, if level ≥ 4 and unowned |
 | Bonus weapon | independent, stacks | 1% (`NORMAL_KILL_WEAPON_DROP_CHANCE`) | a random still-locked index from `[3,4,5]` |
@@ -794,7 +817,8 @@ Loot-kind weights (`loot.ts`), re-normalised after filtering:
 
 | Kind | base (easy/hard) | normal | bonus level |
 |---|---|---|---|
-| bullets | 40 | 46 | 24 |
+| bullets | 28 | 32 | 17 |
+| shells | 12 | 14 | 7 |
 | smg | 18 | 20 | 20 |
 | gas | 18 | 20 | 20 |
 | rockets | 10 | 12 | 20 |
@@ -805,8 +829,18 @@ Filters (`loot.ts`): `rockets`/`smg`/`gas` are removed entirely unless the
 matching weapon is owned, and `health` is *always* removed because the engine passes
 `healthHandledSeparately = true` — health is its own unconditional check now.
 
-Drop amounts (`loot.ts`): bullets 4, rockets 1, smg 21, gas 21, health 20,
-swap 11; elite fallbacks bullets 18, rockets 6, smg 80, gas 80, swap 30, health 50.
+Base drop amounts (`loot.ts`): bullets 4, shells 2, rockets 1, smg 21, gas 21,
+health 20, swap 11; elite fallbacks bullets 18, shells 8, rockets 6, smg 80, gas 80,
+swap 30, health 50.
+
+**Those are bases, not what actually drops** (`f020902`/`a65948c`, 2026-08-21). Every
+ammo kind is scaled by the dead enemy's health at the drop site —
+`max(1, round(base × maxHp / AMMO_SCALE_REFERENCE_HP))` with `AMMO_SCALE_REFERENCE_HP = 88`,
+the corpus mean — and the health top-up by `HEALTH_SCALE_REFERENCE_HP = 100`. **`swap` is
+deliberately the one exception and stays flat**, because it was priced that way. The
+floor of 1 exists so a rockets drop, whose base is already 1, cannot round away on a
+small enemy. `--hp-scaled-drops` and `--hp-scaled-health` model both offline; both are on
+by default in the solver.
 
 Three things the brief asked about, answered explicitly:
 
@@ -816,13 +850,16 @@ Three things the brief asked about, answered explicitly:
   consumed earlier, for telemetry and the lifesteal heal, and never reach it.
   Killing with the knife, a rocket or the flamethrower yields identical
   distributions.
-- **Leftover magazine contents do not carry over**, because there are no magazines.
-  Enemies carry no inventory at all — a drop's contents come entirely from the
-  weighted roll.
-- **Edge Cases take the regular path with no special-casing.** A 10 HP Edge Case
-  has exactly the same expected drop as a 500 HP regular enemy. That is the single
-  most suspicious line in this whole section, and §2.2's self-sustain ratio is
-  designed to quantify it.
+- **Leftover magazine contents do not carry over.** Magazines exist (they shipped
+  2026-08-15, tabulated above), but they are the *player's* — enemies carry no inventory
+  at all, so a drop's contents come entirely from the weighted roll.
+- **Edge Cases take the regular path with no special-casing**, and until 2026-08-21
+  that meant a 10 HP Edge Case had exactly the same expected drop as a 500 HP regular
+  enemy — the single most suspicious line in this section when it was written, and what
+  §2.2's self-sustain ratio was built to quantify. **Both halves of it have since
+  moved**: Edge Cases are 25-35 HP, and the drop amount is now proportional to `maxHp`,
+  so the roll is still uniform across archetypes but the payout is not. The path really
+  is still shared — the scaling happens at the drop site, not in the roll.
 
 ### 1.4 Pre-placed loot — the budget the generator actually controls
 
@@ -1015,19 +1052,27 @@ the reason the solver exists.
 |---|---|---|---|---|
 | **`complexityToHpCurve`** | A | every entity's `(complexityScore, resulting HP, archetype)`, plotted | parse + roster | see below |
 | **`hpOutliers`** | A | entities whose single-enemy HP exceeds the level's *total obtainable damage* | roster + `clearRatio` | **any hit is a hard failure — that enemy cannot be killed with everything on the level** |
-| `clampEffectiveness` | A | how many entities hit a clamp, and which | parse + generator | currently always zero for HP, because no HP clamp exists |
+| `clampEffectiveness` | A | how many entities hit a clamp, and which | parse + generator | a rising share hitting `ELITE_MEMBER_HP_CAP` means the split is doing the work; zero would mean it is inert |
 | `perLevelBudget` | A | one line per level: enemy HP total, enemy DPS total, ammo damage (pre/drop/combined), health (pre/drop/combined), ratios | all of the above | the tuning table |
 | `corpusDistribution` | A | the same budget report over N repos of varying size and language | corpus | shows the spread rather than one sample |
 
-The curve is the point. `hp = complexity × 25 × 2` for Elites is **linear and
-unbounded**, so its outliers are not a tail — they are a ray. Regular packs, by
-contrast, self-limit: per-member HP is `25c / (1 + ⌊c/10⌋)`, which asymptotes to
-250 as complexity rises. Plotting both on one axis makes the discontinuity at
-`c = 40` visible as what it is: at `c = 39` the entity spawns four enemies of 244 HP
-(976 total); at `c = 40` it spawns **one enemy of 2000 HP**. One extra point of
-complexity doubles the entity's total HP and multiplies its *single-enemy* HP by
-8.2× — and a single 2000 HP target cannot be split, kited or partially cleared the
-way a four-pack can.
+The curve is the point, and it is now bounded on both branches. Regular packs
+self-limit by construction: per-member HP is `35c / (1 + ⌊c/5⌋)`
+(`HP_PER_COMPLEXITY = 35`, `COMPLEXITY_PER_EXTRA_ENEMY = 5`), which asymptotes to 175 as
+complexity rises. Elites keep the doubled *room* budget but no longer put it in one
+body — it is split across up to `ELITE_MAX_MEMBERS = 8` members each capped at
+`ELITE_MEMBER_HP_CAP = 350`, so a room tops out at 2,800 base and 4,200 on Hard however
+complex the function is. Plotting both on one axis is still worth doing, but what it
+shows now is a ceiling rather than a ray.
+
+**This paragraph described a ray until 2026-08-08, and the history is worth keeping**
+because it is what the metric was built for. Elite HP was `complexity × 25 × 2` in a
+single body, linear and unbounded: at `c = 39` an entity spawned four enemies of 244 HP
+(976 total) and at `c = 40` **one enemy of 2000 HP** — one point of complexity doubling
+the entity's total HP and multiplying its single-enemy HP by 8.2×, into a target that
+could not be split, kited or partially cleared. vim's complexity-672 function produced
+33,600 HP in one body. §7.1 has the measurement that settled it (1,332 Elites spawned,
+2 died) and the reasoning behind the two constants.
 
 ### 2.6 Deliberately excluded
 
@@ -1373,6 +1418,14 @@ plain Node — including the `?url` grammar-wasm rewrite — and
 it to produce real `GameMap`s headlessly. The solver walks a directory, calls
 `parseFile` then `MapGenerator.generate()` per file, and analyses the result.
 
+**It numbers the levels the way the game does, which is not the walk order**
+(`58cad4b`, 2026-08-21). `entrypointIndex()` models `findEntrypoint`'s cascade, and
+everything ahead of the pick is dropped from the numbering entirely rather than counted
+as levels 1..n. This is not a rounding detail: across the corpus it removed **1,420 of
+7,088 solved levels (20%)** that a player can never reach, and it moved the headline
+answers with them — per-repo drift read 17.9× rather than 22.2×. Any figure in this
+document produced before that date is over a corpus that included unreachable levels.
+
 `scripts/lib/staticLevelAnalysis.mjs`'s `analyzeStaticLevel(map, route)` already
 computes enemy counts, per-category tallies, walkable tiles, density and a
 pre-placed ammo summary. The solver **extends** that rather than replacing it — the
@@ -1565,6 +1618,10 @@ Three things fall straight out, and all three are actionable:
   room. Whatever ammo scarcity the rest of the design is aiming for, this bypasses
   it. The fix is a drop-scaling term tied to `maxHp`, or excluding Edge Cases from
   the ammo roll the way `health` already is.
+  **SUPERSEDED 2026-08-21 — the first of those two fixes shipped** (`f020902`), along
+  with an Edge Case HP raise to 25-35 that moves the other half of the ratio. The
+  11.6× figure and the 12 HP premise are both pre-change and must not be quoted as
+  current; re-derive from a fresh report before acting on this bullet.
 - **Elites are a pure ammo sink.** The guaranteed drop is *health* unless you are
   already at full, so a 2000 HP fight typically returns no ammo at all. That is
   defensible as design — a boss should cost something — but it should be a
@@ -1594,6 +1651,13 @@ mashing at the engine's 0.15 s default floor, while Toolchain genuinely fires
 continuously while held.*
 
 ### 5.3 Real output — per-level budget, demo campaign at normal
+
+**SUPERSEDED 2026-08-21 — every column below moved and none of it is reproducible.**
+`HP_PER_COMPLEXITY` 25 -> 35 changes the HP totals, `507127c` charges reload time in the
+solver's TTK, `f020902`/`a65948c` made drops and heals HP-scaled, `d299509` capped
+carryover, and `58cad4b` renumbered the levels. It is kept as a worked example of the
+report's *shape* — what the columns mean and how to read a ratio — not as data. Re-run
+the command for current figures.
 
 `npm run balancing:budget`, abridged to the budget table:
 
@@ -1927,8 +1991,13 @@ trigger-pulls (once per `fire()`); `recordHit` counts **pellets** (once per land
 pellet, in the same `fire()`, plus one per rocket in `advanceRockets`). For the
 7-pellet shotgun `hits/shotsFired` can reach 7.0, and `accuracyPct`
 (`playerStats.ts`) is unclamped, so a shotgun-heavy run reports over 100%
-accuracy. Harmless in shipped play only because `PLAYER_STATS_ENABLED` is `false`,
-but `weaponEfficiency` in the balancing report reads the same ratio, so any
+accuracy. **No longer harmless in shipped play**: `PLAYER_STATS_ENABLED` became `true`
+on 2026-08-23, so this ratio is now the "Weapon accuracy" row on the Commit Summary and
+both run-end screens, and a shotgun-heavy level shows a player a figure over 100%. (The
+accuracy *score bonus* is unaffected — `scoring.ts` clamps its fraction to 1.) The
+player guide states the caveat rather than implying the number is trustworthy;
+**fixing the counters is still open, and this is now a player-facing defect rather than
+a reporting one.** `weaponEfficiency` in the balancing report reads the same ratio, so any
 cross-weapon accuracy comparison drawn from it so far is wrong. §3.3's separate
 `shot`/`hit` events fix it; the existing counters are left alone per the
 alongside-not-instead rule, so **the old ratio stays wrong and should be read as
