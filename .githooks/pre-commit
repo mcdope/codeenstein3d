@@ -1,0 +1,4 @@
+#!/bin/sh
+# Blocks a commit whose staged additions contain a value from a gitignored file
+# (or something shaped like a login target). See scripts/check-secrets.mjs.
+exec node scripts/check-secrets.mjs --staged

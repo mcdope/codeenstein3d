@@ -59,7 +59,10 @@
     "setup:ssh-lane-host": "node scripts/setup-ssh-lane-host.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "coverage": "vitest run --coverage"
+    "coverage": "vitest run --coverage",
+    "prepare": "node scripts/install-git-hooks.mjs",
+    "secrets:scan": "node scripts/check-secrets.mjs --tree",
+    "secrets:text": "node scripts/check-secrets.mjs --text"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",

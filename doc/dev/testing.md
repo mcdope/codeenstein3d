@@ -256,6 +256,42 @@ This has already produced one bug that survived repeated automated repro attempt
 
 **Level layout quality is not a property any assertion holds.** `mapGenerator.test.ts` and the `generation/*.test.ts` files check invariants — every room reachable, no room overlapping another, no corridor severed, one key per doorway — and all of them passed happily throughout the years in which every level was a few rooms strung along enormous identical hallways. The defect was real, obvious, and only visible as a picture: seventeen floor plans side by side, where the repetition reads instantly. `npm run report:level-maps` (`scripts/render-level-maps.mjs`) is the instrument for that class — one PNG per demo-campaign level plus the metrics that move when placement or corridor topology changes (corridor leg length, longest straight run, corridor-feature count and footprint spread, floor density against the level's own bounding box, room-graph cycle count, and `rooms/entities` so a silently dropped room is visible). Run it before and after any change under `src/map/generation/`, and **look at the images, not only the table** — "no single motif dominates" is not a number.
 
+## Secret scanning
+
+`scripts/check-secrets.mjs` stops a value that lives in a gitignored file from
+reaching a tracked file, a commit message, or a PR description. It exists
+because all three of those channels leaked on 2026-08-23 — see `decisions.md`.
+
+```sh
+npm run secrets:scan                 # whole tracked tree
+npm run secrets:text -- <file>       # a PR body / release note before publishing
+```
+
+It runs automatically at three points: **pre-commit** (staged additions),
+**commit-msg** (the message), and a **CI job** that scans the tree plus the pull
+request description, re-running on `edited` so a later description edit is
+caught too. The hooks are wired by `npm install` via the `prepare` script, so a
+fresh clone is covered without a setup step.
+
+Two layers, because each covers the other's blind spot. The **exact** layer
+compares against the real values — it reads the gitignored env files locally, and
+the optional `SECRET_SCAN_DENYLIST` repo secret in CI — and has no false
+positives. The **structural** layer matches shapes (`user@host`, routable IPv4,
+internal hostnames) and so still fires in a fresh clone or a fork PR where no
+values are available.
+
+**It never prints what it matched**, only `path:line [rule]`. A scanner that
+echoes its findings turns every public CI log into the leak it was meant to
+prevent; `scripts/check-secrets.test.mjs` pins that as an invariant.
+
+**What it cannot do.** `git commit --no-verify` bypasses both hooks — CI is the
+backstop, and that is why the CI job is dependency-free and takes ~20s. A fork
+PR has no access to the repo secret, so only structural rules run there. Values
+already in git history are not removed by any of this. And `ALLOW`/`ALLOW_PATHS`
+in the scanner are real holes by construction: `ALLOW_PATHS` suppresses only the
+shape rules (never the exact ones) and deliberately contains no doc or notes
+file, since docs are where the incident actually happened.
+
 ## Documentation screenshots
 
 `npm run report:doc-screenshots` (`scripts/capture-doc-screenshots.mjs`) regenerates the images embedded in [`doc/user/colors-and-pickups.md`](../user/colors-and-pickups.md). It is the only script here whose output is **committed** — `level_maps/`, `.verify-output/` and `wedge-diagnosis/` are all gitignored because their images are read once and discarded, whereas these ship to players through GitHub's rendering of `doc/user/`, which the game itself links to from the sidebar.

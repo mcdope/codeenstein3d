@@ -250,6 +250,12 @@ The multiplayer *features* are still one-liners in the last section; this is the
 > which is gitignored and auto-managed by `scripts/setup-ssh-lane-host.mjs` —
 > this repo is public, and four full SSH login targets sat in this file and in
 > `history.md` for three weeks before anyone noticed (scrubbed 2026-08-23).
+>
+> **This is enforced now, not remembered.** `scripts/check-secrets.mjs` runs as a
+> pre-commit hook *and* a commit-msg hook (`.githooks/`, wired automatically by
+> npm's `prepare`), and as a CI job that also scans the **pull request
+> description** — the channel that leaked a second time, hours after the rule was
+> written down. `npm run secrets:scan` checks the tree by hand.
 
 ## Not yet thought through
 
