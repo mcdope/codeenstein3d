@@ -183,5 +183,6 @@ implemented, already refuted, or impossible as written.
 - [ ] coop multiplayer should spawn additional boss enemies, requiring actual coop to kill. having a distinct color, roaming the whole map (not limitted to their room) and having more aggro, movement speed like normal enemies, should be visually larger as well. unique abilities like "casting mines" or weapon usage? possible names: "VPN down", "CI failed", "Useless Meeting", "Git down", "CloudFlare", "AWS", "GCP", "Azure". **Not to be confused with what already exists**: Elites are already a boss tier and already scale with player count (`eliteScalingFor`, `multiplayerScaling.ts`, CI-gated at `playerCount=3`). This item is about *extra, map-roaming* bosses — enemies are hard room-bound today (`enemyAi.ts:266`) — not about coop difficulty scaling
 
 - [ ] create a repo list on the repo tab similiar to the wad selector, with way more repos
+    - [ ] fields: same as wad, plus approx. size and difficulty
 - [ ] remove gun emoji from title and everywhere else, we have our favicon since a while
 - [ ] find more (license compatible wads), preferable with sounds/music we can use. should also have a distinct visual style
