@@ -102,9 +102,20 @@ function fakeStats(overrides: Partial<EngineStats> = {}): EngineStats {
  * a test that read the same table it is checking would pin nothing. */
 const GATE_HEXES = ["#d63a30", "#3470d6", "#34b25c", "#a848d6"];
 
-/** The presets the game ships. 160/320 are `?renderRes` extremes that fall
- * through `layoutHud`'s uniform squeeze on purpose, where nothing is legible
- * and nothing fits — the same restriction `hudLayout.test.ts` makes. */
+/**
+ * Widths to sweep the bar's layout across. 160/320 are `?renderRes` extremes
+ * that fall through `layoutHud`'s uniform squeeze on purpose, where nothing is
+ * legible and nothing fits — the same restriction `hudLayout.test.ts` makes.
+ *
+ * These are **design** widths, reached via `ctx(w, 400)`, which is below the
+ * design box on height and so runs at scale 1 (see `overlayScale.ts`). That is
+ * deliberate: the sweep's job is `layoutHud`'s domain, and the design box is
+ * 640 wide at every shipped preset, so pairing each width with an 8:5 height
+ * would collapse all four arms onto the same case and test less, not more.
+ * What happens *across* presets — that the same design box is reached at 1x
+ * and 2x and produces byte-identical draws — is pinned in
+ * `overlayContainment.test.ts`.
+ */
 const SHIPPED_WIDTHS = [640, 800, 1280, 2560];
 
 describe("drawCrosshair", () => {
