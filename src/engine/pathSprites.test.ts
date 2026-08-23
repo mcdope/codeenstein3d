@@ -302,9 +302,11 @@ describe("pathSprites — pre-rendered fast path", () => {
     // Nothing non-rectangular reaches the target — that is the whole point.
     expect(c.fill).not.toHaveBeenCalled();
     expect(c.beginPath).not.toHaveBeenCalled();
-    // Anchor-corrected destination.
+    // Anchor-corrected destination, at the sprite's own size. The explicit
+    // size is what lets the same call serve a scaled context; at s=1 it is the
+    // sprite's device size, so this is the bare two-argument blit it replaced.
     expect(c.drawImage).toHaveBeenCalledTimes(1);
-    expect(c.drawImage.mock.calls[0].slice(1)).toEqual([90, 40]);
+    expect(c.drawImage.mock.calls[0].slice(1)).toEqual([90, 40, 20, 20]);
   });
 
   it("pre-renders a given glyph once and reuses it on every later frame", async () => {
@@ -429,5 +431,145 @@ describe("pathSprites — pre-rendered fast path", () => {
     } finally {
       createSpy.mockRestore();
     }
+  });
+});
+
+describe("pathSprites — pre-rendering at the context's own scale", () => {
+  beforeEach(() => {
+    stub = stubOffscreen(true);
+  });
+
+  /** A target context already scaled the way `withOverlayScale` scales it. */
+  function scaledTarget(scale: number): MockCanvasContext {
+    const c = target();
+    (c as unknown as CanvasRenderingContext2D).scale(scale, scale);
+    return c;
+  }
+
+  it("bakes the sprite at the device resolution, not the design one", async () => {
+    // The point of the whole commit: at Sharp a 20x20 design-pixel glyph gets
+    // 40x40 real pixels to be drawn into. Blitting a 20x20 sprite into a 20x20
+    // design box on a 2x context is the pixel-doubled, blurry result this
+    // avoids — and it would pass every assertion about *where* the blit lands.
+    const { drawGlyph } = await loadModule();
+    drawGlyph(asCtx(scaledTarget(2)), triangleGlyph(), 100, 50);
+    const offscreen = stub.contexts.at(-1)!.canvas;
+    expect([offscreen.width, offscreen.height], "sprite allocation at s=2").toEqual([40, 40]);
+  });
+
+  it("blits into the same design-space box at every scale", async () => {
+    // Scale invariance, stated as an equality between two recorded arg lists
+    // rather than as a literal: the destination is in design pixels, so the
+    // glyph occupies the same fraction of the frame at both presets.
+    const { drawGlyph } = await loadModule();
+    const glyph = triangleGlyph();
+    const one = scaledTarget(1);
+    const two = scaledTarget(2);
+    drawGlyph(asCtx(one), glyph, 100, 50);
+    drawGlyph(asCtx(two), glyph, 100, 50);
+    expect(two.drawImage.mock.calls[0].slice(1), "design-space destination").toEqual(
+      one.drawImage.mock.calls[0].slice(1),
+    );
+  });
+
+  it("keeps one sprite per scale rather than re-baking on every frame", async () => {
+    // Two live entries, not a cache-wide reset: a screenshot script capturing
+    // both presets, or a preset switch, must not thrash.
+    const { drawGlyph } = await loadModule();
+    const glyph = triangleGlyph();
+    const createSpy = vi.spyOn(document, "createElement");
+    drawGlyph(asCtx(scaledTarget(1)), glyph, 0, 0);
+    drawGlyph(asCtx(scaledTarget(2)), glyph, 0, 0);
+    const afterBoth = createSpy.mock.calls.filter((a) => a[0] === "canvas").length;
+    expect(afterBoth, "one bake per distinct scale").toBe(2);
+    drawGlyph(asCtx(scaledTarget(1)), glyph, 10, 10);
+    drawGlyph(asCtx(scaledTarget(2)), glyph, 10, 10);
+    expect(createSpy.mock.calls.filter((a) => a[0] === "canvas").length, "no re-bake").toBe(afterBoth);
+    createSpy.mockRestore();
+  });
+
+  it("bakes the rotation atlas at the device resolution and blits it in design space", async () => {
+    const { drawRotatedGlyph } = await loadModule();
+    const glyph = triangleGlyph();
+    const one = scaledTarget(1);
+    const two = scaledTarget(2);
+    drawRotatedGlyph(asCtx(one), glyph, 0, 50, 50);
+    const tileOne = one.drawImage.mock.calls[0][4] as number;
+    drawRotatedGlyph(asCtx(two), glyph, 0, 50, 50);
+    const tileTwo = two.drawImage.mock.calls[0][4] as number;
+
+    // Source tiles double; destination boxes do not. Reading the source size
+    // as the destination size is silent at s=1 and draws the compass needle at
+    // twice its size at Sharp, so both halves are asserted.
+    expect(tileTwo, "source tile is in device pixels").toBe(tileOne * 2);
+    expect(two.drawImage.mock.calls[0].slice(5), "destination is in design pixels").toEqual(
+      one.drawImage.mock.calls[0].slice(5),
+    );
+  });
+
+  it("does not trade rotation steps away as the canvas gets sharper", async () => {
+    // Both the tile and the strip cap are in device pixels, so scaling one and
+    // not the other silently costs angular resolution at exactly the preset
+    // that exists to look better — the compass needle would go from 128 steps
+    // to 73. No assertion about draw calls can see that, which is why the step
+    // count is pinned directly.
+    const { atlasStepsAt } = await loadModule();
+    const marker = (size: number): Glyph => ({
+      width: size * 2 + 4,
+      height: size * 2 + 4,
+      anchorX: size + 2,
+      anchorY: size + 2,
+      draw: (g, ox, oy) => g.fillRect(ox, oy, 1, 1),
+    });
+    // The sizes the three shipped rotated glyphs are built at: the compass
+    // needle (7), the automap player marker (>= 6), the minimap one (>= 4).
+    for (const size of [4, 6, 7, 16, 40]) {
+      expect(atlasStepsAt(marker(size), 2), `size ${size} at Sharp`).toBe(atlasStepsAt(marker(size), 1));
+    }
+  });
+
+  it("still gives up steps for a glyph too large to fit the strip", async () => {
+    // The cap has not been turned off, only made proportional: a glyph whose
+    // strip cannot fit still trades steps rather than failing to allocate, and
+    // never collapses to a single orientation.
+    const { atlasStepsAt, drawRotatedGlyph } = await loadModule();
+    const boxed = (reach: number): Glyph => ({
+      width: reach * 2,
+      height: reach * 2,
+      anchorX: reach,
+      anchorY: reach,
+      draw: (g, ox, oy) => g.fillRect(ox, oy, 1, 1),
+    });
+    const large = boxed(200);
+    expect(atlasStepsAt(large, 1), "a 400px glyph gives up steps").toBeLessThan(128);
+    expect(atlasStepsAt(large, 1), "but not down to one orientation").toBeGreaterThan(1);
+    expect(atlasStepsAt(large, 2), "and gives up the same number at Sharp").toBe(atlasStepsAt(large, 1));
+    // The far end: a glyph whose tile alone nearly fills the strip is down to a
+    // single orientation, and that has always been true — the cap is a
+    // guarantee about allocation, not about angular resolution.
+    const huge = boxed(1000);
+    expect(atlasStepsAt(huge, 1), "a 2000px glyph gets one orientation").toBe(1);
+    drawRotatedGlyph(asCtx(scaledTarget(2)), huge, 0, 0, 0);
+    expect(stub.contexts.at(-1)!.canvas.width, "the strip stays inside its budget").toBeLessThanOrEqual(4096 * 2);
+  });
+
+  it("scales disc sprites too, so blast rings do not soften at Sharp", async () => {
+    const { drawDisc } = await loadModule();
+    drawDisc(asCtx(scaledTarget(2)), "255,150,40", 1, 100, 100, 30);
+    const offscreen = stub.contexts.at(-1)!.canvas;
+    expect([offscreen.width, offscreen.height], "disc sprite at s=2").toEqual([256, 256]);
+  });
+
+  it("falls back to drawing in design space when no offscreen surface exists", async () => {
+    // The fallback borrows the target's transform, so it needs no scale
+    // awareness at all — and that is worth pinning, because a "fix" that
+    // divided the fallback's coordinates by the scale would double-apply it.
+    stub.restore();
+    stub = stubOffscreen(false);
+    const { drawGlyph } = await loadModule();
+    const c = scaledTarget(2);
+    drawGlyph(asCtx(c), triangleGlyph(), 100, 50);
+    expect(c.drawImage, "no blit without a surface").not.toHaveBeenCalled();
+    expect(c.moveTo.mock.calls[0], "design-space coordinates, unmodified").toEqual([100, 42]);
   });
 });
