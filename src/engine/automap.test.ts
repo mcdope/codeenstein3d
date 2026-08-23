@@ -348,6 +348,81 @@ describe("drawAutomap() — no fog of war", () => {
   });
 });
 
+describe("drawAutomap() — rotate to facing", () => {
+  const call = (over: Partial<{ rotate: boolean; player: Player }> = {}) => {
+    const c = makeCtx();
+    drawAutomap(asCtx(c), fakeMap(), over.player ?? fakePlayer(), 0, [], [], 0, over.rotate ?? false);
+    return c;
+  };
+
+  it("adds no map-level transform when north-up (the default)", () => {
+    // The transform calls that *do* happen here are the player marker's own —
+    // `drawRotatedGlyph` takes its translate/rotate fallback under vitest's
+    // node environment, where there is no offscreen canvas to bake an atlas
+    // into. What must be absent is a pivot about the viewport centre.
+    const c = call();
+    const viewCentre = [MARGIN + (CANVAS_W - MARGIN * 2) / 2, MARGIN + (CANVAS_H - HUD_HEIGHT - MARGIN * 2) / 2];
+    expect(c.translate).not.toHaveBeenCalledWith(viewCentre[0], viewCentre[1]);
+    // The marker's rotate is the only one, and it is its own facing.
+    expect((c.rotate.mock.calls[0] as [number])[0]).toBeCloseTo(Math.atan2(0, 1), 10);
+  });
+
+  it("pivots about the viewport centre, not the canvas origin", () => {
+    const c = call({ rotate: true });
+    const viewW = CANVAS_W - MARGIN * 2;
+    const viewH = CANVAS_H - HUD_HEIGHT - MARGIN * 2;
+    expect(c.translate).toHaveBeenCalledWith(MARGIN + viewW / 2, MARGIN + viewH / 2);
+  });
+
+  it("puts the player's facing on screen-up, for every cardinal", () => {
+    // `-π/2 - facing`: canvas rotate() is clockwise-positive because +Y is
+    // down, and screen-up is -Y. Same convention `drawCompass` documents.
+    for (const [dirX, dirY] of [
+      [1, 0],
+      [0, 1],
+      [-1, 0],
+      [0, -1],
+    ] as const) {
+      const c = call({ rotate: true, player: fakePlayer({ dirX, dirY }) });
+      const angle = (c.rotate.mock.calls[0] as [number])[0];
+      expect(angle).toBeCloseTo(-Math.PI / 2 - Math.atan2(dirY, dirX), 10);
+      // …and the marker, drawn at its real facing inside that frame, lands up.
+      const markerAngle = (c.rotate.mock.calls[1] as [number])[0];
+      expect(markerAngle + angle).toBeCloseTo(-Math.PI / 2, 10);
+    }
+  });
+
+  it("keeps the viewport clip in screen space, outside the rotation", () => {
+    // If the clip were applied after the transform the viewport itself would
+    // turn, and the overlay would stop being a rectangle.
+    const c = call({ rotate: true });
+    const clipOrder = c.rect.mock.invocationCallOrder[0];
+    const rotateOrder = c.rotate.mock.invocationCallOrder[0];
+    expect(clipOrder).toBeLessThan(rotateOrder);
+    expect(c.rect).toHaveBeenCalledWith(MARGIN, MARGIN, CANVAS_W - MARGIN * 2, CANVAS_H - HUD_HEIGHT - MARGIN * 2);
+  });
+
+  it("centres exactly on the player instead of clamping to the map's edge", () => {
+    // North-up clamps so the view never scrolls past the map; rotated, the
+    // corners sweep past the bounds anyway and a clamp would drag the player
+    // off the pivot everything turns around.
+    const cornered = fakePlayer({ posX: 0.5, posY: 0.5 });
+    const c = call({ rotate: true, player: cornered });
+    // The player sits on the pivot, i.e. at (0,0) in the rotated frame.
+    const marker = c.moveTo.mock.calls.length > 0;
+    expect(marker).toBe(true);
+    expect(c.translate).toHaveBeenCalledWith(
+      MARGIN + (CANVAS_W - MARGIN * 2) / 2,
+      MARGIN + (CANVAS_H - HUD_HEIGHT - MARGIN * 2) / 2,
+    );
+  });
+
+  it("restores nearest-neighbour smoothing on the way out", () => {
+    const c = call({ rotate: true });
+    expect(c.imageSmoothingEnabled).toBe(false);
+  });
+});
+
 describe("drawAutomap() — mines", () => {
   // Mines were never fog-gated — they have their own `visible` flag, set by
   // `MINE_SIGHT_RADIUS` — so removing fog changed nothing here. These tests

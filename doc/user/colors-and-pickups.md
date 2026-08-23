@@ -43,7 +43,7 @@ A teammate calling for help pings the same way but is never confusable with it: 
 
 ## Reading the automap
 
-`Tab` opens the automap. Same tiles, a different palette, and one real difference in what's on it.
+`Tab` opens the automap. Same tiles, a different palette, and one real difference in what's on it. It also rotates to match the way you're facing, unless you switch it to north-up in Settings — the shot below is a rotated one, which is why the level sits at an angle.
 
 Structural things go greyscale here so the map doesn't fight the live game still rendering behind it; danger and goals keep their accent colours.
 
