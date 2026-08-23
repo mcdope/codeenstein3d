@@ -16,6 +16,7 @@
 import type { Decoration, DecorKind, Enemy, KeyItem, LootDrop, Mine, Point, Teleporter } from "../map/types";
 import type { CodeEntity, EntityKind } from "../parser/types";
 import type { Player } from "./player";
+import { withOverlayScale } from "./overlayScale";
 import { drawDisc, fillLine, outlineRect } from "./pathSprites";
 import { clamp } from "../mathUtil";
 
@@ -310,23 +311,34 @@ export function collectPlayerBillboards(
  * occupies the row between. Tinted with the player's own marker color, which
  * is what ties the label to the dot on the automap and minimap. */
 function drawPlayerNameLabel(ctx: CanvasRenderingContext2D, name: string, color: string, proj: EnemyProjection): void {
-  ctx.font = "10px monospace";
-  // Sized to the *text*, not to the sprite the way `drawEnemyOverlay`'s HP
-  // bar is — that bar is a gauge whose width means something, whereas this
-  // plate exists only to keep the text readable against a wall. Measured
-  // rather than estimated: a distant teammate's sprite is a few pixels wide,
-  // so a sprite-width plate leaves most of the name sitting on bare wall
-  // (seen directly, which is why this doesn't just copy the enemy version).
-  const plateWidth = ctx.measureText(name).width + 8;
-  const plateX = proj.screenX - plateWidth / 2;
-  const plateY = proj.top - 13;
+  // The one hybrid in the codebase: the *anchor* is world-projected and so is
+  // in device pixels, while the font and plate are design-pixel literals.
+  // Dividing the projection by the scale converts the anchor into the space
+  // the literals are already in; forgetting one of those divisions puts the
+  // label at twice the height of the head it belongs to at Sharp, and is
+  // invisible at Classic.
+  withOverlayScale(ctx, (_w, _h, s) => {
+    const screenX = proj.screenX / s;
+    const top = proj.top / s;
 
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.fillRect(plateX, plateY, plateWidth, 11);
-  ctx.fillStyle = color;
-  ctx.fillText(name, proj.screenX, plateY + 9);
-  ctx.textAlign = "start";
+    ctx.font = "10px monospace";
+    // Sized to the *text*, not to the sprite the way `drawEnemyOverlay`'s HP
+    // bar is — that bar is a gauge whose width means something, whereas this
+    // plate exists only to keep the text readable against a wall. Measured
+    // rather than estimated: a distant teammate's sprite is a few pixels wide,
+    // so a sprite-width plate leaves most of the name sitting on bare wall
+    // (seen directly, which is why this doesn't just copy the enemy version).
+    const plateWidth = ctx.measureText(name).width + 8;
+    const plateX = screenX - plateWidth / 2;
+    const plateY = top - 13;
+
+    ctx.textAlign = "center";
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(plateX, plateY, plateWidth, 11);
+    ctx.fillStyle = color;
+    ctx.fillText(name, screenX, plateY + 9);
+    ctx.textAlign = "start";
+  });
 }
 
 function drawEnemyOverlay(
@@ -338,43 +350,52 @@ function drawEnemyOverlay(
   edgeCase: boolean,
   proj: EnemyProjection,
 ): void {
-  const barWidth = Math.min(80, Math.max(20, proj.right - proj.left));
-  const barX = proj.screenX - barWidth / 2;
-  const barY = proj.top - 12;
-  const barH = 4;
+  // Hybrid, exactly as `drawPlayerNameLabel`: the projection is device-space,
+  // every literal below is a design pixel. The bar width is derived from the
+  // projected sprite width, so it has to be converted too — it is a gauge
+  // sized to the enemy, not a fixed-size widget.
+  withOverlayScale(ctx, (_w, _h, s) => {
+    const screenX = proj.screenX / s;
+    const spriteWidth = (proj.right - proj.left) / s;
 
-  // HP bar: red background, green fill (gold for an Elite, cyan for an Edge
-  // Case, matching each one's tint).
-  ctx.fillStyle = "#3a0d0d";
-  ctx.fillRect(barX, barY, barWidth, barH);
-  ctx.fillStyle = elite ? ELITE_COLOR : edgeCase ? EDGE_CASE_COLOR : "#37d24a";
-  ctx.fillRect(barX, barY, (barWidth * Math.max(0, hp)) / maxHp, barH);
+    const barWidth = Math.min(80, Math.max(20, spriteWidth));
+    const barX = screenX - barWidth / 2;
+    const barY = proj.top / s - 12;
+    const barH = 4;
 
-  // Name label above the bar; an Elite/Edge Case additionally gets a small
-  // warning caption above that, so its stats reading differently from a
-  // normal enemy's feels intentional rather than the HP bar just looking wrong.
-  ctx.font = "10px monospace";
-  ctx.textAlign = "center";
-  ctx.fillStyle = "rgba(0,0,0,0.6)";
-  ctx.fillRect(barX, barY - 13, barWidth, 11);
-  ctx.fillStyle = "#fff";
-  ctx.fillText(entity.name, proj.screenX, barY - 4);
+    // HP bar: red background, green fill (gold for an Elite, cyan for an Edge
+    // Case, matching each one's tint).
+    ctx.fillStyle = "#3a0d0d";
+    ctx.fillRect(barX, barY, barWidth, barH);
+    ctx.fillStyle = elite ? ELITE_COLOR : edgeCase ? EDGE_CASE_COLOR : "#37d24a";
+    ctx.fillRect(barX, barY, (barWidth * Math.max(0, hp)) / maxHp, barH);
 
-  if (elite) {
+    // Name label above the bar; an Elite/Edge Case additionally gets a small
+    // warning caption above that, so its stats reading differently from a
+    // normal enemy's feels intentional rather than the HP bar just looking wrong.
+    ctx.font = "10px monospace";
+    ctx.textAlign = "center";
     ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(barX, barY - 26, barWidth, 11);
-    ctx.fillStyle = ELITE_COLOR;
-    ctx.font = "bold 9px monospace";
-    ctx.fillText("⚠ ELITE", proj.screenX, barY - 17);
-  } else if (edgeCase) {
-    ctx.fillStyle = "rgba(0,0,0,0.6)";
-    ctx.fillRect(barX, barY - 26, barWidth, 11);
-    ctx.fillStyle = EDGE_CASE_COLOR;
-    ctx.font = "bold 9px monospace";
-    ctx.fillText("⚠ EDGE CASE", proj.screenX, barY - 17);
-  }
+    ctx.fillRect(barX, barY - 13, barWidth, 11);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(entity.name, screenX, barY - 4);
 
-  ctx.textAlign = "start";
+    if (elite) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(barX, barY - 26, barWidth, 11);
+      ctx.fillStyle = ELITE_COLOR;
+      ctx.font = "bold 9px monospace";
+      ctx.fillText("⚠ ELITE", screenX, barY - 17);
+    } else if (edgeCase) {
+      ctx.fillStyle = "rgba(0,0,0,0.6)";
+      ctx.fillRect(barX, barY - 26, barWidth, 11);
+      ctx.fillStyle = EDGE_CASE_COLOR;
+      ctx.font = "bold 9px monospace";
+      ctx.fillText("⚠ EDGE CASE", screenX, barY - 17);
+    }
+
+    ctx.textAlign = "start";
+  });
 }
 
 /** One living enemy's projection, snapshotted for reuse across multiple
@@ -643,15 +664,21 @@ export function collectExitBillboard(
 
         const centerCol = clamp(Math.round(proj.screenX), 0, width - 1);
         if (proj.depth < zBuffer[centerCol]) {
-          ctx.font = "10px monospace";
-          ctx.textAlign = "center";
-          const label = "return";
-          const labelW = Math.max(40, proj.right - proj.left);
-          ctx.fillStyle = "rgba(0,0,0,0.6)";
-          ctx.fillRect(proj.screenX - labelW / 2, proj.top - 15, labelW, 12);
-          ctx.fillStyle = "#8effa0";
-          ctx.fillText(label, proj.screenX, proj.top - 5);
-          ctx.textAlign = "start";
+          // Same hybrid as the enemy and teammate labels: world-projected
+          // anchor, design-pixel plate. The marker bars above are pure scene
+          // geometry and stay outside the scaled block.
+          withOverlayScale(ctx, (_w, _h, s) => {
+            const screenX = proj.screenX / s;
+            ctx.font = "10px monospace";
+            ctx.textAlign = "center";
+            const label = "return";
+            const labelW = Math.max(40, (proj.right - proj.left) / s);
+            ctx.fillStyle = "rgba(0,0,0,0.6)";
+            ctx.fillRect(screenX - labelW / 2, proj.top / s - 15, labelW, 12);
+            ctx.fillStyle = "#8effa0";
+            ctx.fillText(label, screenX, proj.top / s - 5);
+            ctx.textAlign = "start";
+          });
         }
       },
     },

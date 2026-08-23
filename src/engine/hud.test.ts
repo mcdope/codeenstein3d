@@ -26,7 +26,19 @@ import {
   HUD_HEIGHT,
 } from "./hud";
 
-function ctx(width = 800, height = 600): MockCanvasContext {
+/**
+ * The default is the **Sharp** preset, not an arbitrary size, and that is
+ * load-bearing: the overlay layer draws in a 640x400 design space
+ * (`overlayScale.ts`), so a fixture that is not at least that big on both axes
+ * runs at scale 1 and cannot tell a correctly-scaled draw from an unscaled one.
+ * The old default (800x600) was exactly such a size — a non-8:5 box that no
+ * preset produces.
+ *
+ * Everything a test asserts here is therefore in design pixels, and the numbers
+ * are the same ones a Classic 640x400 canvas produces. That equality is the
+ * property under test; `overlayScale.test.ts` pins the transform itself.
+ */
+function ctx(width = 1280, height = 800): MockCanvasContext {
   return createMockCanvasContext({ width, height } as unknown as HTMLCanvasElement);
 }
 
@@ -120,8 +132,10 @@ describe("drawFpsOverlay", () => {
   it("colors a low FPS reading red", () => {
     const c = ctx();
     drawFpsOverlay(asCtx(c), 15, 66.7);
-    expect(c.fillText).toHaveBeenCalledWith("15", 800 - 8, 30);
-    expect(c.fillText).toHaveBeenCalledWith("66.7ms", 800 - 8, 44);
+    // 640, not 1280: the readout is right-aligned to the *design* width, which
+    // is what makes it sit the same distance from the edge at both presets.
+    expect(c.fillText).toHaveBeenCalledWith("15", 640 - 8, 30);
+    expect(c.fillText).toHaveBeenCalledWith("66.7ms", 640 - 8, 44);
   });
 
   it("colors a healthy FPS reading green, and resets textAlign afterward", () => {
@@ -135,8 +149,10 @@ describe("drawCheatToast", () => {
   it("sizes the toast box from the measured text width", () => {
     const c = ctx();
     drawCheatToast(asCtx(c), "IDDQD", 1);
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two, not one: `withOverlayScale` saves and restores around the whole
+    // draw, and the toast still pairs its own.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
     expect(c.globalAlpha).toBe(1);
     expect(c.textAlign).toBe("start"); // reset before restore()
   });
@@ -160,8 +176,10 @@ describe("drawAcidOverflowToast", () => {
     drawAcidOverflowToast(asCtx(c), 5);
     expect(c.globalAlpha).toBe(1);
     expect(c.textAlign).toBe("start");
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two, not one: `withOverlayScale` saves and restores around the whole
+    // draw, and the toast still pairs its own.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
 
     const c2 = ctx();
     drawAcidOverflowToast(asCtx(c2), -1);
@@ -216,8 +234,10 @@ describe("drawHelpPingToast", () => {
     drawHelpPingToast(asCtx(c), "Guest-1", "#60a5fa", 5);
     expect(c.fillText).toHaveBeenCalledWith("Guest-1 NEEDS HELP", 16, 104);
     expect(c.globalAlpha).toBe(1);
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two, not one: `withOverlayScale` saves and restores around the whole
+    // draw, and the toast still pairs its own.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
   });
 
   it("clears the three centered toast rows and the HUD bar at the smallest render height", () => {
@@ -246,8 +266,10 @@ describe("drawLockedDoorToast", () => {
     expect(c.fillText).toHaveBeenCalledWith("You need the blue key!", expect.any(Number), expect.any(Number));
     expect(c.globalAlpha).toBe(1);
     expect(c.textAlign).toBe("start");
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two, not one: `withOverlayScale` saves and restores around the whole
+    // draw, and the toast still pairs its own.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
 
     const c2 = ctx();
     drawLockedDoorToast(asCtx(c2), -1, 1);
@@ -330,8 +352,10 @@ describe("drawKillStreakToast", () => {
     expect(c.strokeStyle).toBe("#5a3d0d");
     expect(c.lineWidth).toBe(4);
     expect(c.textAlign).toBe("start"); // reset before restore()
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two, not one: `withOverlayScale` saves and restores around the whole
+    // draw, and the toast still pairs its own.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
   });
 
   it("sizes and colors an Ultra Kill (big=true) bigger/more intense than a Multi Kill", () => {
@@ -356,20 +380,21 @@ describe("drawExitCountdownToast", () => {
   it("rounds ticks up to the nearest whole second (COUNTDOWN_DISPLAY_HZ=30)", () => {
     const c = ctx();
     drawExitCountdownToast(asCtx(c), 150);
-    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 400, 40);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 320, 40);
     drawExitCountdownToast(asCtx(c), 121); // 4.03s -> rounds up to 5s, not down to 4s
-    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 400, 40);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 5s…", 320, 40);
     expect(c.textAlign).toBe("start"); // reset before restore()
-    expect(c.save).toHaveBeenCalledTimes(2);
-    expect(c.restore).toHaveBeenCalledTimes(2);
+    // Two draws, each with the overlay wrapper's pair plus the toast's own.
+    expect(c.save).toHaveBeenCalledTimes(4);
+    expect(c.restore).toHaveBeenCalledTimes(4);
   });
 
   it("floors a non-positive tick count at 0s rather than showing a negative number", () => {
     const c = ctx();
     drawExitCountdownToast(asCtx(c), 0);
-    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 400, 40);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 320, 40);
     drawExitCountdownToast(asCtx(c), -5);
-    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 400, 40);
+    expect(c.fillText).toHaveBeenCalledWith("Build finishing in 0s…", 320, 40);
   });
 });
 
@@ -377,8 +402,10 @@ describe("drawPauseOverlay", () => {
   it("draws the scrim and both lines of text, resetting textAlign", () => {
     const c = ctx();
     drawPauseOverlay(asCtx(c));
-    expect(c.fillRect).toHaveBeenCalledWith(0, 0, 800, 600);
-    expect(c.fillText).toHaveBeenCalledWith("PAUSED", 400, 300 - 6);
+    // The scrim covers the design box, which the wrapper then scales up to fill
+    // the whole 1280x800 canvas — one `fillRect`, not a canvas-sized literal.
+    expect(c.fillRect).toHaveBeenCalledWith(0, 0, 640, 400);
+    expect(c.fillText).toHaveBeenCalledWith("PAUSED", 320, 200 - 6);
     expect(c.textAlign).toBe("start");
   });
 });
@@ -407,16 +434,30 @@ describe("drawLoreOverlay", () => {
     return c.fillText.mock.calls.slice(1, -1).map(([text]) => text as string);
   }
 
+  /**
+   * A tall fixture, deliberately at 2x.
+   *
+   * `1280x960` resolves to a `640x480` design box — the same geometry the old
+   * `800x600` fixture produced — but it gets there through a real scale factor,
+   * so a draw that forgot to work in design space fails here instead of looking
+   * fine. The short fixtures below stay at `800x200`: they are *below* the
+   * design box on height, so they run at scale 1 and keep exercising the
+   * scrolling branch they exist for, with the numbers they always had.
+   */
+  const TALL: [number, number] = [1280, 960];
+  /** The design box `TALL` resolves to — what the draw actually sees. */
+  const TALL_DESIGN_W = 640;
+
   it("fits short text on one line with no scrollbar and the non-scrolling footer", () => {
-    const c = ctx(800, 600);
+    const c = ctx(...TALL);
     const result = drawLoreOverlay(asCtx(c), "Hello world", 0);
     expect(result.maxScrollLines).toBe(0);
     expect(bodyLines(c)).toEqual(["Hello world"]);
-    expect(c.fillText).toHaveBeenLastCalledWith("Press R (or click) to close", 400, expect.any(Number));
+    expect(c.fillText).toHaveBeenLastCalledWith("Press R (or click) to close", TALL_DESIGN_W / 2, expect.any(Number));
   });
 
   it("keeps a single overlong word (no spaces) intact rather than force-splitting it", () => {
-    const c = ctx(800, 600);
+    const c = ctx(...TALL);
     const longWord = "x".repeat(200);
     const result = drawLoreOverlay(asCtx(c), longWord, 0);
     expect(result.maxScrollLines).toBe(0);
@@ -429,7 +470,7 @@ describe("drawLoreOverlay", () => {
     // per character whatever font was set. What has to hold is that the
     // paragraph breaks at all and that no line it produces is wider than the
     // box, measured the same way `wrapText` measures it.
-    const c = ctx(800, 600);
+    const c = ctx(...TALL);
     const words = Array.from({ length: 5 }, () => "a".repeat(20));
     const result = drawLoreOverlay(asCtx(c), words.join(" "), 0);
     expect(result.maxScrollLines).toBe(0);
@@ -439,11 +480,11 @@ describe("drawLoreOverlay", () => {
     const widest = Math.max(...lines.map((l) => asCtx(c).measureText(l).width));
     // `drawLoreOverlay`'s own inner width: a 520px box (capped by the canvas)
     // less 48px of padding.
-    expect(widest).toBeLessThanOrEqual(Math.min(520, 800 - 48) - 48);
+    expect(widest).toBeLessThanOrEqual(Math.min(520, TALL_DESIGN_W - 48) - 48);
   });
 
   it("treats explicit newlines as hard paragraph breaks", () => {
-    const c = ctx(800, 600);
+    const c = ctx(...TALL);
     const result = drawLoreOverlay(asCtx(c), "line one\nline two\nline three", 0);
     expect(result.maxScrollLines).toBe(0);
     expect(bodyLines(c)).toEqual(["line one", "line two", "line three"]);
@@ -474,7 +515,7 @@ describe("drawLoreOverlay", () => {
   });
 
   it("draws a scrollbar track and thumb only when scrolling is actually possible", () => {
-    const cNoScroll = ctx(800, 600);
+    const cNoScroll = ctx(...TALL);
     drawLoreOverlay(asCtx(cNoScroll), "short", 0);
     const noScrollFillRectCount = cNoScroll.fillRect.mock.calls.length;
 

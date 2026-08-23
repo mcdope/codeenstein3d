@@ -28,11 +28,20 @@ import type { Player } from "./player";
 import { drawRotatedGlyph, outlineRect, type Glyph } from "./pathSprites";
 import type { TeammateMapMarker } from "./sprites";
 import { HUD_HEIGHT } from "./hud";
+import { withOverlayScale } from "./overlayScale";
 
-/** Fixed tile size in canvas pixels — independent of map size, so large maps
+/** Fixed tile size in *design* pixels — independent of map size, so large maps
  * stay just as readable as small ones (the old fit-to-box math shrank as low
  * as ~2px/tile on big levels). Zoomed well out relative to a "1:1" 10px/tile
- * read, so a given viewport shows a wide swath of the map at once. */
+ * read, so a given viewport shows a wide swath of the map at once.
+ *
+ * **Design pixels, so the automap covers the same *tiles* at every preset, not
+ * the same device pixels.** Before the overlay layer scaled, Sharp showed four
+ * times the map area of Classic — `(1280 - 24) / 3` tiles across versus
+ * `(640 - 24) / 3` — because the tiles stayed 3 device px while the canvas
+ * doubled. That is the behaviour that changed: a preset now decides how sharp
+ * the automap is, not how much of the level it shows. The camera clamp means
+ * most campaign maps still fit either way. */
 const CELL_PX = 3;
 /** Margin kept clear on the left/right/top/bottom of the viewport. */
 const MARGIN = 12;
@@ -172,6 +181,10 @@ function staticTileColor(map: GameMap, x: number, y: number, tile: number): stri
 let automapTileLayer: {
   source: GameMap;
   gridVersion: number;
+  /** Device pixels per design pixel the layer was baked at — part of the key,
+   * because a layer baked for Classic and blitted at Sharp is a pixel-doubled
+   * 3px grid, which is the blur this whole change exists to remove. */
+  scale: number;
   canvas: HTMLCanvasElement;
 } | null = null;
 
@@ -179,16 +192,29 @@ let automapTileLayer: {
  * the case in the unit suite (vitest runs `node`, not `jsdom`, for this
  * module), so the caller falls back to drawing tiles live. That fallback is
  * not dead code kept for tidiness; it is the path every automap test takes. */
-function automapTileCanvas(map: GameMap, gridVersion: number): HTMLCanvasElement | null {
+function automapTileCanvas(map: GameMap, gridVersion: number, scale: number): HTMLCanvasElement | null {
   if (typeof document === "undefined") return null;
-  if (automapTileLayer && automapTileLayer.source === map && automapTileLayer.gridVersion === gridVersion) {
+  if (
+    automapTileLayer &&
+    automapTileLayer.source === map &&
+    automapTileLayer.gridVersion === gridVersion &&
+    automapTileLayer.scale === scale
+  ) {
     return automapTileLayer.canvas;
   }
   const canvas = document.createElement("canvas");
-  canvas.width = map.width * CELL_PX;
-  canvas.height = map.height * CELL_PX;
+  // The floor matters: a zero-sized canvas throws `InvalidStateError` on the
+  // first draw rather than returning null, so it would surface as a crash in
+  // the renderer rather than as a fallback to live tiles.
+  canvas.width = Math.max(1, Math.ceil(map.width * CELL_PX * scale));
+  canvas.height = Math.max(1, Math.ceil(map.height * CELL_PX * scale));
   const layerCtx = canvas.getContext("2d");
   if (!layerCtx) return null;
+  // The scale is passed in rather than read off the target context, because by
+  // the time this is called the caller may have rotated it (facing-up automap)
+  // and `contextScale` would be reading a rotated basis for a baker that has
+  // nothing to do with the rotation.
+  layerCtx.scale(scale, scale);
   for (let y = 0; y < map.height; y++) {
     const row = map.grid[y];
     for (let x = 0; x < map.width; x++) {
@@ -198,7 +224,7 @@ function automapTileCanvas(map: GameMap, gridVersion: number): HTMLCanvasElement
       layerCtx.fillRect(x * CELL_PX, y * CELL_PX, CELL_PX, CELL_PX);
     }
   }
-  automapTileLayer = { source: map, gridVersion, canvas };
+  automapTileLayer = { source: map, gridVersion, scale, canvas };
   return canvas;
 }
 
@@ -239,206 +265,205 @@ export function drawAutomap(
    * live code paths. */
   rotateToFacing = false,
 ): void {
-  const width = ctx.canvas.width;
-  const height = ctx.canvas.height;
+  withOverlayScale(ctx, (width, height, scale) => {
+    const vx0 = MARGIN;
+    const vy0 = MARGIN;
+    const viewW = Math.max(1, width - MARGIN * 2);
+    const viewH = Math.max(1, height - HUD_HEIGHT - MARGIN * 2);
+    const viewTilesW = viewW / CELL_PX;
+    const viewTilesH = viewH / CELL_PX;
 
-  const vx0 = MARGIN;
-  const vy0 = MARGIN;
-  const viewW = Math.max(1, width - MARGIN * 2);
-  const viewH = Math.max(1, height - HUD_HEIGHT - MARGIN * 2);
-  const viewTilesW = viewW / CELL_PX;
-  const viewTilesH = viewH / CELL_PX;
+    // Camera top-left corner, in fractional tile units.
+    //
+    // North-up: centered on the player by default, clamped per-axis to the map's
+    // bounds — but centered on that axis instead when the map is smaller than the
+    // viewport there, since the clamp range would otherwise be invalid (negative).
+    //
+    // Facing-up: centered *exactly* on the player, with no clamp. A rotated
+    // viewport's corners sweep past the map's bounds no matter where the camera
+    // sits, so a clamp would buy nothing and would make the player's marker drift
+    // off the pivot the whole map turns around. Nothing spills visibly, because
+    // the rock outside the level is not drawn (see `wallFacesOpenSpace`).
+    const camX = rotateToFacing
+      ? player.posX
+      : map.width <= viewTilesW
+        ? (map.width - viewTilesW) / 2
+        : Math.max(0, Math.min(player.posX - viewTilesW / 2, map.width - viewTilesW));
+    const camY = rotateToFacing
+      ? player.posY
+      : map.height <= viewTilesH
+        ? (map.height - viewTilesH) / 2
+        : Math.max(0, Math.min(player.posY - viewTilesH / 2, map.height - viewTilesH));
 
-  // Camera top-left corner, in fractional tile units.
-  //
-  // North-up: centered on the player by default, clamped per-axis to the map's
-  // bounds — but centered on that axis instead when the map is smaller than the
-  // viewport there, since the clamp range would otherwise be invalid (negative).
-  //
-  // Facing-up: centered *exactly* on the player, with no clamp. A rotated
-  // viewport's corners sweep past the map's bounds no matter where the camera
-  // sits, so a clamp would buy nothing and would make the player's marker drift
-  // off the pivot the whole map turns around. Nothing spills visibly, because
-  // the rock outside the level is not drawn (see `wallFacesOpenSpace`).
-  const camX = rotateToFacing
-    ? player.posX
-    : map.width <= viewTilesW
-      ? (map.width - viewTilesW) / 2
-      : Math.max(0, Math.min(player.posX - viewTilesW / 2, map.width - viewTilesW));
-  const camY = rotateToFacing
-    ? player.posY
-    : map.height <= viewTilesH
-      ? (map.height - viewTilesH) / 2
-      : Math.max(0, Math.min(player.posY - viewTilesH / 2, map.height - viewTilesH));
+    // Drawing origin. North-up draws straight into the viewport; facing-up draws
+    // around (0,0) because the context is translated to the viewport's centre and
+    // rotated first, so the player — the camera's exact centre — lands on the
+    // pivot.
+    const ox = rotateToFacing ? 0 : vx0;
+    const oy = rotateToFacing ? 0 : vy0;
 
-  // Drawing origin. North-up draws straight into the viewport; facing-up draws
-  // around (0,0) because the context is translated to the viewport's centre and
-  // rotated first, so the player — the camera's exact centre — lands on the
-  // pivot.
-  const ox = rotateToFacing ? 0 : vx0;
-  const oy = rotateToFacing ? 0 : vy0;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(vx0, vy0, viewW, viewH);
+    ctx.clip();
 
-  ctx.save();
-  ctx.beginPath();
-  ctx.rect(vx0, vy0, viewW, viewH);
-  ctx.clip();
+    // Translucent panel behind the map, Diablo-style — the live 3D scene stays
+    // clearly visible through it rather than being mostly hidden.
+    ctx.fillStyle = "rgba(0,5,2,0.35)";
+    ctx.fillRect(vx0, vy0, viewW, viewH);
 
-  // Translucent panel behind the map, Diablo-style — the live 3D scene stays
-  // clearly visible through it rather than being mostly hidden.
-  ctx.fillStyle = "rgba(0,5,2,0.35)";
-  ctx.fillRect(vx0, vy0, viewW, viewH);
-
-  // Everything below is drawn in map space. Facing-up pivots that space about
-  // the viewport's centre; the clip and the panel above stay in screen space,
-  // so the viewport itself remains a rectangle.
-  //
-  // `-π/2 - facing` is what puts the facing direction on screen-up: canvas
-  // rotate() is clockwise-positive because +Y is down (the same convention
-  // `drawCompass` documents), and screen-up is -Y. Note the player marker needs
-  // no special case at all — drawn at its real facing angle inside this frame,
-  // it comes out pointing up, since `facing + (-π/2 - facing)` is `-π/2`.
-  if (rotateToFacing) {
-    ctx.translate(vx0 + viewW / 2, vy0 + viewH / 2);
-    ctx.rotate(-Math.PI / 2 - Math.atan2(player.dirY, player.dirX));
-    // A nearest-neighbour rotation of 3px cells aliases badly; opt this one
-    // blit in and restore, the way `drawDisc` does.
-    ctx.imageSmoothingEnabled = true;
-  }
-
-  const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
-
-  // Only the tile range that can actually be visible in the viewport.
-  // The tile range that can actually be visible. Rotated, the viewport's
-  // corners reach further than its own width and height — up to half its
-  // diagonal in every direction from the pivot — so the axis-aligned bounds
-  // would clip the map short on the diagonals as the player turns.
-  const reachTiles = Math.hypot(viewW, viewH) / 2 / CELL_PX + 1;
-  const tileX0 = Math.max(0, Math.floor(rotateToFacing ? camX - reachTiles : camX));
-  const tileY0 = Math.max(0, Math.floor(rotateToFacing ? camY - reachTiles : camY));
-  const tileX1 = Math.min(map.width, Math.ceil(rotateToFacing ? camX + reachTiles : camX + viewTilesW));
-  const tileY1 = Math.min(map.height, Math.ceil(rotateToFacing ? camY + reachTiles : camY + viewTilesH));
-
-  // One blit for the whole static layer where a DOM exists to bake into,
-  // otherwise the same tiles drawn live. See `automapTileCanvas`.
-  const layer = automapTileCanvas(map, gridVersion);
-  if (layer) {
-    // The viewport clip above already bounds this, so the whole layer can be
-    // drawn at a camera offset rather than sliced with source-rect arithmetic
-    // — which also keeps negative `camX`/`camY` (a map smaller than the
-    // viewport, so the camera centres instead of clamping) from needing a
-    // special case.
-    ctx.drawImage(layer, ox - camX * CELL_PX, oy - camY * CELL_PX);
-    // Spike traps are the one tile type that cannot be baked — their colour
-    // rides `levelTime`. Walked from `map.spikeTraps` rather than by scanning
-    // the grid, since that list is exactly the tiles that need them.
-    for (const trap of map.spikeTraps) {
-      if (trap.x < tileX0 - 1 || trap.x > tileX1 || trap.y < tileY0 - 1 || trap.y > tileY1) continue;
-      ctx.fillStyle = activeSpikes.has(`${trap.x},${trap.y}`) ? SPIKE_ACTIVE_COLOR : SPIKE_SAFE_COLOR;
-      ctx.fillRect(ox + (trap.x - camX) * CELL_PX, oy + (trap.y - camY) * CELL_PX, CELL_PX, CELL_PX);
+    // Everything below is drawn in map space. Facing-up pivots that space about
+    // the viewport's centre; the clip and the panel above stay in screen space,
+    // so the viewport itself remains a rectangle.
+    //
+    // `-π/2 - facing` is what puts the facing direction on screen-up: canvas
+    // rotate() is clockwise-positive because +Y is down (the same convention
+    // `drawCompass` documents), and screen-up is -Y. Note the player marker needs
+    // no special case at all — drawn at its real facing angle inside this frame,
+    // it comes out pointing up, since `facing + (-π/2 - facing)` is `-π/2`.
+    if (rotateToFacing) {
+      ctx.translate(vx0 + viewW / 2, vy0 + viewH / 2);
+      ctx.rotate(-Math.PI / 2 - Math.atan2(player.dirY, player.dirX));
+      // A nearest-neighbour rotation of 3px cells aliases badly; opt this one
+      // blit in and restore, the way `drawDisc` does.
+      ctx.imageSmoothingEnabled = true;
     }
-  } else {
-    for (let y = tileY0; y < tileY1; y++) {
-      const tileRow = map.grid[y];
-      for (let x = tileX0; x < tileX1; x++) {
-        const tile = tileRow[x];
-        const color =
-          tile === SPIKE_TRAP_TILE
-            ? activeSpikes.has(`${x},${y}`)
-              ? SPIKE_ACTIVE_COLOR
-              : SPIKE_SAFE_COLOR
-            : staticTileColor(map, x, y, tile);
-        if (color === null) continue;
-        ctx.fillStyle = color;
-        ctx.fillRect(ox + (x - camX) * CELL_PX, oy + (y - camY) * CELL_PX, CELL_PX, CELL_PX);
+
+    const activeSpikes = activeSpikeTileKeys(map.spikeTraps, levelTime);
+
+    // Only the tile range that can actually be visible in the viewport.
+    // The tile range that can actually be visible. Rotated, the viewport's
+    // corners reach further than its own width and height — up to half its
+    // diagonal in every direction from the pivot — so the axis-aligned bounds
+    // would clip the map short on the diagonals as the player turns.
+    const reachTiles = Math.hypot(viewW, viewH) / 2 / CELL_PX + 1;
+    const tileX0 = Math.max(0, Math.floor(rotateToFacing ? camX - reachTiles : camX));
+    const tileY0 = Math.max(0, Math.floor(rotateToFacing ? camY - reachTiles : camY));
+    const tileX1 = Math.min(map.width, Math.ceil(rotateToFacing ? camX + reachTiles : camX + viewTilesW));
+    const tileY1 = Math.min(map.height, Math.ceil(rotateToFacing ? camY + reachTiles : camY + viewTilesH));
+
+    // One blit for the whole static layer where a DOM exists to bake into,
+    // otherwise the same tiles drawn live. See `automapTileCanvas`.
+    const layer = automapTileCanvas(map, gridVersion, scale);
+    if (layer) {
+      // The viewport clip above already bounds this, so the whole layer can be
+      // drawn at a camera offset rather than sliced with source-rect arithmetic
+      // — which also keeps negative `camX`/`camY` (a map smaller than the
+      // viewport, so the camera centres instead of clamping) from needing a
+      // special case.
+      ctx.drawImage(layer, ox - camX * CELL_PX, oy - camY * CELL_PX, layer.width / scale, layer.height / scale);
+      // Spike traps are the one tile type that cannot be baked — their colour
+      // rides `levelTime`. Walked from `map.spikeTraps` rather than by scanning
+      // the grid, since that list is exactly the tiles that need them.
+      for (const trap of map.spikeTraps) {
+        if (trap.x < tileX0 - 1 || trap.x > tileX1 || trap.y < tileY0 - 1 || trap.y > tileY1) continue;
+        ctx.fillStyle = activeSpikes.has(`${trap.x},${trap.y}`) ? SPIKE_ACTIVE_COLOR : SPIKE_SAFE_COLOR;
+        ctx.fillRect(ox + (trap.x - camX) * CELL_PX, oy + (trap.y - camY) * CELL_PX, CELL_PX, CELL_PX);
+      }
+    } else {
+      for (let y = tileY0; y < tileY1; y++) {
+        const tileRow = map.grid[y];
+        for (let x = tileX0; x < tileX1; x++) {
+          const tile = tileRow[x];
+          const color =
+            tile === SPIKE_TRAP_TILE
+              ? activeSpikes.has(`${x},${y}`)
+                ? SPIKE_ACTIVE_COLOR
+                : SPIKE_SAFE_COLOR
+              : staticTileColor(map, x, y, tile);
+          if (color === null) continue;
+          ctx.fillStyle = color;
+          ctx.fillRect(ox + (x - camX) * CELL_PX, oy + (y - camY) * CELL_PX, CELL_PX, CELL_PX);
+        }
       }
     }
-  }
 
-  // Discovered, still-live proximity mines.
-  ctx.fillStyle = MINE_COLOR;
-  for (const mine of map.mines) {
-    if (!mine.alive || !mine.visible) continue;
-    if (mine.x < tileX0 - 1 || mine.x > tileX1 || mine.y < tileY0 - 1 || mine.y > tileY1) continue;
-    const mx = ox + (mine.x - camX) * CELL_PX - CELL_PX / 2;
-    const my = oy + (mine.y - camY) * CELL_PX - CELL_PX / 2;
-    ctx.fillRect(mx, my, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
-  }
+    // Discovered, still-live proximity mines.
+    ctx.fillStyle = MINE_COLOR;
+    for (const mine of map.mines) {
+      if (!mine.alive || !mine.visible) continue;
+      if (mine.x < tileX0 - 1 || mine.x > tileX1 || mine.y < tileY0 - 1 || mine.y > tileY1) continue;
+      const mx = ox + (mine.x - camX) * CELL_PX - CELL_PX / 2;
+      const my = oy + (mine.y - camY) * CELL_PX - CELL_PX / 2;
+      ctx.fillRect(mx, my, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
+    }
 
-  // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
-  // — e.g. left behind by a disconnected player), and the one thing here still
-  // gated on `map.visited`.
-  //
-  // That gate used to be justified as "the same rule this renderer already
-  // applies to literally everything else". It is now the *exception* rather
-  // than the rule, and it survives on its own merits: a drop marks where a
-  // teammate dropped out, so an ungated one broadcasts their exact position
-  // the instant it happens, in a room nobody has entered. That is a coop
-  // privacy rule (`multiplayer-game-state-spec.md` §5), not a discovery one,
-  // which is why it outlived the fog it used to hide behind. `[]` for
-  // single-player, so this loop is a no-op there.
-  ctx.fillStyle = LOOT_DROP_COLOR;
-  for (const drop of lootDrops) {
-    if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
-    if (drop.x < tileX0 - 1 || drop.x > tileX1 || drop.y < tileY0 - 1 || drop.y > tileY1) continue;
-    const dx = ox + (drop.x - camX) * CELL_PX - CELL_PX / 2;
-    const dy = oy + (drop.y - camY) * CELL_PX - CELL_PX / 2;
-    ctx.fillRect(dx, dy, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
-  }
+    // Multiplayer-only loot drops (ammo/weapon/health/key drops on the ground
+    // — e.g. left behind by a disconnected player), and the one thing here still
+    // gated on `map.visited`.
+    //
+    // That gate used to be justified as "the same rule this renderer already
+    // applies to literally everything else". It is now the *exception* rather
+    // than the rule, and it survives on its own merits: a drop marks where a
+    // teammate dropped out, so an ungated one broadcasts their exact position
+    // the instant it happens, in a room nobody has entered. That is a coop
+    // privacy rule (`multiplayer-game-state-spec.md` §5), not a discovery one,
+    // which is why it outlived the fog it used to hide behind. `[]` for
+    // single-player, so this loop is a no-op there.
+    ctx.fillStyle = LOOT_DROP_COLOR;
+    for (const drop of lootDrops) {
+      if (!map.visited[Math.floor(drop.y)]?.[Math.floor(drop.x)]) continue;
+      if (drop.x < tileX0 - 1 || drop.x > tileX1 || drop.y < tileY0 - 1 || drop.y > tileY1) continue;
+      const dx = ox + (drop.x - camX) * CELL_PX - CELL_PX / 2;
+      const dy = oy + (drop.y - camY) * CELL_PX - CELL_PX / 2;
+      ctx.fillRect(dx, dy, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
+    }
 
-  // Exit tile. Drawn unconditionally now that the terrain is: the corner
-  // minimap has always shown the exit from the moment the level loads
-  // (`renderMinimap`'s own exit block has no gate at all), so keeping a
-  // discovery gate on this one panel made the *bigger, deliberately opened*
-  // map the one that told you less.
-  {
-    ctx.fillStyle = EXIT_COLOR;
-    const ex = ox + (map.exit.x - camX) * CELL_PX;
-    const ey = oy + (map.exit.y - camY) * CELL_PX;
-    ctx.fillRect(ex, ey, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
-  }
+    // Exit tile. Drawn unconditionally now that the terrain is: the corner
+    // minimap has always shown the exit from the moment the level loads
+    // (`renderMinimap`'s own exit block has no gate at all), so keeping a
+    // discovery gate on this one panel made the *bigger, deliberately opened*
+    // map the one that told you less.
+    {
+      ctx.fillStyle = EXIT_COLOR;
+      const ex = ox + (map.exit.x - camX) * CELL_PX;
+      const ey = oy + (map.exit.y - camY) * CELL_PX;
+      ctx.fillRect(ex, ey, Math.max(3, CELL_PX), Math.max(3, CELL_PX));
+    }
 
-  // Teammates, in their own per-player colour. Ungated — which was a
-  // deliberate exception when the terrain was fogged, and is simply the norm
-  // now that it isn't. The distinction that still matters is with the loot
-  // drops above: a drop is level content and leaks a room, a teammate is a
-  // person and leaks only themselves, to people already on their team.
-  // `[]` in single-player, so this loop is a no-op there.
-  for (const mate of teammates) {
-    const mx = ox + (mate.x - camX) * CELL_PX;
-    const my = oy + (mate.y - camY) * CELL_PX;
-    const dot = Math.max(4, CELL_PX + 1);
-    ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
-    ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
-    ctx.fillStyle = mate.color;
-    ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
-  }
+    // Teammates, in their own per-player colour. Ungated — which was a
+    // deliberate exception when the terrain was fogged, and is simply the norm
+    // now that it isn't. The distinction that still matters is with the loot
+    // drops above: a drop is level content and leaks a room, a teammate is a
+    // person and leaks only themselves, to people already on their team.
+    // `[]` in single-player, so this loop is a no-op there.
+    for (const mate of teammates) {
+      const mx = ox + (mate.x - camX) * CELL_PX;
+      const my = oy + (mate.y - camY) * CELL_PX;
+      const dot = Math.max(4, CELL_PX + 1);
+      ctx.fillStyle = TEAMMATE_OUTLINE_COLOR;
+      ctx.fillRect(mx - dot / 2 - 1, my - dot / 2 - 1, dot + 2, dot + 2);
+      ctx.fillStyle = mate.color;
+      ctx.fillRect(mx - dot / 2, my - dot / 2, dot, dot);
+    }
 
-  // The sonar ring for anyone currently calling for help. The viewport is
-  // already clipped above, so unlike the minimap's this needs no clip of its
-  // own. `outlineRect` (four `fillRect`s), never `strokeRect` — this renderer
-  // is covered by `renderCost.test.ts` too.
-  const now = performance.now();
-  const helpPulse = 0.5 + 0.5 * Math.sin(now / 150);
-  const helpSweep = (now % HELP_PING_SWEEP_MS) / HELP_PING_SWEEP_MS;
-  ctx.lineWidth = 1;
-  for (const mate of teammates) {
-    if (!mate.helpPing) continue;
-    const cx = ox + (mate.x - camX) * CELL_PX;
-    const cy = oy + (mate.y - camY) * CELL_PX;
-    const base = Math.max(4, CELL_PX + 1) * (1 + 0.3 * helpPulse);
-    ctx.fillStyle = mate.color;
-    ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
-    const ring = base + 2 + helpSweep * HELP_PING_RING_GROWTH_PX;
-    ctx.strokeStyle = mate.color;
-    ctx.globalAlpha = 0.7 * (1 - helpSweep);
-    outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
-    ctx.globalAlpha = 1;
-  }
+    // The sonar ring for anyone currently calling for help. The viewport is
+    // already clipped above, so unlike the minimap's this needs no clip of its
+    // own. `outlineRect` (four `fillRect`s), never `strokeRect` — this renderer
+    // is covered by `renderCost.test.ts` too.
+    const now = performance.now();
+    const helpPulse = 0.5 + 0.5 * Math.sin(now / 150);
+    const helpSweep = (now % HELP_PING_SWEEP_MS) / HELP_PING_SWEEP_MS;
+    ctx.lineWidth = 1;
+    for (const mate of teammates) {
+      if (!mate.helpPing) continue;
+      const cx = ox + (mate.x - camX) * CELL_PX;
+      const cy = oy + (mate.y - camY) * CELL_PX;
+      const base = Math.max(4, CELL_PX + 1) * (1 + 0.3 * helpPulse);
+      ctx.fillStyle = mate.color;
+      ctx.fillRect(cx - base / 2, cy - base / 2, base, base);
+      const ring = base + 2 + helpSweep * HELP_PING_RING_GROWTH_PX;
+      ctx.strokeStyle = mate.color;
+      ctx.globalAlpha = 0.7 * (1 - helpSweep);
+      outlineRect(ctx, cx - ring / 2, cy - ring / 2, ring, ring);
+      ctx.globalAlpha = 1;
+    }
 
-  drawPlayerMarker(ctx, player, ox, oy, camX, camY, CELL_PX);
+    drawPlayerMarker(ctx, player, ox, oy, camX, camY, CELL_PX);
 
-  if (rotateToFacing) ctx.imageSmoothingEnabled = false;
-  ctx.restore();
+    if (rotateToFacing) ctx.imageSmoothingEnabled = false;
+    ctx.restore();
+  });
 }
 
 /** Solid triangle at the player's exact position, pointing along their

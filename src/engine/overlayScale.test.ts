@@ -145,6 +145,32 @@ describe("withOverlayScale", () => {
     expect(contextScale(asCtx(c)), "identity again after the body").toBe(1);
   });
 
+  it("refuses to nest, so a double scale cannot ship", () => {
+    // The guard that makes "wrap at entry points only" a control rather than a
+    // comment. Double-scaling is invisible at Classic — squaring a factor of 1
+    // changes nothing — so without this it would reach a player's Sharp session
+    // before anyone noticed. Asserted here rather than assumed, because a guard
+    // nobody has seen fire is a guard nobody knows is wired up.
+    const c = ctx(1280, 800);
+    expect(() =>
+      withOverlayScale(asCtx(c), () => {
+        withOverlayScale(asCtx(c), () => {});
+      }),
+    ).toThrow(/already scaled/);
+  });
+
+  it("still restores the outer transform after refusing a nested call", () => {
+    // A guard that leaks the transform it refused is worse than none: the next
+    // frame's scene would render scaled.
+    const c = ctx(1280, 800);
+    expect(() =>
+      withOverlayScale(asCtx(c), () => {
+        withOverlayScale(asCtx(c), () => {});
+      }),
+    ).toThrow();
+    expect(contextScale(asCtx(c)), "identity again").toBe(1);
+  });
+
   it("restores even when the body throws", () => {
     // A leaked scale would corrupt the *next* frame's scene render, which reads
     // as a rendering bug rather than as a missing restore.

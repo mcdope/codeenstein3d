@@ -133,8 +133,10 @@ describe("drawWeapon — recoil and head-bob", () => {
   it("saves and restores canvas state around the draw", () => {
     const c = ctx();
     drawWeapon(asCtx(c), weaponView("pistol"));
-    expect(c.save).toHaveBeenCalledTimes(1);
-    expect(c.restore).toHaveBeenCalledTimes(1);
+    // Two pairs now: `withOverlayScale`'s, plus the viewmodel's own around the
+    // round `lineJoin` it sets for every weapon body.
+    expect(c.save).toHaveBeenCalledTimes(2);
+    expect(c.restore).toHaveBeenCalledTimes(2);
   });
 });
 

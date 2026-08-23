@@ -19,6 +19,7 @@
  * draw per frame is enough to cost ~10ms of frame budget, so a new weapon must
  * follow the same split — see `doc/dev/adding-a-weapon.md`.
  */
+import { withOverlayScale } from "./overlayScale";
 import { drawGlyph, outlineRect, type Glyph } from "./pathSprites";
 import type { WeaponViewKind } from "./weapons";
 
@@ -102,74 +103,81 @@ const MUZZLE_GEOMETRY: Record<RangedViewKind, MuzzleGeometry> = {
   flamethrower: { barrelLen: 130, flashOffset: 14 },
 };
 
-/** Draw the equipped weapon at the bottom center of the canvas. */
+/**
+ * Draw the equipped weapon at the bottom center of the canvas.
+ *
+ * Every literal from here down — barrel lengths, `RECOIL_DOWN_PX`, the muzzle
+ * geometry table, the glyph boxes — is in design pixels (see
+ * `overlayScale.ts`), which is what makes the viewmodel the same size at every
+ * render preset. Adding a weapon means adding numbers in that space; see
+ * `doc/dev/adding-a-weapon.md`.
+ */
 export function drawWeapon(ctx: CanvasRenderingContext2D, v: WeaponView): void {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
+  withOverlayScale(ctx, (w, h) => {
+    // Recoil kicks the gun down and back (toward the viewer): a downward push
+    // plus a small drop that reads as the weapon recoiling into the corner.
+    const recoilDown = v.recoil * RECOIL_DOWN_PX;
+    const recoilBack = v.recoil * RECOIL_BACK_PX;
 
-  // Recoil kicks the gun down and back (toward the viewer): a downward push
-  // plus a small drop that reads as the weapon recoiling into the corner.
-  const recoilDown = v.recoil * RECOIL_DOWN_PX;
-  const recoilBack = v.recoil * RECOIL_BACK_PX;
+    const cx = w * WEAPON_CENTER_BIAS + v.bobX; // gun center, matching the tracer's fixed x origin
+    const baseY = h + v.bobY + recoilDown; // resting baseline sits on the bottom edge
 
-  const cx = w * WEAPON_CENTER_BIAS + v.bobX; // gun center, matching the tracer's fixed x origin
-  const baseY = h + v.bobY + recoilDown; // resting baseline sits on the bottom edge
+    // A reload dips the weapon out of view and brings it back: one smooth
+    // down-and-up over the progress range, peaking at the halfway point.
+    // `Math.sin(p * PI)` gives that in one term, and gives it *zero slope at
+    // both ends*, so the pose the dip starts from and returns to is exactly the
+    // resting pose — no visible jump on the frame the reload begins or ends.
+    //
+    // Like `recoil` above, the normalized progress is converted to pixels once
+    // here and each draw* function receives an already-offset anchor; none of
+    // them ever sees `reloadProgress` itself. That is what makes the three
+    // magazine-less weapons (knife, chainsaw, flamethrower) *structurally*
+    // immune to this field rather than merely ignoring it by convention.
+    //
+    // The motion is a pure translation of that anchor on purpose. A tilt, or a
+    // magazine swinging out of the well, would change a weapon's *geometry* per
+    // frame, and by this module's perf rule that means pre-rendering every
+    // affected shape at every quantised step (the `flameNozzleGlyph` treatment).
+    // Translating the anchor costs nothing at all — the live rectangles take a
+    // different origin and the pre-rendered glyphs blit to a different point.
+    const reloading = v.reloadProgress > 0;
+    const dip = reloading ? Math.sin(Math.min(v.reloadProgress, 1) * Math.PI) : 0;
+    const reloadCx = cx + dip * RELOAD_SIDE_PX;
+    const reloadBaseY = baseY + dip * RELOAD_DOWN_PX;
+    // A weapon that is being reloaded is by definition not firing, so a flash
+    // arriving in the same frame as a reload is stale state, not a shot.
+    const reloadFlash = v.flash && !reloading;
 
-  // A reload dips the weapon out of view and brings it back: one smooth
-  // down-and-up over the progress range, peaking at the halfway point.
-  // `Math.sin(p * PI)` gives that in one term, and gives it *zero slope at
-  // both ends*, so the pose the dip starts from and returns to is exactly the
-  // resting pose — no visible jump on the frame the reload begins or ends.
-  //
-  // Like `recoil` above, the normalized progress is converted to pixels once
-  // here and each draw* function receives an already-offset anchor; none of
-  // them ever sees `reloadProgress` itself. That is what makes the three
-  // magazine-less weapons (knife, chainsaw, flamethrower) *structurally*
-  // immune to this field rather than merely ignoring it by convention.
-  //
-  // The motion is a pure translation of that anchor on purpose. A tilt, or a
-  // magazine swinging out of the well, would change a weapon's *geometry* per
-  // frame, and by this module's perf rule that means pre-rendering every
-  // affected shape at every quantised step (the `flameNozzleGlyph` treatment).
-  // Translating the anchor costs nothing at all — the live rectangles take a
-  // different origin and the pre-rendered glyphs blit to a different point.
-  const reloading = v.reloadProgress > 0;
-  const dip = reloading ? Math.sin(Math.min(v.reloadProgress, 1) * Math.PI) : 0;
-  const reloadCx = cx + dip * RELOAD_SIDE_PX;
-  const reloadBaseY = baseY + dip * RELOAD_DOWN_PX;
-  // A weapon that is being reloaded is by definition not firing, so a flash
-  // arriving in the same frame as a reload is stale state, not a shot.
-  const reloadFlash = v.flash && !reloading;
+    ctx.save();
+    ctx.lineJoin = "round";
 
-  ctx.save();
-  ctx.lineJoin = "round";
+    switch (v.kind) {
+      case "shotgun":
+        drawShotgun(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
+        break;
+      case "knife":
+        drawKnife(ctx, cx, baseY, v.recoil);
+        break;
+      case "chainsaw":
+        drawChainsaw(ctx, cx, baseY, v.recoil);
+        break;
+      case "mp":
+        drawMp(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
+        break;
+      case "rocket":
+        drawRocketLauncher(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
+        break;
+      case "flamethrower":
+        drawFlamethrower(ctx, cx, baseY, recoilBack, v.flash);
+        break;
+      case "pistol":
+      default:
+        drawPistol(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
+        break;
+    }
 
-  switch (v.kind) {
-    case "shotgun":
-      drawShotgun(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
-      break;
-    case "knife":
-      drawKnife(ctx, cx, baseY, v.recoil);
-      break;
-    case "chainsaw":
-      drawChainsaw(ctx, cx, baseY, v.recoil);
-      break;
-    case "mp":
-      drawMp(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
-      break;
-    case "rocket":
-      drawRocketLauncher(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
-      break;
-    case "flamethrower":
-      drawFlamethrower(ctx, cx, baseY, recoilBack, v.flash);
-      break;
-    case "pistol":
-    default:
-      drawPistol(ctx, reloadCx, reloadBaseY, recoilBack, reloadFlash);
-      break;
-  }
-
-  ctx.restore();
+    ctx.restore();
+  });
 }
 
 /** The original blaster silhouette — a slim single barrel and boxy receiver. */

@@ -108,6 +108,23 @@ export function withOverlayScale<T>(
   ctx: CanvasRenderingContext2D,
   body: (w: number, h: number, scale: number) => T,
 ): T {
+  // Double-scaling is this design's one real hazard, and it is invisible at
+  // Classic — where the factor is 1 and squaring it changes nothing — so a
+  // comment saying "don't nest these" would be a rule with no way to fail.
+  // This is the failure: a nested call is a bug at every preset, so a
+  // development build refuses it rather than drawing the HUD two screens off
+  // the right edge on someone's Sharp session. Stripped from production
+  // builds, where the invariant has already been enforced by the test suite.
+  /* v8 ignore next -- build-time constant: `import.meta.env.DEV` is
+     define-substituted before minification, so the production bundle has no
+     branch here at all. @preserve */
+  if (import.meta.env.DEV && contextScale(ctx) !== 1) {
+    throw new Error(
+      "withOverlayScale: the context is already scaled. Overlay draws wrap at their entry point; " +
+        "a helper called from inside one takes the design dimensions as parameters instead " +
+        "(see `drawStatusBadge`).",
+    );
+  }
   const { scale, w, h } = overlayFrame(ctx.canvas.width, ctx.canvas.height);
   ctx.save();
   ctx.scale(scale, scale);

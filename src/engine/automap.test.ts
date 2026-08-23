@@ -613,9 +613,12 @@ describe("drawAutomap() — viewport clip and translucent panel", () => {
   it("saves state, clips to the viewport, and restores at the end", () => {
     const ctx = makeCtx();
     drawAutomap(asCtx(ctx), fakeMap(), fakePlayer());
-    expect(ctx.save).toHaveBeenCalledTimes(1);
+    // Two save/restore pairs: `withOverlayScale`'s, then the automap's own
+    // around the viewport clip. The clip stays at one — it is the automap's,
+    // and the wrapper adds no clipping of its own.
+    expect(ctx.save).toHaveBeenCalledTimes(2);
     expect(ctx.clip).toHaveBeenCalledTimes(1);
-    expect(ctx.restore).toHaveBeenCalledTimes(1);
+    expect(ctx.restore).toHaveBeenCalledTimes(2);
   });
 
   it("defaults levelTime to 0 when omitted", () => {
