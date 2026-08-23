@@ -619,11 +619,35 @@ export async function runDisconnectIsolationScenario(browser, devServerUrl) {
     await stopEvading(hostPage);
     const hostFinalStatus = await hostPage.evaluate(() => window.__codeensteinMultiplayerTestHooks.getPlayerStatus("host")).catch(() => null);
 
+    // Distinguishes "the disconnect was never detected" from "the run ended
+    // while we were watching for it" — two very different things that used to
+    // record identically as `guestFinalStatus: "undetected"` with a null
+    // latency. Both are reachable here and essentially nowhere else: this
+    // scenario has no god mode, so the host really can die mid-window, and a
+    // guest disconnect that then tips `every(q => q.status !== "alive")` ends
+    // the session in the very tick that set the status. `getPlayerStatus` goes
+    // straight from "alive" to null across that, which is exactly what
+    // `getLastSessionEnd` exists to see past.
+    //
+    // Recorded rather than repaired: a run whose session ended mid-detection
+    // measured no detection latency, and folding it into the latency series as
+    // though it had would be worse than the ambiguity it replaces.
+    const sessionEnd = await hostPage
+      .evaluate(() => window.__codeensteinMultiplayerTestHooks.getLastSessionEnd?.() ?? null)
+      .catch(() => null);
+    if (sessionEnd && guestFinalStatus === "undetected") {
+      guestFinalStatus = sessionEnd.statuses?.[guestId] ?? "undetected";
+      console.log(`  Session ended during the detection window (${sessionEnd.reason}); guest was "${guestFinalStatus}".`);
+    }
+
     return {
       guestFinalStatus,
       detectedWithinMs,
       hostKeptTicking,
       hostSurvived: hostFinalStatus === "alive",
+      // Null when the session was still live at the end of the window, so a
+      // reader can tell an unmeasured latency from a measured one.
+      endedDuringDetection: sessionEnd ? sessionEnd.reason : null,
     };
   } catch (err) {
     console.log(`  [disconnectIsolation crashed] ${err.message}`);

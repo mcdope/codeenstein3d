@@ -3873,6 +3873,7 @@ describe("main.ts — multiplayer connect flow", () => {
       hasActiveRenderOffset: (id: string) => boolean;
       getLastReconciliationRngState: () => number | null;
       getPlayerStatus: (id: string) => string | null;
+      getLastSessionEnd: () => { reason: string; statuses: Record<string, string> } | null;
       getLootDrops: () => readonly unknown[];
       getMapExit: () => { x: number; y: number } | null;
       getMapGrid: () => readonly (readonly number[])[] | null;
@@ -3904,6 +3905,7 @@ describe("main.ts — multiplayer connect flow", () => {
             hasActiveRenderOffset: (id: string) => boolean;
             getLastReconciliationRngState: () => number | null;
             getPlayerStatus: (id: string) => string | null;
+            getLastSessionEnd: () => { reason: string; statuses: Record<string, string> } | null;
             getLootDrops: () => readonly unknown[];
             getMapExit: () => { x: number; y: number } | null;
             getMapGrid: () => readonly (readonly number[])[] | null;
@@ -4049,6 +4051,9 @@ describe("main.ts — multiplayer connect flow", () => {
         expect(multiplayerHooks().hasActiveRenderOffset("host")).toBe(false);
         expect(multiplayerHooks().getLastReconciliationRngState()).toBeNull();
         expect(multiplayerHooks().getPlayerStatus("host")).toBeNull();
+        // Distinct from "a session ended and left nothing": no session has
+        // ever existed, so there is no record to be keyed against either.
+        expect(multiplayerHooks().getLastSessionEnd()).toBeNull();
         expect(multiplayerHooks().getPlayerDisplayName("host")).toBeNull();
         expect(multiplayerHooks().getLootDrops()).toEqual([]);
         expect(multiplayerHooks().getMapExit()).toBeNull();
@@ -4724,6 +4729,154 @@ describe("main.ts — multiplayer connect flow", () => {
       expect(document.querySelector<HTMLButtonElement>("#tab-multiplayer")!.getAttribute("aria-selected")).toBe("false");
       expect(document.querySelector<HTMLElement>("#tab-panel-multiplayer")!.hidden).toBe(true);
       raf.restore();
+    });
+
+    /**
+     * Joins a guest session on the hazardous-spawn fixture map and returns the
+     * input channel, so a caller can pump `TickInputBundle`s into the shared
+     * simulation.
+     *
+     * A local helper rather than a refactor of the two existing guest tests
+     * that inline this: they are long, load-bearing and green, and rewriting
+     * them to share a helper would put unrelated churn in a PR about a hook.
+     */
+    async function joinHazardSessionAsGuest(): Promise<FakeRTCDataChannel> {
+      await loadEligibleWorkspace();
+      await waitUntil(() => document.querySelector(".canvas-area")!.hasAttribute("hidden") === false, 8000);
+      document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+      fetchMock
+        .mockResolvedValueOnce(
+          jsonResponse({ code: "R4KJ9X", offer: "offer-sdp", answer: null, campaignName: "demo-campaign", displayName: null, playerCount: 1 }),
+        )
+        .mockResolvedValueOnce(noTurnRelayResponse())
+        .mockResolvedValueOnce({ ok: true, status: 204 } as unknown as Response);
+
+      document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "r4kj9x";
+      document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+
+      await waitUntil(() => FakeRTCPeerConnection.instances.length > 0);
+      const pc = FakeRTCPeerConnection.instances.at(-1)!;
+      pc.simulateIceGatheringComplete();
+      await waitUntil(() => pc.remoteDescription !== null);
+      await waitUntil(() => fetchMock.mock.calls.length >= 2);
+
+      const input = new FakeRTCDataChannel("input");
+      const reconciliation = new FakeRTCDataChannel("reconciliation");
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Establishing connection…");
+      pc.simulateIncomingDataChannel(input);
+      pc.simulateIncomingDataChannel(reconciliation);
+      input.simulateOpen();
+      reconciliation.simulateOpen();
+      await waitUntil(() => document.querySelector<HTMLParagraphElement>("#multiplayer-status")!.textContent === "Connected.");
+
+      const send = (msg: unknown): boolean => reconciliation.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(msg) }));
+      await flushAsync();
+      send({ type: "build-version", ref: __BUILD_REF__, time: __BUILD_TIME__ });
+      send({
+        type: "session-init",
+        roster: ["guest", "host"],
+        assignedId: "guest",
+        tickRateHz: 30,
+        fixedDt: 1 / 30,
+        inputDelayTicks: 3,
+        gameplaySeed: 1,
+        difficulty: "normal",
+        playerCount: 2,
+      });
+      const { chunkJson } = await import("./multiplayer/chunkedTransfer");
+      const chunks = chunkJson(fixtureMapWithoutVisited(true), 16 * 1024);
+      chunks.forEach((data, index) => send({ type: "map-chunk", index, data }));
+      send({ type: "map-end", totalChunks: chunks.length });
+      await flushAsync();
+      expect(document.querySelector<HTMLElement>(".canvas-area")!.hasAttribute("hidden")).toBe(false);
+      return input;
+    }
+
+    /**
+     * The case `getLastSessionEnd` exists for. It needs its own test rather
+     * than an extension of the one above, for two independent reasons: that
+     * test never enables `?testHooks=1`, so the hook object is not installed at
+     * all; and it reaches game-over by *both* players dying in hazard, giving a
+     * roster of `["dead", "dead"]` that never contains the `"disconnected"`
+     * this is about.
+     *
+     * The sequence here is the real one — a survivor is roster-removed, and
+     * that removal is what tips `every(q => q.status !== "alive")`, so the
+     * status is set and the session torn down inside one synchronous handler.
+     */
+    it("guest: getLastSessionEnd reports a disconnect that ended the session, which getPlayerStatus cannot", async () => {
+      const raf = installRaf({ stubClock: true });
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        const input = await joinHazardSessionAsGuest();
+        const hooks = multiplayerHooks();
+
+        // Only the host may die to the shared hazard — otherwise both do and
+        // this becomes the other test's case.
+        hooks.debugSetGodMode("guest", true);
+
+        const pump = (tick: number, extra: Record<string, unknown> = {}): void => {
+          const bundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [], levelEpoch: 0, ...extra };
+          input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
+        };
+
+        let tick = 0;
+        for (; tick < 400 && hooks.getPlayerStatus("host") !== "dead"; tick++) pump(tick);
+        expect(hooks.getPlayerStatus("host"), "the host must die to the hazard").toBe("dead");
+        expect(hooks.getPlayerStatus("guest"), "the guest must survive it").toBe("alive");
+        // A lone survivor keeps the run going — nothing has ended yet.
+        expect(hooks.getLastSessionEnd()).toBeNull();
+
+        pump(tick, { rosterRemove: ["guest"] });
+
+        // The reason the hook exists: the status goes straight from "alive" to
+        // unreadable, with no observable "disconnected" in between.
+        expect(hooks.getPlayerStatus("guest")).toBeNull();
+        expect(hooks.getLastSessionEnd()).toEqual({
+          reason: "team-eliminated",
+          statuses: { guest: "disconnected", host: "dead" },
+        });
+      } finally {
+        history.pushState(null, "", "/");
+        raf.restore();
+      }
+    });
+
+    it("guest: getLastSessionEnd is null with no session, and stops answering once a new connect starts", async () => {
+      const raf = installRaf({ stubClock: true });
+      history.pushState(null, "", "?testHooks=1");
+      try {
+        const input = await joinHazardSessionAsGuest();
+        const hooks = multiplayerHooks();
+        hooks.debugSetGodMode("guest", true);
+        const pump = (tick: number, extra: Record<string, unknown> = {}): void => {
+          const bundle = { tick, dt: 1 / 30, inputs: { host: emptySnapshot(), guest: emptySnapshot() }, heldInputFallback: [], levelEpoch: 0, ...extra };
+          input.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(bundle) }));
+        };
+        let tick = 0;
+        for (; tick < 400 && hooks.getPlayerStatus("host") !== "dead"; tick++) pump(tick);
+        pump(tick, { rosterRemove: ["guest"] });
+        expect(multiplayerHooks().getLastSessionEnd()).not.toBeNull();
+
+        // A finished session must never answer for a different one. The record
+        // is keyed to `multiplayerConnectionGeneration` rather than cleared at
+        // the session-start sites, so this also covers the paths that never
+        // reach `onMultiplayerSessionEnded` — see the hook's doc comment.
+        document.querySelector<HTMLButtonElement>("#multiplayer-subtab-join")!.click();
+        // Every fetch rejects, so the attempt fails immediately and nothing is
+        // left in flight to leak into the next test — an earlier version let one
+        // escape to a real network call and broke the test after this one. The
+        // bump does not depend on the attempt succeeding: `joinMultiplayerSession`
+        // calls `beginMultiplayerConnect()` synchronously, before any request.
+        fetchMock.mockRejectedValue(new Error("test: connect not pursued"));
+        document.querySelector<HTMLInputElement>("#multiplayer-join-code-input")!.value = "q7zz2y";
+        document.querySelector<HTMLButtonElement>("#multiplayer-join-connect")!.click();
+        expect(multiplayerHooks().getLastSessionEnd(), "a new connect must retire the old record").toBeNull();
+        await flushAsync();
+      } finally {
+        history.pushState(null, "", "/");
+        raf.restore();
+      }
     });
 
     it("guest: dismissing the end-of-session overlay falls back to the Local tab when no workspace was ever loaded", async () => {
