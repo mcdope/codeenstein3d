@@ -49,7 +49,8 @@
  * canvas in software, where the GPU-process coverage-pass penalty that costs
  * ~10ms/frame simply does not exist. Every scenario reads a flat 60fps with
  * zero dropped frames there. The harness warns when you use it.
- * A/B: --flag aa|scaling temporarily flips the corresponding compile-time
+ * A/B: --flag aa|scaling|fog|floorfast|floorhalf|floorhalfauto|playerstats
+ *   temporarily flips the corresponding compile-time
  *   const in-place (working tree for that file must be clean), interleaving
  *   baseline/flagged runs A,B,A,B,... against thermal drift, and ALWAYS
  *   restores the file via `git checkout --` in a finally block.
@@ -88,6 +89,12 @@ const FLAG_DEFS = {
   // so the flagged arm turns it OFF — measuring the unpaired combo (e.g.
   // 1280x800 with a full-res floor) that the app itself never exposes.
   floorhalfauto: { file: "src/engine/raycaster.ts", name: "AUTO_HALF_RES_FLOOR_ENABLED", invert: true },
+  // The level-end/run-end stats screen. Default is `false`, so unlike `fog`
+  // and the `floor*` pair the flagged arm turns it ON — this measures what
+  // enabling would cost, not what it saves. Added 2026-08-23 for the remeasure
+  // `notes` asked for; the 2026-08-02 A/B used `?testHooks=1` and a throwaway
+  // probe script that was never committed, which is why it could not be redone.
+  playerstats: { file: "src/engine/playerStats.ts", name: "PLAYER_STATS_ENABLED" },
   // ctxalpha ({alpha:false} display context) was A/B'd 2026-08-16 and removed:
   // no measurable effect on busy or pacing.
 };

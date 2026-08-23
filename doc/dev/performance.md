@@ -25,7 +25,7 @@ Phase begin lives in `advance()` itself (not the rAF `frame()` wrapper), so dire
   - **Busy time** — the A/B metric for cost *inside* the frame callback. rAF pins intervals to vsync, so a cost delta smaller than the frame budget is invisible in intervals. Busy time (sum of measured phases per frame, from the stats hook) is refresh-rate-independent.
   - **Presented frames** — dropped-frame count and percentage, for cost *outside* the frame callback. **Busy measures the time to _record_ canvas draw calls; rasterising that display list happens afterwards, in the GPU process, and busy cannot see it at all.** A change that leaves busy flat at 6.1ms and drops a third of the frames is not hypothetical — see [`perf-review-2026-08-02.md`](perf-review-2026-08-02.md), where exactly that ran for months and was misfiled as environmental by an audit that only looked at busy. The harness derives the display's frame period from the run's own median rather than assuming 60Hz, and counts an interval at or beyond 1.5 periods as dropped.
 - **Calibrate before comparing**: `--calibrate` runs the idle cell 10 times and reports the coefficient of variation (scoped to the invocation's own cells — a `--resume` into a dir holding unrelated idle runs can no longer widen it); a delta below ~2× that spread is "no measurable difference" (≈0.1–0.2ms on the reference machine). Never claim an A/B result without stating this floor.
-- **Flag A/B** (`--flag aa|scaling|fog|floorfast|floorhalf|floorhalfauto`): interleaves baseline/flagged runs A,B,A,B (defeats thermal drift), temporarily flipping the compile-time const in-source with a guarded git-restore. `fog`, `floorfast` and `floorhalfauto` are inverted (their defaults are on; the flagged variant measures turning each *off*).
+- **Flag A/B** (`--flag aa|scaling|fog|floorfast|floorhalf|floorhalfauto|playerstats`): interleaves baseline/flagged runs A,B,A,B (defeats thermal drift), temporarily flipping the compile-time const in-source with a guarded git-restore. `fog`, `floorfast` and `floorhalfauto` are inverted (their defaults are on; the flagged variant measures turning each *off*).
 - **DVFS can flip a busy A/B's sign.** Busy-ms is CPU-clock-dependent under `schedutil`, and the clock follows load: the u32 floor-cast read **+1.3ms** (a regression) in a properly interleaved A/B at 640×400 while genuinely being **−0.5ms** faster — the lighter arm dropped a boost bin. Interleaving does not protect against this; it is within-run, not thermal. Any busy A/B whose arms run below ~90% duty must be clock-equalized (the `c2-2bg` cell: two busy-loop burners in both arms) or run on a saturated cell (`res-double`). Pacing metrics are immune but cannot arbitrate while both arms hold refresh rate.
 - **Scenarios** (`--scenario`): `s1-idle` (calibration workload), `s2-replay` (deterministic combat — the bundled default-highscore replay), `s3-stress` (IDKFA/IDDQD rocket+flame particle stress at the **Extreme** gore tier) / `s3-splatter` (the same macro at **Absurd**, the top tier — 45x spawns, an 1800-particle cap and stains that never expire; `s3-stress` stays pinned to Extreme so its budget history keeps comparing, and this cell tracks the current ceiling), `s4-magento*` (Task-241 shape: the magento2 GitHub repo's `…/Pdo/Mysql.php`, a 160×160 map with 280 enemies, network HAR-replayed offline — re-record with `CODEENSTEIN_PERF_HAR_RECORD=1`; sub-cells: idle/fire/dryfire/mouseflood/move/fire-quiet), `s5-bot-demo` (the balancing bot plays; needs `?testHooks=1` — see caveat below). The 2026-08 frame-budget audit added: `c1-raycast`/`c2-sprites`/`c3-stress` (worst-case balancing-corpus levels — stb `stb_vorbis.c` and laravel `Query/Builder.php`, 522 enemies — loaded as single-file local workspaces via an OPFS `showDirectoryPicker` stub, `scripts/lib/opfsWorkspace.mjs`, pinned `?seed=`; no testHooks, real clock), the `l0-empty`…`l8-full` cumulative ablation ladder and `only-*` full-minus-one cells (driven by the engine's `?ablate=` kill switches), `res-half`/`res-double` (internal resolution via `?renderRes=WxH`), `view-1080/4k/6k` (window-size raster probes), `load-*bg` (CPU burners), `gpu-bg` (4K-repaint neighbor window), and `c2-2bg` (the clock-equalized A/B cell). Level-density selection for the corpus cells: `scripts/dump-level-density.mjs`; per-frame draw-call census: `scripts/count-draw-calls.mjs`.
 - **Substrate**: `--channel chrome` measures on the installed system Chrome (the actual target) instead of Playwright's bundled Chromium; the browser version lands in `manifest.json`. Measured 2026-08-16: no divergence beyond noise between the two. `--no-sampler`/`--no-perfdebug` disable one instrument to measure its own overhead through the other (both measured ≤ the calibration noise floor). The injected sampler also carries `PerformanceObserver` capture (`longtask` + `long-animation-frame`, feature-detected per run) and a per-frame `usedJSHeapSize` ring for GC-drop detection.
@@ -91,6 +91,21 @@ means, a full coverage-pass penalty is not being paid by one rotated
 `drawImage` per frame in the shipped automap. Whether that is because the
 penalty no longer applies, or because one blit never triggered it where
 thousands of rotated quads would have, is still open.
+
+## Killing `perf:bench` mid-matrix leaves the flag flipped in your working tree
+
+`--flag` edits the source const in place and restores it with `git checkout --`
+in a `finally`. A hard kill skips the `finally`. Backgrounding the harness and
+then killing it — or killing its vite — leaves the flag **flipped**, silently,
+in a file you are about to commit.
+
+Hit on 2026-08-23 running `--flag playerstats`: the job was backgrounded, killed,
+and left `PLAYER_STATS_ENABLED = true` in the tree. Also worth knowing that
+killing the harness's vite mid-matrix does not stop the matrix — it carries on
+producing runs against a dead server, and those runs *look* plausible (they just
+collapse to a few hundred frames), so they will quietly poison an A/B.
+
+**Run `perf:bench` in the foreground, and `git diff` the flag's file afterwards.**
 
 ## Gotchas (each cost the audit real time)
 

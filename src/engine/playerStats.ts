@@ -16,17 +16,38 @@
  */
 import type { DamageSource, TelemetryState } from "./telemetry";
 
-/** Off by default — recording telemetry for this on every real playthrough
- * (not just `?testHooks=1` bot runs) measurably slowed gameplay down even
- * after gating the derived stats to only compute at level-end (see
- * `RaycasterEngine.buildStats`'s `atLevelEnd` gate); the per-event recording
- * calls themselves (`recordShot`/`recordDamage`/etc., ~20 call sites in
- * `engine.ts`) turned out to be the real remaining cost. Flip this on to
- * re-enable the level-end/run-end stats screen (`GameHud`'s Commit Summary/
- * Kernel Panic/Build Successful stats rows) for real play — same pattern as
- * `DECORATIONS_ENABLED` in `mapGenerator.ts`. `?testHooks=1` (the balancing
- * bot) is unaffected either way — it always gets telemetry. */
-export const PLAYER_STATS_ENABLED = false;
+/**
+ * The level-end / run-end stats rows on the Commit Summary, Kernel Panic and
+ * Build Successful overlays. **On since 2026-08-23.**
+ *
+ * It was born `false` on 2026-07-17 with the claim that recording telemetry on
+ * every real playthrough "measurably slowed gameplay down", the ~20 per-event
+ * `record*` sites being blamed as the remaining cost. **No numbers were ever
+ * recorded for that claim** — not in the commit, not in `history.md`, not in
+ * `perf-findings.json`. It has now been measured twice and is not reproducible
+ * either time:
+ *
+ * - 2026-08-02 (`perf-review-2026-08-02.md` §7) — "not reproducible", but on a
+ *   pre-P1 build already dropping ~29% of frames, which is the least sensitive
+ *   baseline a small per-frame cost could be tested against.
+ * - 2026-08-23, the remeasure `notes` asked for, on a build that actually holds
+ *   the vsync edge (59.3-59.6 fps, ~1% dropped). Clock-equalized `c2-2bg` cell,
+ *   4 runs per arm, headed: busy median **5.775ms off vs 5.800ms on, +0.025ms**,
+ *   against a calibrated minimum detectable difference of **0.16ms**. Dropped
+ *   frames went *down* (1.72% -> 1.57%); `longTasks` 0 in both arms.
+ *
+ * The level-end derivation below (`buildPlayerFacingStats` and friends, called
+ * once from `engine.ts`'s `atLevelEnd` branch) was measured directly rather
+ * than through a pacing cell, since it is one-shot and the engine has already
+ * stopped by the time the overlay draws: **0.00027 ms per level transition**,
+ * 0.0016% of one frame.
+ *
+ * Reproduce either with `npm run perf:bench -- --flag playerstats`.
+ *
+ * `?testHooks=1` (the balancing bot) is unaffected and always had telemetry —
+ * see `telemetryEnabled` in `engine.ts`.
+ */
+export const PLAYER_STATS_ENABLED = true;
 
 export interface PlayerFacingStats {
   kills: number;

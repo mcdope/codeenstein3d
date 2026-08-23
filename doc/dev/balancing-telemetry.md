@@ -584,11 +584,14 @@ construction it reproduces a run exactly — but it records **inputs, not outcom
 carries no damage/kill/loot event, lives in `localStorage`, and no balancing tool
 reads it. The proposed event log is its outcome-side counterpart.
 
-**Gating.** `this.telemetryEnabled = PLAYER_STATS_ENABLED || isTestHooksActive()`
-(`this.telemetryEnabled` in `engine.ts`). `PLAYER_STATS_ENABLED` is `false` and
-`isTestHooksActive()` (`engine.ts`) requires `?testHooks=1`. So in shipped
-play nothing is recorded at all: `teamTelemetry` stays `undefined`, every
-`PlayerState.telemetry` stays `undefined`, and every call site is a guarded no-op.
+**Gating.** `this.telemetryEnabled = (PLAYER_STATS_ENABLED || isTestHooksActive()) && !this.ablated("telemetry")`
+(`engine.ts`). **Changed 2026-08-23**: `PLAYER_STATS_ENABLED` now ships `true`,
+so shipped play records the same telemetry the bot always did — this section
+used to say "in shipped play nothing is recorded at all", which is no longer
+true and matters for anyone reasoning about what a player's browser is doing.
+`?ablate=telemetry` is the off switch; under it `teamTelemetry` and every
+`PlayerState.telemetry` stay `undefined` and every call site is a guarded no-op,
+which is both the escape hatch and what keeps that path testable.
 
 **Existing per-frame cost when telemetry *is* on** — worth writing down so a future
 reader does not attribute it to the event log:

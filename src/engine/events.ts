@@ -25,8 +25,13 @@
  * frame-rate**: `fire`, `damage`, `damageEnemy`, `pushLootDrop`, the two loot
  * collection branches, `killPlayer`, `endGame`. Nothing here is called from
  * `simulate()` or `render()`, which is deliberate and load-bearing —
- * `playerStats.ts` records that ~20 plain counter increments were enough to
- * measurably slow real play, so this path must not widen.
+ * the 2026-07 claim was that ~20 plain counter increments measurably slowed
+ * real play. That claim was never backed by a number and has since failed
+ * to reproduce twice (see `playerStats.ts`), so it is not the reason to
+ * keep this path narrow — but the *shape* argument still is: event-rate
+ * recording is bounded by how often things happen, frame-rate recording
+ * is not, and only the latter scales with the render loop. Keep it
+ * event-rate.
  *
  * Records are pushed as plain objects and serialised in Node, off the
  * browser's clock entirely.
