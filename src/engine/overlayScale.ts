@@ -24,10 +24,16 @@
  * construction instead of by review. Nothing in this module may ever be
  * imported by shot resolution.
  *
- * **`withOverlayScale` is the only thing in the codebase that calls
- * `ctx.scale`.** Keeping that true is what makes the layer's one real hazard —
- * double-scaling — a single-place invariant that a test can assert, rather than
- * a property of ~470 call sites.
+ * **`withOverlayScale` is the only thing that ever scales the context it is
+ * handed.** Four other places call `scale` — `pathSprites.ts`'s two bakers,
+ * `automap.ts`'s tile layer and `raycaster.ts`'s minimap wall layer — but each
+ * scales a *detached offscreen* context it created itself, to bake at device
+ * resolution, and none of them touches the target. That distinction is what
+ * makes the layer's one real hazard — double-scaling the target — a
+ * single-place invariant a test can assert, rather than a property of ~470 call
+ * sites. The bakers take their factor as a parameter for the same reason:
+ * several run after the target has been rotated, where reading it back off a
+ * context would be reading the wrong context's transform.
  *
  * **Caveat worth knowing before changing render resolutions.**
  * `watchCanvasSizing` (`main.ts:732`) is handed the *initial* `renderRes` and
