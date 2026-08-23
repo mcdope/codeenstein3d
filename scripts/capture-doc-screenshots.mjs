@@ -748,9 +748,20 @@ async function main() {
       const c = document.querySelector("canvas.scene-canvas");
       return { w: c.width, h: c.height };
     });
-    const { layoutHud, HUD_HEIGHT } = await engineModules();
-    const keys = layoutHud(canvasSize.w, canvasSize.h).panels.keys;
-    const hudRect = { x: keys.x - 2, y: keys.y, w: keys.w + 4, h: HUD_HEIGHT };
+    // `layoutHud` works in *design* pixels and `grabCrop` in *device* pixels,
+    // so the frame has to convert between them — the same conversion
+    // `withOverlayScale` does for the drawing itself. Identical at RENDER_W =
+    // 640, where the factor is 1, and off by 2x the moment this script is
+    // pointed at the Sharp preset.
+    const { layoutHud, HUD_HEIGHT, overlayFrame } = await engineModules();
+    const frame = overlayFrame(canvasSize.w, canvasSize.h);
+    const keys = layoutHud(frame.w, frame.h).panels.keys;
+    const hudRect = {
+      x: (keys.x - 2) * frame.scale,
+      y: keys.y * frame.scale,
+      w: (keys.w + 4) * frame.scale,
+      h: HUD_HEIGHT * frame.scale,
+    };
     await assertNotFlat(page, hudRect, "hud-key-pips", 4);
     writeIfChanged("hud-key-pips.png", await grabCrop(page, { ...hudRect, scale: 4, label: "hud-key-pips" }));
 
@@ -789,7 +800,12 @@ async function main() {
     // correctly.
     const cell = Math.max(1, Math.floor(70 / Math.max(map.width, map.height)));
     const panel = 6 + Math.max(map.width, map.height) * cell + 4;
-    const minimapRect = { x: 0, y: 0, w: panel + 20, h: panel + 20 };
+    // Design pixels -> device pixels, as above. `renderMinimap` returns this
+    // rect; re-deriving it here is the older habit and stays only because the
+    // panel is drawn before the return value is available to this script.
+    const minimapFrame = overlayFrame(canvasSize.w, canvasSize.h);
+    const minimapSide = (panel + 20) * minimapFrame.scale;
+    const minimapRect = { x: 0, y: 0, w: minimapSide, h: minimapSide };
     await pumpToPulsePeak(page, HELP_PING_SWEEP_MS, HELP_PING_SWEEP_PEAK_MS);
     await assertNotFlat(page, minimapRect, "minimap");
     writeIfChanged("minimap.png", await grabCrop(page, { ...minimapRect, scale: 4, label: "minimap" }));

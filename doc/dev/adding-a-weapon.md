@@ -59,6 +59,7 @@ Two further rules that follow from it:
 
 - Shapes rigid relative to the gun's anchor (grips, blades, magazines) bake whole; anything whose *geometry* moves with recoil needs one glyph per quantised recoil step, as `flameNozzleGlyph` does.
 - **A glyph pre-renders on a detached context that inherits nothing** — not `lineJoin`, not `lineCap`, not `imageSmoothingEnabled`. Any state your shape relies on has to be set inside the glyph's own `draw`. Getting this wrong is silent: the shape still draws, just with the wrong joins.
+- **Every number you write is a design pixel, not a device pixel** (`src/engine/overlayScale.ts`). `drawWeapon` runs inside `withOverlayScale`, so a barrel length of 190 is 190px at the Classic preset and 380 real pixels at Sharp — the same size on screen, drawn more finely. Two things follow. Read the `w`/`h` the wrapper hands you rather than `ctx.canvas.width`, which is still the backing store and lands at twice the intended coordinate at Sharp. And a `Glyph`'s `width`/`height` are design pixels too: the sprite is allocated at `width * scale` and blitted back into a design-sized box, so a glyph box that is right at Classic is right everywhere. None of this needs anything from you beyond writing the numbers as though the canvas were 640x400 — which is what the existing weapons already do.
 
 ### 4. Firing behaviour in `engine.ts`
 
