@@ -15,6 +15,7 @@
  * canvas itself means these are always visible, fullscreen or not.
  */
 
+import { DESIGN_WIDTH, overlayFrame, withOverlayScale } from "../engine/overlayScale";
 import type { ScoreBreakdown } from "../engine/scoring";
 import type { PlayerFacingStats } from "../engine/playerStats";
 
@@ -255,7 +256,12 @@ export class GameHud {
     // `overlayLayout` returns the rects in, so an index means the same thing
     // in both.
     const handlers = content.secondary ? [onAck, content.secondary.onPick] : [onAck];
-    const rects = overlayLayout(this.canvas.width, this.canvas.height, content).buttons;
+    // The design frame is taken from `overlayFrame` rather than from the
+    // context, because the hit rects are still needed when `getContext`
+    // returned null (jsdom, a lost context) — the overlay is invisible then,
+    // but Space and the gamepad still have to dismiss it.
+    const frame = overlayFrame(this.canvas.width, this.canvas.height);
+    const rects = overlayLayout(frame.w, frame.h, content).buttons;
 
     // Every one of these overlays can appear mid-fight (dying, or stepping on
     // the exit while still under fire) — with Space/mousedown also being the
@@ -300,16 +306,22 @@ export class GameHud {
       // Two: an explicit choice is required, so a press that misses both
       // does nothing at all and leaves the listeners attached. The canvas
       // renders at 640x400 (or 1280x800) and is CSS-scaled up by
-      // `canvasFit.ts`, so client coordinates have to be scaled back into
-      // canvas pixels — there is no other client-to-canvas mapping in the
-      // codebase to reuse, since aiming goes through pointer lock and
-      // `movementX` rather than coordinates. A zero-sized rect (jsdom, and a
-      // display:none canvas) falls back to 1:1 rather than dividing by zero.
+      // `canvasFit.ts`, so client coordinates have to be scaled back — there
+      // is no other client-to-canvas mapping in the codebase to reuse, since
+      // aiming goes through pointer lock and `movementX` rather than
+      // coordinates. A zero-sized rect (jsdom, and a display:none canvas)
+      // falls back to 1:1 rather than dividing by zero.
+      //
+      // Two steps, not one: CSS pixels -> backing store, then backing store ->
+      // design pixels, because `rects` is in the space the overlay was drawn
+      // in. Stopping after the first step leaves every click landing at twice
+      // its intended position at Sharp, which reads as "the buttons do not
+      // work" rather than as a coordinate bug.
       const r = this.canvas.getBoundingClientRect();
       const sx = r.width > 0 ? this.canvas.width / r.width : 1;
       const sy = r.height > 0 ? this.canvas.height / r.height : 1;
-      const x = (e.clientX - r.left) * sx;
-      const y = (e.clientY - r.top) * sy;
+      const x = ((e.clientX - r.left) * sx) / frame.scale;
+      const y = ((e.clientY - r.top) * sy) / frame.scale;
       const hit = rects.findIndex((b) => x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h);
       if (hit !== -1) pick(hit);
     };
@@ -400,6 +412,17 @@ const PAD_AFTER_BTN = 22;
 /** Space between the two buttons of a two-choice overlay. */
 const BTN_GAP = 16;
 
+/**
+ * Width of a `wide` overlay's box.
+ *
+ * It was 620, which the `w - 48` clamp below then cut to 592 at Classic and
+ * left at 620 at Sharp — so the "roomy" end-of-run box was two different
+ * shapes depending on a render setting, and only one of them was the one it
+ * was tuned against. Now that the overlay draws in a 640-wide design box the
+ * clamp would produce 592 everywhere anyway; saying so directly is the point,
+ * since a value that only ever arrives via a clamp reads as an accident. */
+export const WIDE_BOX_W = DESIGN_WIDTH - 48;
+
 /** Advance width of one character, as a fraction of the font size. Every
  * string on an overlay is set in `ui-monospace, monospace` — where all three
  * of the fonts below measure the same 0.602em per glyph regardless of weight
@@ -420,7 +443,48 @@ function textWidth(fontPx: number, text: string): number {
   return text.length * fontPx * CHAR_EM;
 }
 
-/** One button's rect, in canvas pixels — see `overlayLayout`. */
+/**
+ * Greedy word-wrap of each of `lines` to `room` pixels at 13px.
+ *
+ * Measured with `textWidth` rather than `measureText` for the same reason
+ * everything else here is: `overlayLayout` has to stay pure so `show()` can
+ * hit-test without a 2D context. The overlay is monospace throughout, so the
+ * estimate is exact up to the font's own advance width.
+ *
+ * A single word wider than `room` is kept intact rather than force-split —
+ * same rule `drawLoreOverlay`'s `wrapText` follows, and for the same reason:
+ * the words that trigger it are file paths, and breaking one mid-path makes it
+ * unreadable in a way a slightly overhanging line does not. `overlayLayout`
+ * already sizes the box to the longest word, so this is a backstop.
+ */
+function wrapOverlayLines(lines: readonly string[], room: number): string[] {
+  const out: string[] = [];
+  for (const line of lines) {
+    let current = "";
+    for (const word of line.split(" ")) {
+      const candidate = current === "" ? word : `${current} ${word}`;
+      if (current !== "" && textWidth(13, candidate) > room) {
+        out.push(current);
+        current = word;
+      } else {
+        current = candidate;
+      }
+    }
+    out.push(current);
+  }
+  return out;
+}
+
+/** The largest of `STAT_VALUE_SIZES` at which `text` fits `room`, or the
+ * smallest if none do — the caller's `maxWidth` still catches that last case,
+ * so this narrows the squeeze rather than replacing the guard. */
+function fittingSize(text: string, room: number): number {
+  return STAT_VALUE_SIZES.find((size) => textWidth(size, text) <= room) ?? STAT_VALUE_SIZES[STAT_VALUE_SIZES.length - 1];
+}
+
+/** One button's rect, in design pixels (`overlayScale.ts`) — see
+ * `overlayLayout`. The hit test in `show` converts a click into the same space
+ * rather than the other way round. */
 export interface OverlayButtonRect {
   x: number;
   y: number;
@@ -437,6 +501,43 @@ export interface OverlayGeometry {
   contentEnd: number;
   /** Primary first, then the secondary if there is one. */
   buttons: OverlayButtonRect[];
+  /** `content.lines`, wrapped to the box — what `drawOverlay` actually draws
+   * and what the box height was computed from. One entry per drawn row, so a
+   * caller counting rows and a caller drawing them cannot disagree. */
+  lines: string[];
+  /** Where a stats row's label ends and its value begins, as an offset from
+   * `boxX`. `null` when the overlay has no stats. See `statsSplitFor`. */
+  statsSplit: number | null;
+}
+
+/** Sizes a stat row's value may take, largest first — the same ladder idea
+ * `hudLayout.ts`'s `NUMERAL_SIZES` uses, and for the same reason: the values
+ * are content, not layout, so no single size serves both `42` and
+ * `Path 250 · Map 100 · Lore 50 · Secrets 200 · Streaks 300`. Every row keeps
+ * 13px unless it is the one that would otherwise be squeezed. */
+const STAT_VALUE_SIZES = [13, 11] as const;
+
+/** Padding inside the box, and the gap between a stat row's two columns. */
+const STAT_INSET = 16;
+const STAT_COL_GAP = 8;
+
+/**
+ * Where the label column ends, as an offset from `boxX`.
+ *
+ * **Content-driven rather than the box centre, because the centre wasted the
+ * room the long values needed.** Labels here are short (`Kills`, `Closest
+ * call`); values are sometimes a whole grouped sentence. Splitting 50/50 gave
+ * both sides 272px in a 592px box, which left the widest label 143px of unused
+ * space while the widest value was cut off — and cut off *silently*, since
+ * `fillText`'s `maxWidth` squeezes glyphs rather than eliding.
+ *
+ * This was already the behaviour at the Classic preset before the overlay
+ * layer scaled; Sharp only looked correct because its box could grow to 757px.
+ * The test that should have caught it ran at 1600x900, a canvas no preset
+ * produces.
+ */
+function statsSplitFor(stats: readonly [string, string][]): number {
+  return STAT_INSET + Math.max(...stats.map(([label]) => textWidth(13, label)));
 }
 
 /**
@@ -464,20 +565,34 @@ export function overlayLayout(w: number, h: number, content: OverlayContent): Ov
   // The two fixed sizes stay as *floors*, so nothing that already fits moves.
   const needed = Math.max(
     textWidth(22, content.title) + 32,
+    // A line still asks for its full width, so nothing that fits today starts
+    // wrapping — the box grows first, exactly as before. What changed is the
+    // *fallback*: a line the box cannot grow far enough for used to be handed
+    // to `fillText`'s `maxWidth` and squashed, and is now wrapped instead. Some
+    // of them could never have been satisfied by a wider box at all —
+    // `endReplay`'s balance-mismatch reason interpolates a file path and needs
+    // 1,016px in a 592px design box.
     ...content.lines.map((line) => textWidth(13, line) + 32),
-    // `drawOverlay` gives each stat side `boxW / 2 - 24`, so fitting both
-    // sides takes twice the wider one.
-    ...(content.stats ?? []).flatMap(([label, value]) => [
-      2 * (textWidth(13, label) + 24),
-      2 * (textWidth(13, value) + 24),
-    ]),
+    // A stat row is a label column plus a value column, so what the box needs
+    // is their sum — not twice the wider one, which is what a centred split
+    // implied. The value is measured at the *smallest* size the ladder will
+    // step down to: below that there is nothing left to give, so that is the
+    // width at which "the box is too narrow" becomes true.
+    ...(content.stats ?? []).map(
+      ([label, value]) =>
+        STAT_INSET * 2 +
+        textWidth(13, label) +
+        STAT_COL_GAP +
+        textWidth(STAT_VALUE_SIZES[STAT_VALUE_SIZES.length - 1], value),
+    ),
   );
   // `w - 48` is the last resort and stays last: past the canvas edge there is
   // no width left to give, and `maxWidth` squeezes as it always did.
-  const boxW = Math.min(Math.max(content.wide ? 620 : 420, needed), w - 48);
+  const boxW = Math.min(Math.max(content.wide ? WIDE_BOX_W : 420, needed), w - 48);
 
+  const lines = wrapOverlayLines(content.lines, boxW - 32);
   let contentEnd = PAD_TOP;
-  for (let i = 0; i < content.lines.length; i++) contentEnd += LINE_GAP;
+  for (let i = 0; i < lines.length; i++) contentEnd += LINE_GAP;
   if (content.stats && content.stats.length > 0) {
     contentEnd += STATS_LEAD + (content.stats.length - 1) * STAT_GAP;
   }
@@ -500,7 +615,17 @@ export function overlayLayout(w: number, h: number, content: OverlayContent): Ov
     h: BTN_H,
   }));
 
-  return { boxX, boxY, boxW, boxH, contentEnd, buttons };
+  const stats = content.stats ?? [];
+  return {
+    boxX,
+    boxY,
+    boxW,
+    boxH,
+    contentEnd,
+    buttons,
+    lines,
+    statsSplit: stats.length > 0 ? statsSplitFor(stats) : null,
+  };
 }
 
 /**
@@ -510,9 +635,15 @@ export function overlayLayout(w: number, h: number, content: OverlayContent): Ov
  * the old DOM overlay had via its backdrop.
  */
 function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): void {
-  const w = ctx.canvas.width;
-  const h = ctx.canvas.height;
-  const { boxX, boxY, boxW, boxH, buttons } = overlayLayout(w, h, content);
+  withOverlayScale(ctx, (w, h) => {
+    drawOverlayIn(ctx, w, h, content);
+  });
+}
+
+/** `drawOverlay`'s body, in design space. Split out only so the wrapper stays
+ * one line — the nested `layout` closure below is long enough already. */
+function drawOverlayIn(ctx: CanvasRenderingContext2D, w: number, h: number, content: OverlayContent): void {
+  const { boxX, boxY, boxW, boxH, buttons, lines, statsSplit } = overlayLayout(w, h, content);
 
   /**
    * Walks title -> lines -> stats, drawing at a running `y` offset from
@@ -530,29 +661,39 @@ function drawOverlay(ctx: CanvasRenderingContext2D, content: OverlayContent): vo
     ctx.fillStyle = content.color;
     ctx.fillText(content.title, w / 2, y, boxW - 32);
 
-    for (const line of content.lines) {
+    for (const line of lines) {
       y += LINE_GAP;
       ctx.font = "13px ui-monospace, monospace";
       ctx.fillStyle = "#cdd3cd";
       ctx.fillText(line, w / 2, y, boxW - 32);
     }
 
-    if (content.stats && content.stats.length > 0) {
-      // Each side of the label/value split gets half the box, minus its own
-      // padding and the 8px center gap — same "don't run past the box"
-      // guarantee the title/lines above already get via their own maxWidth.
-      const sideMaxWidth = boxW / 2 - 24;
+    if (content.stats && content.stats.length > 0 && statsSplit !== null) {
+      // Two columns that meet at `statsSplit` rather than at the box centre —
+      // see `statsSplitFor`. Both still carry a `maxWidth`, so the "don't run
+      // past the box" guarantee the title and lines get is unchanged; the
+      // difference is that the value's share is now the room actually left
+      // over instead of an arbitrary half.
+      const labelX = boxX + statsSplit;
+      const valueX = labelX + STAT_COL_GAP;
+      const labelMaxWidth = statsSplit - STAT_INSET;
+      const valueMaxWidth = boxX + boxW - STAT_INSET - valueX;
       y += STATS_LEAD;
       for (const [label, value] of content.stats) {
         ctx.font = "13px ui-monospace, monospace";
         ctx.fillStyle = "#8a9490";
         ctx.textAlign = "right";
-        ctx.fillText(label, w / 2 - 8, y, sideMaxWidth);
+        ctx.fillText(label, labelX, y, labelMaxWidth);
 
-        ctx.font = "bold 13px ui-monospace, monospace";
+        // Step down only for a value that would not otherwise fit. Every row
+        // on every shipped screen keeps 13px except `Bonus features`, whose
+        // five grouped numbers need 451px against 423 — and a squeezed row is
+        // less legible than a smaller one, because squeezing distorts glyph
+        // shapes rather than scaling them.
+        ctx.font = `bold ${fittingSize(value, valueMaxWidth)}px ui-monospace, monospace`;
         ctx.fillStyle = "#ffffff";
         ctx.textAlign = "left";
-        ctx.fillText(value, w / 2 + 8, y, sideMaxWidth);
+        ctx.fillText(value, valueX, y, valueMaxWidth);
         ctx.textAlign = "center";
         y += STAT_GAP;
       }

@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMockCanvasContext, type MockCanvasContext } from "../../test/mocks/canvas";
 import { installRaf, type RafController } from "../../test/mocks/raf";
-import { GameHud, overlayLayout, type OverlayContent, type StatsScreenInfo } from "./gameHud";
+import { GameHud, overlayLayout, WIDE_BOX_W, type OverlayContent, type StatsScreenInfo } from "./gameHud";
 import { emptyPlayerFacingStats } from "../engine/playerStats";
 import { zeroScoreBreakdown } from "../engine/scoring";
 
@@ -13,6 +13,35 @@ function fakeStatsScreenInfo(): StatsScreenInfo {
   return {
     scoreBreakdown: { ...zeroScoreBreakdown(), healthBonus: 500, accuracyBonus: 180, total: 680 },
     playerStats: { ...emptyPlayerFacingStats(), kills: 12, shotsFired: 20, hits: 15, weaponAccuracyPct: 75, lootCollectedTotal: 8, timeSurvivedSec: 222, minHealthReached: 8 },
+  };
+}
+
+/** The same shape, filled with the values that make every grouped string as
+ * long as it can get — the widest content any of these screens can be asked to
+ * draw. `fakeStatsScreenInfo` above is a *typical* run; this one is the one the
+ * layout has to survive. */
+function worstCaseStatsScreenInfo(): StatsScreenInfo {
+  return {
+    scoreBreakdown: {
+      ...zeroScoreBreakdown(),
+      healthBonus: 500,
+      accuracyBonus: 180,
+      pathBonus: 250,
+      mapCompletionBonus: 100,
+      loreBonus: 50,
+      secretRoomBonus: 200,
+      multikillBonus: 300,
+      total: 1580,
+    },
+    playerStats: {
+      ...emptyPlayerFacingStats(),
+      kills: 128,
+      weaponAccuracyPct: 75,
+      lootCollectedTotal: 88,
+      timeSurvivedSec: 3722,
+      minHealthReached: 8,
+      damageTakenBySource: { ...emptyPlayerFacingStats().damageTakenBySource, enemyMelee: 120, enemyRanged: 340, trapSpike: 40, trapMine: 20 },
+    },
   };
 }
 
@@ -26,6 +55,12 @@ let hud: GameHud;
 beforeEach(() => {
   raf = installRaf({ stubClock: true });
   canvas = document.createElement("canvas");
+  // A real preset, not jsdom's 300x150 default. The overlay's box is sized and
+  // its text wrapped against the canvas, so a fixture smaller than any shipped
+  // preset makes every layout assertion a statement about a screen that does
+  // not exist — which is how the squeezed stat rows went unnoticed.
+  canvas.width = 640;
+  canvas.height = 400;
   ctx = createMockCanvasContext(canvas);
   canvas.getContext = vi.fn(() => ctx) as unknown as typeof canvas.getContext;
   hud = new GameHud(canvas);
@@ -324,6 +359,37 @@ function panicWithRollback(remaining = 2): { onReturn: ReturnType<typeof vi.fn>;
   return { onReturn, onRollback };
 }
 
+/**
+ * The two button rects, read back out of what was actually drawn.
+ *
+ * Recovered from the mock rather than recomputed with a synthetic
+ * `OverlayContent`, because the synthetic version has to guess how many *rows*
+ * the real copy occupies — and once a long line wraps, a stand-in of three
+ * dummy lines silently stops describing the screen under test, moving the
+ * buttons out from under every click the test makes.
+ *
+ * The primary is the last 4-argument `fillRect` (the box and scrim precede it);
+ * the secondary is the only `strokeRect` with a 1px line width.
+ */
+function drawnButtons(): { x: number; y: number; w: number; h: number }[] {
+  const fills = ctx.fillRect.mock.calls;
+  const [px, py, pw, ph] = fills[fills.length - 1] as number[];
+  const strokes = ctx.strokeRect.mock.calls;
+  const [sx, sy, sw, sh] = strokes[strokes.length - 1] as number[];
+  // The secondary's outline is inset by half a line width — undo it, so both
+  // entries describe the same thing the hit test compares against.
+  return [
+    { x: px, y: py, w: pw, h: ph },
+    { x: sx - 0.5, y: sy - 0.5, w: sw + 1, h: sh + 1 },
+  ];
+}
+
+/** The centre of a drawn button, as a click target. */
+function buttonCentre(i: number): [number, number] {
+  const b = drawnButtons()[i];
+  return [b.x + b.w / 2, b.y + b.h / 2];
+}
+
 /** Dispatch a mousedown at a point in *canvas* pixels, through a stubbed
  * bounding rect so the CSS-scaling path in `show()` is the one under test. */
 function mouseDownAtCanvasPoint(x: number, y: number, cssScale = 1): void {
@@ -418,28 +484,15 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
   });
 
   it("clicking each button picks that button", () => {
-    const geom = overlayLayout(640, 400, {
-      title: "KERNEL PANIC",
-      color: "#ff4d4d",
-      lines: ["a", "b", "c"],
-      buttonLabel: "Roll back",
-      secondary: { label: "Give up", onPick: () => {} },
-    } as OverlayContent);
-    const centre = (i: number): [number, number] => [
-      geom.buttons[i].x + geom.buttons[i].w / 2,
-      geom.buttons[i].y + geom.buttons[i].h / 2,
-    ];
-
     const first = panicWithRollback();
     passLockWindow();
-    mouseDownAtCanvasPoint(...centre(0));
+    mouseDownAtCanvasPoint(...buttonCentre(0));
     expect(first.onRollback).toHaveBeenCalledTimes(1);
     expect(first.onReturn).not.toHaveBeenCalled();
 
-    vi.clearAllMocks();
     const second = panicWithRollback();
     passLockWindow();
-    mouseDownAtCanvasPoint(...centre(1));
+    mouseDownAtCanvasPoint(...buttonCentre(1));
     expect(second.onReturn).toHaveBeenCalledTimes(1);
     expect(second.onRollback).not.toHaveBeenCalled();
   });
@@ -448,16 +501,10 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
     // The canvas renders at 640x400 and is CSS-scaled by canvasFit.ts; a
     // handler reading clientX raw would land in the wrong place (or nowhere)
     // on every real viewport.
-    const geom = overlayLayout(640, 400, {
-      title: "KERNEL PANIC",
-      color: "#ff4d4d",
-      lines: ["a", "b", "c"],
-      buttonLabel: "Roll back",
-      secondary: { label: "Give up", onPick: () => {} },
-    } as OverlayContent);
     const { onReturn, onRollback } = panicWithRollback();
     passLockWindow();
-    mouseDownAtCanvasPoint(geom.buttons[1].x + geom.buttons[1].w / 2, geom.buttons[1].y + 4, 2);
+    const secondary = drawnButtons()[1];
+    mouseDownAtCanvasPoint(secondary.x + secondary.w / 2, secondary.y + 4, 2);
     expect(onReturn).toHaveBeenCalledTimes(1);
     expect(onRollback).not.toHaveBeenCalled();
   });
@@ -477,19 +524,8 @@ describe("GameHud — Kernel Panic offering a rollback", () => {
     // jsdom's default, and a display:none canvas — must not divide by zero.
     const { onRollback } = panicWithRollback();
     passLockWindow();
-    const geom = overlayLayout(640, 400, {
-      title: "KERNEL PANIC",
-      color: "#ff4d4d",
-      lines: ["a", "b", "c"],
-      buttonLabel: "Roll back",
-      secondary: { label: "Give up", onPick: () => {} },
-    } as OverlayContent);
-    canvas.dispatchEvent(
-      new MouseEvent("mousedown", {
-        clientX: geom.buttons[0].x + geom.buttons[0].w / 2,
-        clientY: geom.buttons[0].y + geom.buttons[0].h / 2,
-      }),
-    );
+    const [primaryX, primaryY] = buttonCentre(0);
+    canvas.dispatchEvent(new MouseEvent("mousedown", { clientX: primaryX, clientY: primaryY }));
     expect(onRollback).toHaveBeenCalledTimes(1);
   });
 
@@ -641,11 +677,55 @@ describe("GameHud — no overlay squeezes its own text", () => {
     }
   });
 
+  it.each([
+    [640, 400],
+    [1280, 800],
+  ])("squeezes nothing on any screen at %ix%i, with the widest content each can hold", (w, h) => {
+    // The check the rest of this file's squeeze tests should always have been.
+    // They ran at 1600x900 — a canvas no preset produces — and so passed while
+    // two stat rows were being squeezed at the Classic preset the whole time.
+    // Both shipped presets, every screen, worst-case content, one table of
+    // failures rather than the first one found.
+    canvas.width = w;
+    canvas.height = h;
+    const stats = worstCaseStatsScreenInfo();
+    const screens: [string, () => void][] = [
+      ["kernel panic", () => hud.showKernelPanic(stats, vi.fn(), { cheated: true })],
+      ["kernel panic + rollback", () => hud.showKernelPanic(undefined, vi.fn(), { rollback: { remaining: 2, onRollback: vi.fn() } })],
+      ["commit summary", () => hud.showCommitSummary({ linesRefactored: 1234, bugsSquashed: 567, stats }, vi.fn())],
+      ["build successful", () => hud.showBuildSuccessful(stats, vi.fn())],
+      ["level start", () => hud.showLevelStart({ campaign: "stage06_pipeline.py", levelName: "stage06_pipeline.py", roomCount: 12, enemyCount: 34, secretRoomCount: 2 }, vi.fn())],
+      // The worst string in the repo by a distance: `main.ts`'s balance-mismatch
+      // `endReplay` reason interpolates a file path and needs 1,016px in a
+      // 592px box. No box could hold it — it has to wrap.
+      ["replay ended", () => hud.showReplayEnded('"src/stage06_pipeline.py" was recorded under different game balance — this replay can\'t be trusted to match its score anymore.', vi.fn())],
+      ["mp results", () => hud.showMultiplayerResults("MULTIPLAYER: HOST DISCONNECTED", "#f2c14e", [["a-very-long-player-name", "12450 pts · 87 kills (disconnected)"]], vi.fn())],
+      ["recording notice", () => hud.showRecordingNotice(vi.fn())],
+    ];
+
+    const squeezed: string[] = [];
+    let measured = 0;
+    for (const [name, run] of screens) {
+      vi.clearAllMocks();
+      run();
+      for (const { text, fontPx, maxWidth } of clampedDraws()) {
+        measured++;
+        const need = text.length * fontPx * 0.62;
+        if (need > maxWidth) squeezed.push(`${name}: "${text}" (${fontPx}px) needs ${need.toFixed(0)}, has ${maxWidth.toFixed(0)}`);
+      }
+    }
+    // Without this the whole test passes vacuously the day `maxWidth` stops
+    // being passed — "nothing was squeezed" and "nothing was measured" look
+    // identical from the outside.
+    expect(measured, "draws actually measured").toBeGreaterThan(20);
+    expect(squeezed, `squeezed at ${w}x${h}:\n${squeezed.join("\n")}`).toEqual([]);
+  });
+
   it("leaves a box alone when its content already fits", () => {
     // The regression pin for every screen that was never squeezed: content
     // drives the width only upward, from the same two floors as before.
     expect(overlayLayout(1600, 900, { title: "KERNEL PANIC", color: "#f00", lines: ["System stability reached 0%.", "The process was terminated."], buttonLabel: "Return to file tree" }).boxW).toBe(420);
-    expect(overlayLayout(1600, 900, { title: "COMMIT SUMMARY", color: "#f00", lines: [], stats: [["Rooms", "12"]], buttonLabel: "Continue", wide: true }).boxW).toBe(620);
+    expect(overlayLayout(1600, 900, { title: "COMMIT SUMMARY", color: "#f00", lines: [], stats: [["Rooms", "12"]], buttonLabel: "Continue", wide: true }).boxW).toBe(WIDE_BOX_W);
   });
 
   it("never grows past the canvas, however long the content", () => {
