@@ -271,5 +271,4 @@ implemented, already refuted, or impossible as written.
 
 - [ ] remeasure perf impact of level-end-summary
 - [ ] revisit enemy dmg, seems a bit low
-- [ ] automap: rotate to match player viewing angle
-- [ ] automap: remove fog-of-war, minimap is revealed anyway
+- [ ] **automap: rotate to match player viewing angle.** Scoped 2026-08-23 alongside the fog removal, which is a prerequisite rather than a coincidence — see `history.md`. Decided: a **setting, defaulting to facing-up**. The blocker is a number nobody has measured: `ctx.rotate` around the existing per-tile loop hands the rasteriser thousands of non-axis-aligned quads, the exact class the 2026-08 audit is about, and `renderCost.test.ts` does **not** guard the transform axis so CI would not catch it. The safe shape is to bake the tile layer to an offscreen canvas (perf finding **P4**, unblocked now that the layer is static) and spend one rotated `drawImage` — but `perf-review-2026-08-02.md:222` demands in writing that a rotated `drawImage` be measured before anyone relies on it batching, and `:226` records that the question was dodged last time. Measure it headed (`--channel chrome`); headless cannot see this class at all.

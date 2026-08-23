@@ -41,11 +41,33 @@ function asCtx(ctx: MockCanvasContext): CanvasRenderingContext2D {
   return ctx as unknown as CanvasRenderingContext2D;
 }
 
-/** drawAutomap() always paints one translucent viewport panel via fillRect
- * before any tile/mine/exit rendering — subtract it so call counts below
- * reflect only what a given test actually cares about. */
+/** Fills `drawAutomap()` makes no matter what the map contains: the
+ * translucent viewport panel, and the exit marker — the latter unconditional
+ * since fog of war was removed, where it used to be gated on the exit tile
+ * being visited. Subtract both so the counts below reflect only what a given
+ * test is actually about. */
+const ALWAYS_FILLS = 2;
+
 function extraFillRectCalls(ctx: MockCanvasContext): number {
-  return ctx.fillRect.mock.calls.length - 1;
+  return ctx.fillRect.mock.calls.length - ALWAYS_FILLS;
+}
+
+/**
+ * A map that renders no terrain at all, for isolating a marker's own fills.
+ *
+ * Solid rock end to end: with fog of war gone, the tile layer draws a wall only
+ * where it faces open space (`wallFacesOpenSpace`), so a grid with no open
+ * space anywhere draws nothing. This replaces the old all-unvisited map, which
+ * did the same job via the fog gate.
+ */
+function solidRockMap(overrides: Partial<GameMap> = {}): GameMap {
+  return fakeMap({ grid: grid(10, 1), ...overrides });
+}
+
+/** All-false `visited`, for the loot-drop gate — the one gate that outlived
+ * fog of war (it is a coop privacy rule, not a discovery one). */
+function unvisitedGrid(): boolean[][] {
+  return Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]);
 }
 
 function fakePlayer(overrides: Partial<Player> = {}): Player {
@@ -133,11 +155,36 @@ describe("drawAutomap() — camera positioning", () => {
 });
 
 describe("drawAutomap() — tile rendering", () => {
-  it("skips unvisited tiles entirely", () => {
+  it("skips untouched rock entirely, so the overlay stays translucent", () => {
+    // The replacement for the old "skips unvisited tiles" guarantee, and the
+    // reason a carved mask was needed at all: `MapGenerator` carves a level out
+    // of a solid grid, so without *some* gate the automap would paint the whole
+    // viewport `WALL_COLOR` and stop being an overlay. A grid with no open
+    // space has no wall facing open space, so nothing is drawn.
     const ctx = makeCtx();
-    const map = fakeMap({ visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]) });
-    drawAutomap(asCtx(ctx), map, fakePlayer());
-    // Only the panel fill happens; no tile/mine/exit rendering.
+    drawAutomap(asCtx(ctx), solidRockMap(), fakePlayer());
+    expect(extraFillRectCalls(ctx)).toBe(0);
+  });
+
+  it("draws a wall that faces open space, and not its neighbours deeper in the rock", () => {
+    // One floor tile in a rock field: the eight walls touching it are drawn,
+    // the rest of the map is not.
+    const ctx = makeCtx();
+    const g = grid(10, 1);
+    g[5][5] = 0;
+    drawAutomap(asCtx(ctx), fakeMap({ grid: g }), fakePlayer());
+    expect(extraFillRectCalls(ctx)).toBe(9); // the floor tile + its 8 wall neighbours
+  });
+
+  it("never reveals a secret room, whose interior is carved from SECRET_WALL_TILE", () => {
+    // `secretRooms.ts` carves the interior out of SECRET_WALL_TILE precisely so
+    // no map can leak it. That tile counts as rock here, so a secret room is
+    // enclosed entirely in wall-like tiles and stays invisible — the same
+    // outcome fog used to give, for a reason that survives fog's removal.
+    const ctx = makeCtx();
+    const g = grid(10, 1);
+    for (let y = 4; y <= 6; y++) for (let x = 4; x <= 6; x++) g[y][x] = SECRET_WALL_TILE;
+    drawAutomap(asCtx(ctx), fakeMap({ grid: g }), fakePlayer());
     expect(extraFillRectCalls(ctx)).toBe(0);
   });
 
@@ -239,10 +286,74 @@ describe("drawAutomap() — tile rendering", () => {
   });
 });
 
-describe("drawAutomap() — mines", () => {
-  function unvisitedMap(overrides: Partial<GameMap> = {}): GameMap {
-    return fakeMap({ visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]), ...overrides });
+describe("drawAutomap() — no fog of war", () => {
+  /**
+   * A grid shaped the way `MapGenerator` actually produces one: solid rock with
+   * rooms and a corridor carved out of it. The hand-made fixtures elsewhere in
+   * this file are open floor with a wall border, which is the *opposite* shape
+   * and cannot show the hazard these two tests exist for.
+   */
+  function carvedMap(overrides: Partial<GameMap> = {}): GameMap {
+    const size = 60;
+    const g = grid(size, 1);
+    const carve = (x0: number, y0: number, w: number, h: number) => {
+      for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) g[y][x] = 0;
+    };
+    carve(5, 5, 10, 8);
+    carve(30, 6, 12, 10);
+    carve(8, 40, 14, 9);
+    carve(14, 9, 17, 2); // corridor joining the first two rooms
+    carve(11, 12, 2, 29); // corridor down to the third
+    return fakeMap({ grid: g, spawn: { x: 6, y: 6 }, exit: { x: 40, y: 14 }, ...overrides }, size);
   }
+
+  it("renders identically whether or not anything has been visited", () => {
+    // The whole point of the change, and the one thing the committed
+    // screenshot cannot show — `capture-doc-screenshots.mjs` calls
+    // `debugRevealMap()` before grabbing, so that image looks the same whether
+    // the gate was removed or merely satisfied.
+    const unexplored = makeCtx();
+    drawAutomap(asCtx(unexplored), carvedMap({ visited: Array.from({ length: 60 }, () => new Array(60).fill(false) as boolean[]) }), fakePlayer());
+    const explored = makeCtx();
+    drawAutomap(asCtx(explored), carvedMap(), fakePlayer());
+
+    expect(unexplored.fillRect.mock.calls).toEqual(explored.fillRect.mock.calls);
+    expect(unexplored.fillRect.mock.calls.length).toBeGreaterThan(50); // and it drew something
+  });
+
+  it("leaves the untouched rock unpainted, so the overlay stays translucent", () => {
+    // The hazard the carved mask exists for. Without it the tile loop paints
+    // every tile in the viewport, which on a generated map is overwhelmingly
+    // rock the player will never go near — a solid `WALL_COLOR` rectangle over
+    // the live 3D scene.
+    const ctx = makeCtx();
+    const map = carvedMap();
+    drawAutomap(asCtx(ctx), map, fakePlayer());
+
+    const painted = extraFillRectCalls(ctx);
+    const carvedTiles = map.grid.flat().filter((t) => t === 0).length;
+    const viewportTiles = map.width * map.height; // the whole map fits the viewport at this size
+
+    // Measured on this fixture: 616 painted of 3,600 — 410 floors plus a
+    // 206-tile wall rim, about 17%. Worth pinning as a ratio rather than a
+    // bare "less than everything", because that 17% is also the answer to
+    // whether perf finding P4 (bake the tile layer to an offscreen canvas) is
+    // still worth doing: its 21,700-fills-per-frame estimate assumed every
+    // viewport tile gets painted, which is what fog-of-war-on-a-fully-explored
+    // map did and what an unmasked ungated loop would do. It is not what this
+    // does.
+    expect(painted).toBeLessThan(viewportTiles * 0.25);
+    // Floors plus their one-tile rim — necessarily more than the floors alone.
+    expect(painted).toBeGreaterThan(carvedTiles);
+  });
+});
+
+describe("drawAutomap() — mines", () => {
+  // Mines were never fog-gated — they have their own `visible` flag, set by
+  // `MINE_SIGHT_RADIUS` — so removing fog changed nothing here. These tests
+  // only needed a map that draws no terrain, which is now solid rock rather
+  // than an unvisited grid.
+  const unvisitedMap = solidRockMap;
 
   it("renders a discovered, still-live mine within view", () => {
     const ctx = makeCtx();
@@ -281,8 +392,10 @@ describe("drawAutomap() — mines", () => {
 });
 
 describe("drawAutomap() — multiplayer loot drops", () => {
+  /** Draws no terrain *and* has nothing visited — the loot gate is the one
+   * `map.visited` read the automap kept, so these tests still need both. */
   function unvisitedMap(overrides: Partial<GameMap> = {}): GameMap {
-    return fakeMap({ visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]), ...overrides });
+    return solidRockMap({ visited: unvisitedGrid(), ...overrides });
   }
 
   it("defaults to no loot drops when the param is omitted (single-player-shaped call)", () => {
@@ -292,7 +405,7 @@ describe("drawAutomap() — multiplayer loot drops", () => {
     drawAutomap(asCtx(withoutParam), map, fakePlayer());
     const withEmptyArray = makeCtx();
     drawAutomap(asCtx(withEmptyArray), map, fakePlayer(), 0, []);
-    expect(extraFillRectCalls(withoutParam)).toBe(1); // just the one visited floor tile
+    expect(extraFillRectCalls(withoutParam)).toBe(0); // rock draws nothing; `visited` no longer draws anything either
     expect(withoutParam.fillRect.mock.calls.length).toBe(withEmptyArray.fillRect.mock.calls.length);
   });
 
@@ -301,11 +414,11 @@ describe("drawAutomap() — multiplayer loot drops", () => {
     const map = unvisitedMap();
     map.visited[5][5] = true;
     drawAutomap(asCtx(ctx), map, fakePlayer(), 0, [{ x: 5, y: 5, kind: "bullets" }]);
-    // 1 from the tile loop rendering (5,5) as ordinary visited floor, +1 for the loot marker.
-    expect(extraFillRectCalls(ctx)).toBe(2);
+    // Just the loot marker — the terrain is rock and draws nothing.
+    expect(extraFillRectCalls(ctx)).toBe(1);
   });
 
-  it("hides a loot drop on an unvisited tile — the fog-of-war/spoiler gate this step adds", () => {
+  it("hides a loot drop on an unvisited tile — the one visited gate that outlived fog of war", () => {
     const ctx = makeCtx();
     const map = unvisitedMap();
     drawAutomap(asCtx(ctx), map, fakePlayer(), 0, [{ x: 5, y: 5, kind: "bullets" }]);
@@ -321,8 +434,8 @@ describe("drawAutomap() — multiplayer loot drops", () => {
       { x: 1, y: 1, kind: "bullets" },
       { x: 8, y: 8, kind: "weapon", weaponIndex: 0 },
     ]);
-    // 2 visited floor tiles + 2 loot markers.
-    expect(extraFillRectCalls(ctx)).toBe(4);
+    // Just the two loot markers.
+    expect(extraFillRectCalls(ctx)).toBe(2);
   });
 
   it("skips a visited loot drop that's outside the current viewport", () => {
@@ -344,37 +457,42 @@ describe("drawAutomap() — multiplayer loot drops", () => {
 });
 
 describe("drawAutomap() — exit marker", () => {
-  it("renders the exit once it's been visited", () => {
+  it("draws the exit from the moment the level loads, with nothing visited", () => {
+    // Changed with the fog removal. The corner minimap has always drawn the
+    // exit unconditionally, so gating it here made the bigger, deliberately
+    // opened map the one that told you less.
     const ctx = makeCtx();
-    const map = fakeMap({
-      visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]),
-      exit: { x: 3, y: 3 },
-    });
-    map.visited[3][3] = true;
+    const map = solidRockMap({ visited: unvisitedGrid(), exit: { x: 3, y: 3 } });
     drawAutomap(asCtx(ctx), map, fakePlayer());
-    // 1 from the tile loop rendering (3,3) as ordinary visited floor, +1 for
-    // the exit marker drawn on top of it.
-    expect(extraFillRectCalls(ctx)).toBe(2);
+    // Same camera math the renderer uses: this map is far smaller than the
+    // viewport, so the camera centres rather than clamps and camX/camY are
+    // negative (see the camera-positioning block above).
+    const camX = (map.width - (CANVAS_W - MARGIN * 2) / CELL_PX) / 2;
+    const camY = (map.height - (CANVAS_H - HUD_HEIGHT - MARGIN * 2) / CELL_PX) / 2;
+    expect(ctx.fillRect).toHaveBeenCalledWith(
+      MARGIN + (3 - camX) * CELL_PX,
+      MARGIN + (3 - camY) * CELL_PX,
+      Math.max(3, CELL_PX),
+      Math.max(3, CELL_PX),
+    );
   });
 
-  it("does not render an unvisited exit", () => {
-    const ctx = makeCtx();
-    const map = fakeMap({
-      visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]),
-      exit: { x: 3, y: 3 },
-    });
-    drawAutomap(asCtx(ctx), map, fakePlayer());
-    expect(extraFillRectCalls(ctx)).toBe(0);
+  it("draws it exactly once, whether or not its tile has been visited", () => {
+    const seen = makeCtx();
+    drawAutomap(asCtx(seen), solidRockMap({ exit: { x: 3, y: 3 } }), fakePlayer());
+    const unseen = makeCtx();
+    drawAutomap(asCtx(unseen), solidRockMap({ visited: unvisitedGrid(), exit: { x: 3, y: 3 } }), fakePlayer());
+    expect(seen.fillRect.mock.calls.length).toBe(unseen.fillRect.mock.calls.length);
+    expect(extraFillRectCalls(seen)).toBe(0); // ALWAYS_FILLS already counts the exit
   });
 
-  it("does not throw when the exit lies outside the visited grid's rows", () => {
+  it("does not throw when the exit lies outside the map's rows", () => {
+    // Used to guard `map.visited[10]` being undefined. The gate is gone, but an
+    // out-of-range exit must still not throw — it simply draws off-grid and is
+    // clipped by the viewport.
     const ctx = makeCtx();
-    const map = fakeMap({
-      visited: Array.from({ length: 10 }, () => new Array(10).fill(false) as boolean[]),
-      exit: { x: 3, y: 10 }, // one row past the map's actual height — map.visited[10] is undefined
-    });
+    const map = solidRockMap({ exit: { x: 3, y: 10 } });
     expect(() => drawAutomap(asCtx(ctx), map, fakePlayer())).not.toThrow();
-    expect(extraFillRectCalls(ctx)).toBe(0);
   });
 });
 

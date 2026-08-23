@@ -197,9 +197,17 @@ export interface GameMap {
   /** Row-major grid; index as `grid[y][x]`. */
   grid: Tile[][];
   /**
-   * Fog-of-war: `visited[y][x]` becomes true once the player has been on or
-   * next to that tile. The automap only reveals visited tiles. Same dimensions
-   * as `grid`; starts all-false.
+   * `visited[y][x]` becomes true once a player has been on or next to that
+   * tile. Same dimensions as `grid`; starts all-false. Team-shared in coop —
+   * any player's reveal counts for everyone.
+   *
+   * **No longer what the automap draws.** That map dropped fog of war and now
+   * renders the carved level from the moment it loads, like the corner minimap
+   * always has. Two consumers remain, and both matter: the "100% Clear" score
+   * bonus counts revealed walkable tiles (`RaycasterEngine`'s
+   * `visitedWalkableCount`, `VISITED_REVEAL_RADIUS`), and the multiplayer
+   * loot-drop markers still gate on it so a disconnected teammate's position
+   * is not broadcast into a room nobody has entered.
    */
   visited: boolean[][];
   rooms: Room[];
