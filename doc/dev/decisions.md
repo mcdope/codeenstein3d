@@ -261,6 +261,53 @@ Health was cut identically at first, then had to be pulled back out into its own
 
 Toolchain gained a third acquisition path the same day: a regular kill's ammo/swap roll coming up empty now carries its own small independent chance (`MISS_CHANCE_TOOLCHAIN_DROP_CHANCE`, 5%) to grant Toolchain instead of nothing, on top of (not instead of) the pre-existing secret-room/Elite paths — added after the same campaign found those two paths close to unreachable in practice (a shortest-path bot never explores for secret rooms — see [Balancing telemetry](balancing-telemetry.md) — and an early clean Elite kill is rare), a finding that plausibly generalizes to any player who beelines rather than explores.
 
+## Enemy Damage Was Raised as a Flat Scale, Not a Redistribution
+
+Everything enemies deal went up **1.5x** on 2026-08-23 (`ATTACK_DAMAGE` 10 -> 15, `PROJECTILE_DAMAGE` 8 -> 12, and every archetype with them, since `ENEMY_WEAPONS` derives from those two). The full derivation lives in `combatConstants.ts`; what belongs here is why it took that shape.
+
+**The problem was not distribution, it was scale.** Three preceding changes all pushed player-side income up — enemies at 35 HP per complexity point instead of 25, Edge Cases at 25-35 instead of 10-15, and a kill's heal and ammo drop both made proportional to what died — so fights got longer *and* paid out more, while incoming damage stood still. The result was a health bar that mostly sat full.
+
+**Flat, deliberately, because redistribution is a lever class already shown not to move this.** Three separate A/Bs redistributed damage between melee and ranged and left total damage taken invariant at 122/127/126. A fourth attempt at the same shape would have been indistinguishable from that history. Judge any future change here on damage *taken*, never on where the damage is placed.
+
+**It compounds with difficulty rather than being folded into it**, which is the point: a bite is 12.75 on Easy and 22.5 on Hard, so Hard moved 2.25x relative to the pre-change Normal. That is intended, and it is the caveat to check first if Hard's clear rate falls off.
+
+The raise moves `balanceHash`, so it invalidated every stored replay and the bundled highscore board was regenerated. That cost is paid once per release regardless of how many simulation constants move — see `combatConstants.ts`'s header for the batching rule.
+
+## Ammo and Health Income Are Coupled to What Died
+
+A kill's ammo drop and its guaranteed health top-up were both flat, so income was a function of kill *count* rather than of how hard the level hit. Both are now proportional to the dead enemy's `maxHp` (`AMMO_SCALE_REFERENCE_HP = 88`, the corpus mean; `HEALTH_SCALE_REFERENCE_HP = 100`), applied at the drop site rather than in the roll — so the loot table stays uniform across archetypes and only the payout scales.
+
+Three details worth not re-deriving. **`swap` stays flat** because it was priced that way and is not an ammo pool. **Both are floored at 1**, so a rockets drop — base 1 — cannot round away to nothing on a small enemy. And **the health grant stays unconditional**: it is scaled, not made a roll, because running out of health is the one thing that actually ends a run.
+
+The pre-change asymmetry was the finding this fixes: an Edge Case yielded the same expected loot as an enemy twenty times its size, which `balancing-telemetry.md` §5.1 had flagged and quantified.
+
+## Carried Ammo Is Capped Against the Level You Are Entering
+
+Carryover was unbounded, so a long campaign trivialised itself — measured across 23 repositories, a late level handed the player nearly eighteen times the surplus an early one did, against opposition that does not grow with the reserve. Each pool is now clamped on entry to `CARRYOVER_CAP_MULTIPLE = 3` times what that level would give a fresh player (`ammo.ts`, applied in the `RaycasterEngine` constructor).
+
+**A ceiling, not a floor** — level 1 has nothing to clamp and the early game never reaches it, so the change is invisible until deep into a large repository. **Capped per pool** rather than in total, so a pool the level cannot supply fresh (rockets before ghidra is owned) is capped against its own flat reserve rather than against zero.
+
+K was chosen at 3 from an offline sweep: below 3 the returns are small and the cost is not. Note that `CARRYOVER_CAP_MULTIPLE` is deliberately **not** in `SIMULATION_BALANCE` — it changes what the engine is handed, not how the engine simulates, so it moves no replay and forced no highscore regeneration.
+
+## The Overlay Layer Has One Coordinate System, and the Simulation Never Enters It
+
+Every overlay — status bar, weapon viewmodel, crosshair, both maps, toasts, floating labels and the blocking screens — is drawn in a fixed 640x400 design space and mapped onto the real canvas by a single `ctx.scale` in `withOverlayScale` (`overlayScale.ts`). Before this, each of them measured in device pixels, so the Sharp render preset (1280x800) halved the apparent size of all of them.
+
+Two invariants hold the design up, and both are easy to break by accident:
+
+- **`withOverlayScale` is the only thing that ever scales the target.** A second scale anywhere composes with it silently.
+- **Nothing in shot resolution may import this module.** `spreadPx` and `maxConeDeviationPx` are *simulation* screen-pixels resolved against the `zBuffer`; a scale factor leaking into aim would make where a shot lands depend on a render setting. This is why the two live in `weapons.ts` and not here.
+
+The practical rule for anyone drawing something new: write the numbers as though the canvas were 640x400, and read the `w`/`h` the wrapper hands you rather than `ctx.canvas.width` — the latter is still the backing store and lands at twice the intended coordinate at Sharp. Click hit-testing needs the inverse of *both* conversions (client -> backing store -> design); stopping after the CSS scale puts every button at twice its intended position, which reads as "the buttons don't work" rather than as a coordinate bug.
+
+## Test Hooks Are Gated at Build Time, and the Gate Is Checked Both Ways
+
+`TEST_HOOKS_BUILD_ENABLED = import.meta.env.DEV` (`engine.ts`) is a build-time constant rather than a runtime check, specifically so a production bundler can fold the entire branch away instead of shipping dead code behind a flag.
+
+A constant alone is not a control, so `scripts/check-bundle-hygiene.mjs` runs as `build`'s `postbuild` step and fails the build on either failure direction: a test-hook global or the mutating debug-handle wiring reaching `dist/`, **or** an opt-in diagnostic that is supposed to ship (`__codeensteinPerfStats`, `?perfDebug`, `?ablate`) no longer reaching it. The second direction is not symmetry for its own sake — the previous version of this check was vacuous for a month after the Vite 8 bump, and only a both-ways assertion notices that.
+
+Two things its header records that are worth keeping: assert on the hook *globals*, not on a substring of the gate expression, which changes shape with every refactor; and treat "no bundle found" as a failure rather than a skip.
+
 ## Weapon Fire Cadence
 
 Every ranged weapon is rate-capped by its own `fireIntervalSec`. The mechanism already existed — `updateFiring` honoured it for automatic weapons and for ghidra — but the pistol and shotgun simply defined no interval, so their fire rate was whatever the input device could produce and a shotgun could be click-spammed into an automatic weapon. This was a *data* gap, not a missing feature; the fix added two numbers and no engine logic.
@@ -431,7 +478,7 @@ Three details of that hint are load-bearing and would be easy to "simplify" back
 
 ## An Overlay Grows to Fit Its Text
 
-`fillText`'s fourth argument is a clamp, not a layout. It does not wrap and does not overflow — it *compresses the glyphs horizontally* to fit, so a line that overruns its box still renders, just visibly squashed at a different pitch from every line beside it. That failure mode is invisible to a test asserting what text was drawn, and it shipped: the death screen picked between two fixed widths (420, or 620 once it carried stats rows), and since `PLAYER_STATS_ENABLED` is off by default there are no stats rows, so the rollback wording — up to 71 characters, needing 556px — was squeezed into 388. The grouped stat values (`Path … · Map … · Lore … · Secrets … · Streaks …`, 446px) were squeezed even at 620, because each column only gets `boxW / 2 - 24`; no choice between two fixed widths could have fixed that one. The worst case is the replay-ended screen, whose reasons interpolate a file path — `main.ts`'s balance-mismatch string reaches 986px, and is the one case long enough to stay squeezed after the fix, since a box that wide runs into the canvas edge first. If that screen ever needs to be genuinely correct rather than merely better, it needs wrapping, which this does not add.
+`fillText`'s fourth argument is a clamp, not a layout. It does not wrap and does not overflow — it *compresses the glyphs horizontally* to fit, so a line that overruns its box still renders, just visibly squashed at a different pitch from every line beside it. That failure mode is invisible to a test asserting what text was drawn, and it shipped: the death screen picked between two fixed widths (420, or 620 once it carried stats rows), and the death screen picked its width before the stats rows existed, so the rollback wording — up to 71 characters, needing 556px — was squeezed into 388. The grouped stat values (`Path … · Map … · Lore … · Secrets … · Streaks …`, 446px) were squeezed even at 620, because each column only gets `boxW / 2 - 24`; no choice between two fixed widths could have fixed that one. The worst case is the replay-ended screen, whose reasons interpolate a file path — `main.ts`'s balance-mismatch string reaches 986px, and is the one case long enough to stay squeezed after the fix, since a box that wide runs into the canvas edge first. If that screen ever needs to be genuinely correct rather than merely better, it needs wrapping — **which a later pass did add** (2026-08-23): body lines wrap instead of being squashed, stat rows split at a content-driven column rather than the box centre, and a value that still does not fit steps 13px to 11px. The balance-mismatch string is the one case long enough to stay imperfect, since a box wide enough for 986px runs into the canvas edge first.
 
 `overlayLayout` therefore derives a minimum width from the content and keeps 420/620 only as floors, so every screen that already fitted is unmoved. It can do this while staying pure — no `measureText`, which is what lets `show()` wire up input on a canvas with no 2D context — because the overlay is monospace end to end: a character count *is* a width. `CHAR_EM` is that per-character advance, 0.602em measured in Chromium at every size and weight the overlay uses, rounded up to 0.62 because the `ui-monospace` fallback differs by platform. The rounding direction is the load-bearing part: over-estimating pads the box by a few pixels, under-estimating puts the squeeze back. `maxWidth` stays applied underneath as a backstop, so a wrong estimate — or a box already pinned against the `w - 48` canvas edge, which is the one place text can still be squeezed — degrades to the old rendering rather than letting text escape its box.
 

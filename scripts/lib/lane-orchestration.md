@@ -21,6 +21,8 @@ in, and in `sshRunner.mjs`'s single `REPO_ROOT` import.
 | `laneOrchestrator.mjs` | the scheduler: claiming, chunk sizing, stealing, lane health, utilisation accounting | no |
 | `sshRunner.mjs` | bootstrap + run on a remote host (clone/fetch, force-checkout a sha, `npm ci`, playwright install) | one import (`REPO_ROOT`), and `REMOTE_DIR`'s name |
 | `bankedRuns.mjs` | counts distinct `rid`s already on disk, incrementally | yes — knows the NDJSON event-log shape |
+| `devServer.mjs` | starts a dev server if one isn't already up, and hands back its URL | one import (`REPO_ROOT`) |
+| `envNumber.mjs` | parses every numeric env knob, failing loudly instead of yielding `NaN` | no |
 
 Consumers today: `run-balancing-capture.mjs`, `run-balancing-campaign.mjs`,
 `run-balancing-campaign-multiplayer.mjs`.
@@ -43,7 +45,10 @@ Required:
   invocation. `ctx` carries `inFlightBefore`, `chunkAttempts`,
   `reservedAttempts` so you can size the work this invocation should do.
 - `scriptPath` — the script each invocation runs.
-- `runners` — `LocalRunner` and/or `SshRunner` instances.
+- `runners` — `LocalRunner` and/or `SshRunner` instances. `LocalRunner` also takes an
+  `env` object, merged over each invocation's environment, which is what lets several
+  local lanes on one machine differ from each other — see **Running more than one local
+  lane** below, because getting it wrong is silent.
 
 Optional, and this is where the tuning lives: `watchdogMs`, `sigtermGraceMs`,
 `maxInvocations`, `maxConcurrentPerCombo`, `laneFailureLimit`, `chunkFor`,
@@ -66,6 +71,29 @@ Optional, and this is where the tuning lives: `watchdogMs`, `sigtermGraceMs`,
 - **It reports what it did**: per-lane busy/idle, measured attempts-per-minute,
   relative per-combo cost, and time spent with one lane working while another
   was *refused* work.
+
+## Running more than one local lane
+
+A capture shards local work across several Node processes rather than one event loop
+(`26b1e72`, 2026-08-19), because a single process was the bottleneck long before the
+machine was. `run-balancing-capture.mjs` builds N `LocalRunner`s labelled `local-0`…
+`local-N`. Three things about that are easy to get wrong and only fail in ways that look
+like something else:
+
+- **The count is derived from the machine, not fixed.** `LOCAL_LANES` defaults to
+  `min(4, floor(os.cpus().length / 4))`, overridable with
+  `CODEENSTEIN_CAPTURE_LOCAL_LANES`. There is therefore no correct remembered answer to
+  "how many lanes are there" — probe it. It has been misremembered in both directions.
+- **Each lane gets a *share* of the machine's concurrency, not all of it.**
+  `CODEENSTEIN_TELEMETRY_CONCURRENCY` is set per runner to
+  `CONCURRENCY_PER_LANE / LOCAL_LANES`, so total context count across the local lanes
+  stays what it was. Splitting the queue is the point; asking more of the machine is not.
+- **Every local lane must share one dev server.** A telemetry child that starts its own
+  `stop()`s it on exit, which with parallel lanes pulls the server out from under the
+  lanes still running. `ensureDevServer()` starts one, and its URL goes in the
+  per-runner `env` — **never globally**, because `SshRunner` forwards every
+  `CODEENSTEIN_*` key and a `localhost` URL set globally points every remote lane back at
+  this machine.
 
 ## Invariants worth not breaking
 

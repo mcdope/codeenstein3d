@@ -61,6 +61,8 @@ Two further rules that follow from it:
 - **A glyph pre-renders on a detached context that inherits nothing** — not `lineJoin`, not `lineCap`, not `imageSmoothingEnabled`. Any state your shape relies on has to be set inside the glyph's own `draw`. Getting this wrong is silent: the shape still draws, just with the wrong joins.
 - **Every number you write is a design pixel, not a device pixel** (`src/engine/overlayScale.ts`). `drawWeapon` runs inside `withOverlayScale`, so a barrel length of 190 is 190px at the Classic preset and 380 real pixels at Sharp — the same size on screen, drawn more finely. Two things follow. Read the `w`/`h` the wrapper hands you rather than `ctx.canvas.width`, which is still the backing store and lands at twice the intended coordinate at Sharp. And a `Glyph`'s `width`/`height` are design pixels too: the sprite is allocated at `width * scale` and blitted back into a design-sized box, so a glyph box that is right at Classic is right everywhere. None of this needs anything from you beyond writing the numbers as though the canvas were 640x400 — which is what the existing weapons already do.
 
+  **The one exception, and it runs the other way**: `spreadPx` and `maxConeDeviationPx` (§1) are **not** design pixels. They are simulation screen-pixels resolved against the `zBuffer` in `fire()`, deliberately outside the scaled block — `overlayScale.ts`'s header states the rule as "nothing in this module may ever be imported by shot resolution", because a scale factor leaking into aim would make where a shot lands depend on a render setting. Two fields with `Px` in the name, two different pixels; the viewmodel's are scaled and the cone's must never be.
+
 ### 4. Firing behaviour in `engine.ts`
 
 `fire()` and `updateFiring()` are written against `Weapon` fields, so an ordinary hitscan weapon needs **no engine edit at all**. Three places branch on something other than a plain field, and are worth checking against your weapon:
@@ -178,12 +180,14 @@ One real ceiling worth knowing: `digitKeyIndex` (`input.ts`) matches `/^(?:Digit
 | which weapon | `WEAPONS[p.weaponIndex]` | `currentMeleeWeapon(ownedWeapons)` — the knife until Toolchain is owned, then Toolchain permanently. It *replaces* the knife on `Space` rather than adding a slot |
 | input | `consumeFire()` / `isFireHeld()` | `consumeMelee()` (one-shot per press) or, for an `auto` melee weapon, `isMeleeHeld()` |
 | `fireIntervalSec` | required | optional — the knife omits it, and `weapons.test.ts` asserts `MELEE_WEAPON.fireIntervalSec` is `undefined` |
-| viewmodel | `weaponIndex`'s `viewKind`, drives `recoil` | a separate `meleeRecoil` overlay, so a swing can't stomp a ranged weapon's in-flight recoil animation |
+| viewmodel | `weaponIndex`'s `viewKind`, drives `recoil` | a separate `meleeRecoil` overlay, so a swing can't stomp a ranged weapon's in-flight recoil animation — **plus `meleeActive` and `MELEE_HELD_REST` for an `auto` melee weapon**, see below |
 | ammo | spends `ammoType`'s pool | `ammoType` omitted → infinite, and a duplicate pickup grants nothing |
 
 Two consequences worth stating outright. Quick-melee is deliberately **always available** — it never touches `weaponCooldown`, so a player waiting out the shotgun's pump always has something to swing; that is the same safety-net role the knife plays for an empty ammo pool. And `Space` is not an arbitrary choice: melee was originally on Left-Ctrl, which combined with `W` spells the browser-reserved, unblockable `Ctrl+W` and closed the whole browser mid-swing.
 
 A *third* melee weapon would need more than a table entry: `currentMeleeWeapon` hardcodes the two-way knife/Toolchain choice, and `MELEE_WEAPON` is defined as the first `meleeRange`-having entry in the array.
+
+**A melee weapon with `auto: true` needs one more thing than the table row above suggests, and it is the trap that actually shipped.** A held melee weapon fires on an interval (Toolchain bites every 0.35s), and if the viewmodel is driven by the decaying `meleeRecoil` alone, that value crosses the renderer's 0.02 visibility threshold *inside* the interval — so the ranged weapon in the player's other hand is drawn for the last few frames of every single bite. The fix is `meleeActive` (a held-state flag, `engine.ts`) plus `MELEE_HELD_REST`, a floor the recoil settles to instead of decaying to zero. The general rule is in [decisions.md](decisions.md#a-held-weapon-needs-a-sustained-voice-not-a-faster-one-shot): something you *hold* is a sustained state, not a fast sequence of one-shots — which applies to its sound the same way it applies to its silhouette.
 
 ---
 

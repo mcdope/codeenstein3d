@@ -18,7 +18,7 @@ Two tools answer that question, and they do not have the same reach.
 |---|---|---|
 | what it measures | whether a level is *clearable*: HP on the floor vs. damage obtainable | what actually happens when something plays it |
 | campaign source | **any directory**, via `--dir` | **`demo-campaign/` only**, hardcoded |
-| level enumeration | recursive, using the real workspace helpers | flat, top-level files only |
+| level enumeration | recursive, using the real workspace helpers, numbered from the real entrypoint | flat, top-level files only |
 | cost for 17 levels | seconds | ~20 hours for a 6-cell, 360-attempt sweep |
 | needs a browser | no | yes, one per 20 attempts |
 
@@ -65,33 +65,52 @@ figure. This exact confusion once manufactured a Hard-difficulty "collapse" that
 play flatly contradicted.
 
 A worked example, small enough to check by eye — this repo's own `src/fs`, which
-holds three source files and three `*.test.ts` files beside them:
+holds seven source files with their `*.test.ts` files beside them:
 
 ```
 $ npm run balancing:budget -- --dir src/fs
 # Balance budget -- src/fs
-# 3 levels, perfect-accuracy lower bound on cost
+# 6 levels, perfect-accuracy lower bound on cost
+# level 1 = demoCampaign.ts — 1 file(s) ahead of it in tree order are never played
+# ammo drops x maxHp/88, heal x maxHp/100 (engine defaults)
+# kill rate 0.71 — the share of each roster assumed fought
 
-level  file                enemies   HP tot   ammo dmg (carry/pre/drop)   ratio (nofarm/comb)
-    1  demoCampaign.ts           1       50     1225 /      0 /    113    24.50 /  26.76
-    2  github.ts                27     1001     1270 /    963 /   3051     2.23 /   5.28
-    3  workspace.ts             30      774     3687 /   1575 /   3389     6.80 /  11.18
+level  file                    enemies   HP tot   ammo dmg (carry/pre/drop)   ratio (nofarm/comb)
+    1  demoCampaign.ts               6      260      3244 /      0 /    320    12.48 /  13.71
+    2  github.ts                    16      826      3287 /    484 /   1016     4.56 /   5.80
+    3  gitlab.ts                    16     1018      3906 /    242 /   1253     4.07 /   5.31
+    4  remoteHost.ts                38     1922      4955 /    726 /   3276     2.96 /   4.66
+    5  remoteHosts.ts                9      470      6642 /    480 /    801    15.15 /  16.86
+    6  workspace.ts                 29     1289      7357 /    484 /   2197     6.08 /   7.79
 ```
 
-Three levels, not six: `isIgnoredFileName` dropped the test files, exactly as the
-game would. Note also how little the file *count* tells you — `github.ts` puts 27
-enemies and 1001 HP on the floor where `demoCampaign.ts` puts one enemy and 50.
-Level difficulty tracks code complexity, and in an arbitrary repo that is
-unrelated to filename order.
+Two things to read off it. **Six levels, not fourteen**: `isIgnoredFileName` dropped the
+test files exactly as the game would, and the header line says one further file was
+dropped for sitting *ahead of the entrypoint* — `codeberg.ts` sorts before
+`demoCampaign.ts`, and the game never plays it. And note how little the file *count*
+tells you: `remoteHost.ts` puts 38 enemies and 1,922 HP on the floor where
+`remoteHosts.ts`, whose name differs by one character, puts 9 and 470. Level difficulty
+tracks code complexity, which in an arbitrary repo is unrelated to filename order.
 
 `collectSourceFiles` (`scripts/report-level-budget.mjs`) walks the directory
 using the real `src/fs/workspace.ts` helpers — `isIgnoredDirectoryName`,
 `isIgnoredFileName`, `compareNodes` — recursing the way `flattenParsableFiles`
 does in `main.ts`: directories before files at each level, then case-insensitive
-alphabetical, depth-first. So the level order it reports is the order the game
-would really play, including for a deeply nested repo. That is deliberate and
-load-bearing: it decides which source file is level 1, and therefore what every
-per-level number is *about*.
+alphabetical, depth-first.
+
+**Walk order is not level numbering, and the difference is not cosmetic.**
+`entrypointIndex()` models `findEntrypoint`'s cascade — the same one the game runs — and
+everything sorting *ahead* of the pick is dropped from the numbering entirely rather than
+counted as levels 1..n. The header line names how many were dropped, as in the example
+above. Before this was modelled (`58cad4b`, 2026-08-21) the tool numbered from tree index
+0, which across the corpus counted **1,420 of 7,088 levels (20%) that a player can never
+reach** and moved the headline answers with them. It was found the hard way: a playtest
+report could not be matched to the levels this tool had named — which is exactly the
+failure this page exists to prevent.
+
+So the level order it reports is the order the game would really play, including for a
+deeply nested repo. That is deliberate and load-bearing: it decides which source file is
+level 1, and therefore what every per-level number is *about*.
 
 ---
 

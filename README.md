@@ -71,7 +71,7 @@ See [How It Works](#how-it-works) below for the full detail behind each of these
 - ✅ **Custom BGM** — pick a local folder of `.mp3`/`.ogg`/`.wav` files, shuffled playlist
 - ✅ **Master/SFX/Music sliders** — balanced audio mixing, persisted across sessions
 - ✅ **Gore levels** — adjustable blood particles (None/Normal/More/Extreme/Excessive/Absurd, the last leaving the floor permanently painted)
-- ✅ **Difficulty modes** — Easy/Normal/Hard scales enemy HP, damage, ammo scarcity
+- ✅ **Difficulty modes** — Easy/Normal/Hard scales enemy HP, damage, aim accuracy and ammo scarcity, and sets the run's rollback budget (2/1/0)
 
 ### Mechanics
 - ✅ **Acid pools** — global variables become hazardous terrain
@@ -188,7 +188,9 @@ npm run dev        # Vite dev server with HMR
 npm run typecheck  # Type-check only (its own blocking CI gate)
 npm test           # Vitest unit suite — blocking CI gate
 npm run coverage   # Same, with the 99.9/99.5 coverage gate — blocking CI gate
-npm run build      # Production build to dist/
+npm run build      # Production build to dist/ (its postbuild step is a blocking gate — see below)
+npm run bundle:check # Bundle hygiene: fails if a test hook reaches dist/, or a diagnostic stops reaching it
+npm run secrets:scan # Secret scan over tracked files — also runs as a pre-commit and CI gate
 npm run preview    # Serve production build locally
 ```
 
@@ -243,7 +245,6 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 - **Compass** — Circular badge (bottom-right of minimap), points toward exit relative to your facing
 - **Player name** — Labels your highscore entries, and floats above your character in co-op
 - **Gore** — None/Normal/More/Extreme/Excessive/Absurd, scaling blood-particle count, size and how long stains last; Absurd's stains never expire
-- **Difficulty** — Easy/Normal/Hard, scaling enemy HP, damage, ammo scarcity
 - **Difficulty** — Easy / Normal / Hard; applies at the next level and then **locks for the rest of the run**, since the highscore board records it
 - **Render quality** — Classic (640×400, the default) or Sharp (1280×800 with a half-resolution floor); applies at the next level, and aiming is identical in both
 - **Master / SFX / Music** — Volume sliders for each bus (persisted across sessions)
@@ -253,7 +254,7 @@ Everything below lives behind the sidebar's gear (**⚙**) **Settings** tab, gro
 
 ### Level Flow
 - **Pick workspace** → Auto-starts at detected entrypoint (or first parsable file)
-- **Reach green exit tile** → Commit summary screen (with an "Export Map as PNG" button for the level you just cleared) → Next level loads (health/ammo/weapons carry over)
+- **Reach green exit tile** → Commit summary screen (with an "Export Map as PNG" button for the level you just cleared) → Next level loads (health/ammo/weapons carry over, ammo capped at 3x what the new level would give a fresh player)
 - **Run out of files** → "Build Successful" screen
 - **Die** → "Kernel Panic" screen — with a **rollback** left (2 Easy / 1 Normal / 0 Hard) it offers to restart the level exactly as you entered it; with none left, which is always the case on Hard, the run ends
 - **Continue Run button** — Resume a saved campaign exactly where you left off
@@ -267,9 +268,11 @@ the full arsenal, multi-level campaigns, deterministic replays, highscores, WAD 
 2-4 player coop — all covered by a ~99.9%-coverage unit suite plus 14 verify scripts in CI
 (10 of them Playwright-driven).
 
-Two features are implemented but shipped **off** behind source flags, both after playtest
-feedback: room decorations (billboarding reads as visibly wrong on boxy shapes) and the
-level-end player stats screen (a measurable frame-time cost). See
+Two features are implemented but shipped **off** behind source flags: room decorations
+(billboarding reads as visibly wrong on boxy shapes, after playtest feedback) and the
+unconditional half-resolution floor (a visibly chunkier floor, kept off and flag-only so
+the fidelity/cost trade stays measurable — the automatic variant that pairs it with the
+Sharp preset is on). See
 [Feature Flags](doc/dev/architecture.md#feature-flags) for the current defaults and the
 reasoning behind each.
 
@@ -346,25 +349,43 @@ src/
     ├── projectiles.ts       # Enemy bolts
     ├── rockets.ts           # Player rocket projectiles & splash damage
     ├── traps.ts             # Spike traps & proximity mines
+    ├── acidDecay.ts         # try-gauntlet acid: step in, it corrodes away behind you
+    ├── acidOverflow.ts      # Acid Overflow rooms — the floor fills until the room's enemy dies
+    ├── mapPredicates.ts     # The tile questions everything asks (solid? harmful? walkable?)
     ├── weapons.ts           # Weapon stats, tracers, spread
+    ├── combatConstants.ts   # Every enemy/projectile/trap combat scalar + the per-archetype ENEMY_WEAPONS table
     ├── ammo.ts              # Ammo pool state & per-pool metadata
     ├── viewmodel.ts         # First-person weapon sprite (Canvas 2D)
     ├── loot.ts              # Weighted random drops
     ├── lootApply.ts         # Drop/pickup application (grant, top-up, elite bonus)
     ├── scoring.ts           # Score calculation
+    ├── events.ts            # Balancing event log — one record per shot/hit/kill/drop
     ├── highscores.ts        # Leaderboard (hashing, compression)
     ├── defaultHighscore.ts  # Bundled example leaderboard entries (bot-generated per skill profile, binary-packed + gzipped, lazily imported when the real board is empty)
     ├── replayCodec.ts       # Binary packing for replay frames (3.5x less localStorage than JSON+gzip)
     ├── storageCompression.ts # gzip helpers for localStorage payloads
     ├── replay.ts            # Recording & playback
+    ├── balanceHash.ts       # Fingerprint of everything that decides how a replay plays back
     ├── audio.ts             # Web Audio synthesis + buses
     ├── bgm.ts               # Custom background-music playback
     ├── hud.ts               # Status bar, crosshair, compass
+    ├── hudLayout.ts         # Status-bar geometry as pure canvas-size -> panel-rect arithmetic
+    ├── hudFace.ts           # The status bar's face (DOOM's STFACE, in this game's palette)
+    ├── overlayScale.ts      # The 640x400 design space every overlay draws in, and the one transform onto it
+    ├── pathSprites.ts       # Pre-rendered glyphs for every non-rectangular shape the renderer used to stroke
+    ├── gateColors.ts        # What each gate colour is called (the pixels are elsewhere)
+    ├── keyRoute.ts          # The locked-door hint's "where do I go now" search
     ├── automap.ts           # Full-level map overlay
+    ├── playerNames.ts       # One resolver for "what do we call this player"
     ├── input.ts             # Keyboard, mouse, gamepad
     ├── perfDebug.ts         # Opt-in ?perfDebug=1 per-frame phase-timing diagnostics
-    ├── playerStats.ts       # Level-end stats screen (dormant, disabled by default)
-    └── telemetry.ts         # Balancing-bot tracking types/helpers
+    ├── playerStats.ts       # Level-end/run-end stats screen (kills, accuracy, damage sources, bonuses)
+    ├── telemetry.ts         # Balancing-bot tracking types/helpers
+    ├── multiplayerScaling.ts     # Elite HP/damage scaling by player count
+    ├── transitionConstants.ts    # The multiplayer exit countdown
+    ├── reconciliationConstants.ts # Periodic drift-correction pass
+    ├── reconciliationSnapshot.ts  # Its payload shape
+    └── lagCompensationConstants.ts # Rewinding hit-tests against a delayed enemy position
 ```
 
 ---

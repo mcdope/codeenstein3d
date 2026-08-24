@@ -1,6 +1,6 @@
 # Testing
 
-The unit-test suite (Vitest, `src/**/*.test.ts`, co-located next to what they test) covers every file under `src/` except `src/engine/defaultHighscore.ts` (a generated data file — a single gzip+base64-encoded string constant, no logic to test), `src/parser/types.ts` (fully type-only — interfaces/type aliases, zero runtime exports), `src/empty-node-shim.ts` (an empty stub module, see [Architecture](architecture.md#build)), and `src/vite-env.d.ts` (a pure `.d.ts` type file, zero runtime code). `npm run coverage` gates on 99.9%/99.9%/99.5%/99.5% lines/statements/functions/branches (see "Setup" below for why it's not a flat 100%) and runs as a blocking CI job (`.github/workflows/verify.yml`) alongside the existing `verify`/`verify-browser` jobs. This doc covers the setup, the shared fixture catalog, the mocking philosophy, and the handful of techniques worth reusing rather than reinventing. It doesn't try to teach Vitest itself — see [vitest.dev](https://vitest.dev) for that.
+The unit-test suite (Vitest, `src/**/*.test.ts`, co-located next to what they test) covers every file under `src/` except `src/engine/defaultHighscore.ts` (a generated data file — a single gzip+base64-encoded string constant, no logic to test), `src/parser/types.ts` (fully type-only — interfaces/type aliases, zero runtime exports), `src/empty-node-shim.ts` (an empty stub module, see [Architecture](architecture.md#build)), `src/vite-env.d.ts` (a pure `.d.ts` type file, zero runtime code), and four wire-shape modules that are the same situation as `src/parser/types.ts` — `src/multiplayer/netcodeTypes.ts` (the per-tick lockstep shapes), `src/engine/reconciliationSnapshot.ts` and `src/multiplayer/reconciliationTypes.ts` (the reconciliation payload and its wrapper), and `src/multiplayer/levelTransitionTypes.ts`. The rule throughout is that a file is excluded only when it compiles to zero instrumentable statements — v8 reports a 0/0 file as a literal 0%, which would sink the gate for a file with no logic in it. A file with *some* runtime code beside its types (`src/map/types.ts`'s tile constants) is not excluded; it gets real tests. `npm run coverage` gates on 99.9%/99.9%/99.5%/99.5% lines/statements/functions/branches (see "Setup" below for why it's not a flat 100%) and runs as a blocking CI job (`.github/workflows/verify.yml`) alongside the existing `verify`/`verify-browser` jobs. This doc covers the setup, the shared fixture catalog, the mocking philosophy, and the handful of techniques worth reusing rather than reinventing. It doesn't try to teach Vitest itself — see [vitest.dev](https://vitest.dev) for that.
 
 For the separate Playwright-driven scripts (`scripts/verify-*.mjs`) that exercise the real built app end-to-end, see [Architecture](architecture.md#build).
 
@@ -173,6 +173,11 @@ Two things about that range are easy to misread as typos. It has **holes**, not 
 | `scripts/lib/envNumber.test.mjs` | the env-var parser every harness knob goes through, including what it does with nonsense |
 | `scripts/lib/constantMirrors.test.mjs` | the bot's hand-maintained mirrors of engine constants — weapon table, magazines, pools, hazard radii |
 | `scripts/lib/docPins.test.mjs` | the numbers and enumerations **documentation** mirrors out of `src/` — see below |
+| `scripts/check-bundle-hygiene.test.mjs` | the `postbuild` gate itself — that it fails on a hook reaching `dist/` **and** on a shipped diagnostic disappearing from it |
+| `scripts/check-secrets.test.mjs` | the secret scanner's three leak channels and its structural rules, against throwaway fixture repos |
+| `scripts/lib/replayProgress.test.mjs` | `consumedFrames` — the level accounting a replay transition used to double-count |
+| `scripts/reportCaptureSurvival.test.mjs` | `poolCapture`, the survival report's pooling |
+| `scripts/stageCampaignOrder.test.mjs` | staged-campaign slot ordering, and `blockingWorkingTreeChanges` — the clean-tree guard a stray scratch file once tripped |
 
 Two things make these worth writing rather than relying on the bot harness itself. The decision core is **pure** (see [Balancing Telemetry Bot](balancing-telemetry.md)), so a branch can be asserted directly without a browser, in milliseconds rather than the tens of minutes a telemetry run costs. And a detector that silently stops firing is worse than no detector, because the scan keeps reporting clean — `anomalyDetectors.test.mjs` exists specifically to pin the negative cases.
 
@@ -255,6 +260,35 @@ There is a real instance, and it is now **fixed** — verify the current code be
 This has already produced one bug that survived repeated automated repro attempts: the host-side stuck `"PAUSED"` overlay documented in [Multiplayer Netcode](multiplayer-netcode-spec.md#resolved-a-hosts-game-could-show-a-stuck-paused-overlay-right-around-team-elimination), whose trigger was a stale overlay dismiss listener on `window` plus the canvas's `mousedown` — both structurally invisible to every tool described above. It took a real screen recording on real hardware.
 
 **Level layout quality is not a property any assertion holds.** `mapGenerator.test.ts` and the `generation/*.test.ts` files check invariants — every room reachable, no room overlapping another, no corridor severed, one key per doorway — and all of them passed happily throughout the years in which every level was a few rooms strung along enormous identical hallways. The defect was real, obvious, and only visible as a picture: seventeen floor plans side by side, where the repetition reads instantly. `npm run report:level-maps` (`scripts/render-level-maps.mjs`) is the instrument for that class — one PNG per demo-campaign level plus the metrics that move when placement or corridor topology changes (corridor leg length, longest straight run, corridor-feature count and footprint spread, floor density against the level's own bounding box, room-graph cycle count, and `rooms/entities` so a silently dropped room is visible). Run it before and after any change under `src/map/generation/`, and **look at the images, not only the table** — "no single motif dominates" is not a number.
+
+## Bundle hygiene — `scripts/check-bundle-hygiene.mjs`
+
+Runs as `npm run build`'s own `postbuild` step (and standalone as `npm run bundle:check`),
+so it blocks the `verify` CI job. It is the same class of guard as the doc pins and the
+secret scan: a property nobody can hold in their head, asserted mechanically.
+
+It checks `dist/` in **both** directions:
+
+- **Must not be there** — `__codeensteinTestHooks` and its campaign/replay/multiplayer
+  siblings, and the mutating debug-handle wiring (`debugSetGodMode:` as an *object-literal
+  property*, which is the shape that survives into a bundle; the class method is a
+  different string and matching it would fire on every build).
+- **Must still be there** — `__codeensteinPerfStats`, the `?perfDebug` URL read, and the
+  `?ablate` path. These are opt-in player-facing diagnostics that are *supposed* to ship,
+  and they have been mistaken for leaks before.
+
+The second direction is the point, not symmetry. **The previous version of this check was
+vacuous for about a month**: it was written against Vite 6's minifier, `398b406` bumped to
+Vite 8 (rolldown+oxc, which does not inline the same way), and the check kept passing
+while asserting nothing. A one-directional guard cannot notice that it has stopped
+guarding. `check-bundle-hygiene.test.mjs` covers the checker itself.
+
+What makes the first half achievable is `TEST_HOOKS_BUILD_ENABLED = import.meta.env.DEV`
+(`src/engine/engine.ts`) — a build-time constant, so the bundler folds the branch away
+rather than shipping dead code behind a runtime flag. Two rules from the script's own
+header worth keeping: assert on the hook **globals**, never on a substring of the gate
+expression (which changes shape with every refactor), and treat "no bundle found" as a
+failure rather than a skip.
 
 ## Secret scanning
 
