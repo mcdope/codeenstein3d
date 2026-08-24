@@ -266,6 +266,11 @@ export const DEFAULT_TUNING = {
   LEG_REPLAN_DRIFT_TILES: 2.5,
   // Mirrors src/engine/engine.ts's ROT_SPEED (rad/sec).
   ENGINE_ROT_SPEED: 2.6,
+  // Mirrors src/engine/engine.ts's MOUSE_SENSITIVITY (radians per pixel of
+  // mouse movement). Read by `report-turn-cadence.mjs` to reconstruct how far
+  // the view actually moved on a frame the player turned with the mouse — the
+  // bot itself does not use the mouse (see `profiles.mjs`).
+  ENGINE_MOUSE_SENSITIVITY: 0.0025,
   // Mirrors src/engine/engine.ts's MOVE_SPEED/SPRINT_MULTIPLIER.
   ENGINE_MOVE_SPEED: 3.2,
   ENGINE_SPRINT_MULTIPLIER: 2.0,

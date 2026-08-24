@@ -216,11 +216,20 @@ const QUALIFY_LEVEL_INDEX = 3; // 0-based — "level 4" in 1-based campaign numb
 const EVENT_LOG_DIR = process.env.CODEENSTEIN_TELEMETRY_EVENT_LOG
   ? path.resolve(process.env.CODEENSTEIN_TELEMETRY_EVENT_LOG)
   : null;
+/** Where to drop each attempt's stored highscore board, for
+ * `report-turn-cadence.mjs` to read back — see `dumpStoredBoard`. Null (the
+ * default) writes nothing at all. */
+const BOARD_DUMP_DIR = process.env.CODEENSTEIN_TELEMETRY_BOARD_DUMP
+  ? path.resolve(process.env.CODEENSTEIN_TELEMETRY_BOARD_DUMP)
+  : null;
 /** One id per process invocation, so events from two concurrent campaign lanes
  * writing to the same directory stay separable. Not a timestamp: two lanes can
  * start inside the same millisecond. */
 const EVENT_SESSION_ID = `${process.pid.toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 let eventAttemptCounter = 0;
+/** Same purpose for `dumpStoredBoard`, kept separate so enabling one dump does
+ * not renumber the other's filenames. */
+let boardDumpCounter = 0;
 
 /**
  * Pins every attempt's gameplay seed (`?seed=`), making loot rolls, enemy fire
@@ -592,6 +601,23 @@ function reportTiming(t) {
  * Called after `context.close()`, so it never competes with the page for the
  * event loop.
  */
+/**
+ * Write this attempt's stored highscore board, verbatim, to `BOARD_DUMP_DIR`.
+ *
+ * Unlike `writeEventBatches` this has to run *before* `context.close()`: the
+ * board is a `localStorage` value belonging to that page, and there is no copy
+ * of it anywhere else. A run that never reached a saved score writes nothing —
+ * the caller reports zero files rather than empty ones, so "no data" cannot be
+ * mistaken for "no turning".
+ */
+async function dumpStoredBoard(page, profileName, difficulty) {
+  const raw = await page.evaluate(() => localStorage.getItem("codeenstein-highscores")).catch(() => null);
+  if (!raw) return;
+  fs.mkdirSync(BOARD_DUMP_DIR, { recursive: true });
+  const file = path.join(BOARD_DUMP_DIR, `${profileName}-${difficulty}-${EVENT_SESSION_ID}-${(boardDumpCounter++).toString(36)}.board`);
+  fs.writeFileSync(file, raw);
+}
+
 function writeEventBatches(profileName, difficulty, batches) {
   if (EVENT_LOG_DIR === null || !batches || batches.length === 0) return;
   const runId = `${EVENT_SESSION_ID}-${(eventAttemptCounter++).toString(36)}`;
@@ -630,6 +656,12 @@ async function runOneAttempt(browser, profileName, profile, difficulty, levelPla
     await dismissOverlay(page);
 
     const run = await playRun(page, profile, levelPlans, `${profileName}/${difficulty}`);
+    // Opt-in, and read before the context closes because the board lives in
+    // that page's `localStorage` and nowhere else. Exists so a turn-cadence
+    // arm (`report-turn-cadence.mjs`) can be measured off a short real run
+    // instead of a multi-hour board regeneration. Absent unless asked for, so
+    // an ordinary campaign pays one env lookup.
+    if (BOARD_DUMP_DIR) await dumpStoredBoard(page, profileName, difficulty);
     await context.close();
     writeEventBatches(profileName, difficulty, run.eventBatches);
     return run;

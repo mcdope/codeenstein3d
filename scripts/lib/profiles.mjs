@@ -151,9 +151,18 @@ export const PROFILES = {
     selfHarmAversion: 2.2,
     // See `botRotSpeedMul`'s doc comment (engine.ts's `rotSpeedMultiplier`)
     // — approximates a realistic *mouse* turn speed for this skill tier
-    // rather than the real Q/E keyboard rate, since mouse-look itself isn't
-    // available to a Playwright-automated browser. ~2x keyboard (~5.2
-    // rad/sec, ~300°/sec) — an unhurried, average mouse sensitivity.
+    // rather than the real Q/E keyboard rate. ~2x keyboard (~5.2 rad/sec,
+    // ~300°/sec) — an unhurried, average mouse sensitivity.
+    //
+    // **This used to say mouse-look "isn't available to a Playwright-automated
+    // browser". That is not true (measured 2026-08-24).** A trusted
+    // `page.mouse.click` on the canvas takes pointer lock, and `onMouseMove`
+    // gates on `document.pointerLockElement` and not on `isTrusted`, so the
+    // page can synthesise `mousemove` from inside the virtual-clock pump. It
+    // was built and measured, and was not better than the keyboard — see
+    // *Playtest-Bot Behaviour: Approaches Measured and Rejected* in
+    // `decisions.md`. So the multiplier stays, but as a deliberate choice
+    // rather than the only option available.
     rotSpeedMultiplier: 2,
   },
   Gamer: {
