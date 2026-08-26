@@ -166,22 +166,31 @@ describe("GameHud — overlay content per method", () => {
   });
 
   it("showCommitSummary draws its stats and has no body lines", () => {
-    hud.showCommitSummary({ linesRefactored: 120, bugsSquashed: 3 }, vi.fn());
+    hud.showCommitSummary({ linesRefactored: 120 }, vi.fn());
     const texts = fillTextCalls();
     expect(texts).toContain("COMMIT SUMMARY");
     expect(texts).toContain("Lines refactored");
     expect(texts).toContain("120");
-    expect(texts).toContain("Bugs squashed");
-    expect(texts).toContain("3");
     expect(texts).toContain("Continue");
   });
 
   it("showCommitSummary also draws the curated stat rows when given stats", () => {
-    hud.showCommitSummary({ linesRefactored: 120, bugsSquashed: 3, stats: fakeStatsScreenInfo() }, vi.fn());
+    hud.showCommitSummary({ linesRefactored: 120, stats: fakeStatsScreenInfo() }, vi.fn());
     const texts = fillTextCalls();
     expect(texts).toContain("Weapon accuracy");
     expect(texts).toContain("Time survived");
     expect(texts).toContain("Damage taken");
+  });
+
+  it("shows the kill count exactly once, as \"Kills\"", () => {
+    // Regression: "Bugs squashed" used to sit directly above the stats block
+    // and render the same number as its "Kills" row, one line apart. The two
+    // rows were built in different files, which is why it survived review and
+    // was only caught by playing a level.
+    hud.showCommitSummary({ linesRefactored: 120, stats: fakeStatsScreenInfo() }, vi.fn());
+    const texts = fillTextCalls();
+    expect(texts).not.toContain("Bugs squashed");
+    expect(texts.filter((t) => t === "Kills")).toHaveLength(1);
   });
 
   it("showMultiplayerResults draws the given title/color and one row per player", () => {
@@ -652,7 +661,7 @@ describe("GameHud — no overlay squeezes its own text", () => {
     // "Path … · Map … · Lore … · Secrets … · Streaks …" needs 446px against
     // the 286px each side gets in a 620-wide box — the one case that was
     // squeezed even *with* `wide` set, so no fixed width could have fixed it.
-    hud.showCommitSummary({ linesRefactored: 1234, bugsSquashed: 567, stats: fakeStatsScreenInfo() }, vi.fn());
+    hud.showCommitSummary({ linesRefactored: 1234, stats: fakeStatsScreenInfo() }, vi.fn());
     expectNothingSqueezed();
   });
 
@@ -692,7 +701,7 @@ describe("GameHud — no overlay squeezes its own text", () => {
     const screens: [string, () => void][] = [
       ["kernel panic", () => hud.showKernelPanic(stats, vi.fn(), { cheated: true })],
       ["kernel panic + rollback", () => hud.showKernelPanic(undefined, vi.fn(), { rollback: { remaining: 2, onRollback: vi.fn() } })],
-      ["commit summary", () => hud.showCommitSummary({ linesRefactored: 1234, bugsSquashed: 567, stats }, vi.fn())],
+      ["commit summary", () => hud.showCommitSummary({ linesRefactored: 1234, stats }, vi.fn())],
       ["build successful", () => hud.showBuildSuccessful(stats, vi.fn())],
       ["level start", () => hud.showLevelStart({ campaign: "stage06_pipeline.py", levelName: "stage06_pipeline.py", roomCount: 12, enemyCount: 34, secretRoomCount: 2 }, vi.fn())],
       // The worst string in the repo by a distance: `main.ts`'s balance-mismatch

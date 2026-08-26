@@ -38,9 +38,14 @@ export interface StatsScreenInfo {
 /** Stats shown on the post-level commit summary. */
 export interface CommitSummaryInfo {
   linesRefactored: number;
-  bugsSquashed: number;
-  /** This level's own curated stats/breakdown — omitted shows just the two
-   * fields above, same as before this existed. */
+  /** This level's own curated stats/breakdown — omitted shows just the line
+   * count above, same as before this existed.
+   *
+   * The kill count lives in here (`statRows`' "Kills"), not as a field of its
+   * own. It used to be both: a "Bugs squashed" row sat directly above the
+   * stats block and rendered the identical number, because the two rows are
+   * built in different files and nobody saw them together until someone
+   * played a level. */
   stats?: StatsScreenInfo;
 }
 
@@ -178,7 +183,6 @@ export class GameHud {
         lines: [],
         stats: [
           ["Lines refactored", String(info.linesRefactored)],
-          ["Bugs squashed", String(info.bugsSquashed)],
           ...(info.stats ? statRows(info.stats) : []),
         ],
         buttonLabel: "Continue",
