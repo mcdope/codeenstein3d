@@ -410,9 +410,10 @@ export function spawnEnemies(
         // per Elite room" true for every report that counts the archetype.
         elite: elite && index === 0,
         // A skirmisher keeps its peers' complexity-derived HP rather than the
-        // corridor 10-15 roll. Three reasons: that roll *draws rng*, which
-        // would break the zero-extra-draw property this rule is built on; the
-        // room's total must stay exactly `25 * complexity` so density stays the
+        // corridor `EDGE_CASE_HP_MIN`..`EDGE_CASE_HP_MAX` roll. Three reasons:
+        // that roll *draws rng*, which would break the zero-extra-draw property
+        // this rule is built on; the room's total must stay exactly
+        // `HP_PER_COMPLEXITY * complexity` so density stays the
         // only difficulty lever; and a thinner skirmisher is counter-intuitively
         // *worse* for neutrality, since it dies sooner and removes more of the
         // room's damage than a uniform one does.

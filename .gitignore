@@ -69,3 +69,10 @@ doc/dev/remediation-order-*.md
 # since moved. Ignored rather than deleted so a run in progress keeps a clean
 # tree for the capture guard.
 docs-audit/
+
+# Launch/press copy and its images (pr/README.md indexes it). Written once for a
+# release announcement, then edited by hand and pasted into each platform — the
+# durable artifacts are the posts themselves, wherever they end up published, not
+# a snapshot of the drafts. Ignored rather than untracked so the capture guard in
+# run-balancing-capture.mjs still sees a clean tree while a kit is being written.
+pr/
