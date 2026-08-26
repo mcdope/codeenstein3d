@@ -45,7 +45,16 @@ export interface CommitSummaryInfo {
    * own. It used to be both: a "Bugs squashed" row sat directly above the
    * stats block and rendered the identical number, because the two rows are
    * built in different files and nobody saw them together until someone
-   * played a level. */
+   * played a level.
+   *
+   * **The duplication is why it was noticed; the name is why "Kills" won.**
+   * An enemy is a *function* — see the code-to-level mapping — so killing one
+   * is not fixing a bug, and calling it that claimed a defect where there need
+   * not be one. Worse, the game has a literal `Bug`: `placeTodoEncounter`
+   * (`map/generation/lore.ts`) spawns one beside a TODO/FIXME terminal, and it
+   * is rare — measured on the demo campaign the tech-debt mix is trap 4 /
+   * mine 3 / Bug 1 across all 17 levels. So the row named the one thing in the
+   * game that genuinely is a bug, while counting everything except it. */
   stats?: StatsScreenInfo;
 }
 
