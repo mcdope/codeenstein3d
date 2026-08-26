@@ -260,8 +260,12 @@ export class MapGenerator {
     // this draws from) can steer clear of one, the same reasoning as the exit.
     const multiplayerSpawns = maxPlayers > 1 ? pickMultiplayerSpawns(rooms, exit, maxPlayers) : undefined;
     const enemies = spawnEnemies(rooms, exit, rng, multiplayerSpawns ?? []);
-    // "Edge Case" enemies populate the corridor features exclusively — never
-    // a normal room, and normal enemies never spawn in one.
+    // `spawnEdgeCaseEnemies` populates the corridor features exclusively, and
+    // is the only thing that populates them. Note the converse does *not*
+    // hold: the `edgeCase` flag is set in two other places as well
+    // (`placeSwitchboardEncounters`, and `spawnEnemies`' skirmisher swap), so
+    // it reads as *which weapon and behaviour this enemy has*, never as
+    // *where it came from* — see `Enemy.edgeCase` in `types.ts`.
     enemies.push(...spawnEdgeCaseEnemies(grid, breakupRooms, exit, rng));
     // Switchboard spokes get their minor encounter here, for the same reason
     // Edge Cases do: `spawn`/`exit` are final, `clearCriticalTiles` hasn't run

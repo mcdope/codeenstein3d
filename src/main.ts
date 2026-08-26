@@ -324,8 +324,12 @@ const multiplayerGuestLiveCount = requireElement<HTMLParagraphElement>("#multipl
 const multiplayerLobbyDialog = requireElement<HTMLDialogElement>("#multiplayer-lobby-dialog");
 const multiplayerLobbyList = requireElement<HTMLUListElement>("#multiplayer-lobby-list");
 const closeMultiplayerLobbyButton = requireElement<HTMLButtonElement>("#close-multiplayer-lobby");
-// --- Launch method tabs (Local / Continue / GitHub / Demo level) -----------
-// Select Workspace, Continue Run, Load from GitHub, and the bundled demo
+// --- Launch method tabs (Local / Continue / Repo / Demos) ------------------
+// The third tab is labelled **Repo** and takes GitHub, GitLab or Codeberg. Its
+// elements were renamed to match (`#tab-repo`, `#tab-panel-repo`) but its
+// `LaunchTab` key is still `github`, so that one mismatch below is a leftover
+// from when it was GitHub-only rather than a typo.
+// Select Workspace, Continue Run, Load from a repository, and the bundled demo
 // campaign are four different ways to start the same game loop; grouped into
 // tabs so only one is shown at a time instead of stacking all four
 // permanently in the sidebar. The Settings tab is the one member that does

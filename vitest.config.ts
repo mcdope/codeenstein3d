@@ -98,9 +98,19 @@ export default defineConfig({
       // and vocabulary.ts genuinely run but are still reported as uncovered.
       // Not fixed by disabling file-parallelism, nor by switching to the
       // `istanbul` coverage provider (which disagrees with `v8` on a
-      // different set of lines instead). These thresholds sit just below
-      // the current honestly-measured 99.94/99.79/99.62/99.97% so real
-      // regressions still fail the gate.
+      // different set of lines instead). The thresholds were set just below
+      // the then-measured 99.94/99.79/99.62/99.97% (statements/branches/
+      // functions/lines) so real regressions still fail the gate.
+      //
+      // **Re-measured 2026-08-26 on master: 99.9083/99.5225/99.84/99.99%, and
+      // the margin is now thin enough to be worth stating in units rather than
+      // percentages.** Statements stand at 13,073 of 13,085 and branches at
+      // 5,627 of 5,654 — so each can afford exactly **one** more uncovered
+      // unit; the second one fails the gate. That is the intended strictness
+      // rather than a defect, but it means a change adding two untested
+      // branches is rejected by coverage before review ever sees it. Update
+      // these figures when they move; a stale "we measure X" comment is how a
+      // gate stops being understood.
       thresholds: {
         lines: 99.9,
         statements: 99.9,

@@ -19,7 +19,7 @@ import { dist, key, neighbors, shuffle } from "./util";
 const MAX_LORE_TERMINALS = 6;
 
 /** Flat HP for a TODO/FIXME "Bug" enemy — well under `HP_PER_COMPLEXITY`
- * (25, the existing floor for a normal complexity-scaled enemy from
+ * (35, the existing floor for a normal complexity-scaled enemy from
  * `spawnEnemies`), so it reads as a minor nuisance, not a real fight. */
 const TODO_BUG_HP = 10;
 
