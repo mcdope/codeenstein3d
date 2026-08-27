@@ -3674,7 +3674,6 @@ function launchLevel(path: string, parsed: ParsedFile, source: string | null, ca
         hud.showCommitSummary(
           {
             linesRefactored: parsed.linesOfCode,
-            bugsSquashed: stats.kills,
             stats: statsScreenInfo(stats.levelScoreBreakdown, stats.levelPlayerStats),
           },
           () => void advanceToNextLevel(stats),

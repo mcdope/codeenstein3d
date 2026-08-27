@@ -38,9 +38,29 @@ export interface StatsScreenInfo {
 /** Stats shown on the post-level commit summary. */
 export interface CommitSummaryInfo {
   linesRefactored: number;
-  bugsSquashed: number;
-  /** This level's own curated stats/breakdown — omitted shows just the two
-   * fields above, same as before this existed. */
+  /** This level's own curated stats/breakdown — omitted shows just the line
+   * count above, same as before this existed.
+   *
+   * The kill count lives in here (`statRows`' "Kills"), not as a field of its
+   * own. It used to be both: a "Bugs squashed" row sat directly above the
+   * stats block and rendered the identical number, because the two rows are
+   * built in different files and nobody saw them together until someone
+   * played a level.
+   *
+   * **The duplication is why it was noticed; the name is why "Kills" won.**
+   * This game reads somebody's real source code, so "Bugs squashed: 47" is a
+   * claim that their file contained 47 defects. It did not — it contained
+   * enemies derived from cyclomatic complexity, and complexity is not defects.
+   * Never let a label assert something about the player's codebase that the
+   * generator has no basis for; "Kills" describes what actually happened and
+   * claims nothing.
+   *
+   * Secondary, but it points the same way: the game has a *literal* `Bug`.
+   * `placeTodoEncounter` (`map/generation/lore.ts`) spawns one beside a
+   * TODO/FIXME terminal, and it is rare — measured on the demo campaign the
+   * tech-debt mix is trap 4 / mine 3 / Bug 1 across all 17 levels. So the row
+   * named the one entity here that really is a bug, while counting everything
+   * except it. */
   stats?: StatsScreenInfo;
 }
 
@@ -178,7 +198,6 @@ export class GameHud {
         lines: [],
         stats: [
           ["Lines refactored", String(info.linesRefactored)],
-          ["Bugs squashed", String(info.bugsSquashed)],
           ...(info.stats ? statRows(info.stats) : []),
         ],
         buttonLabel: "Continue",

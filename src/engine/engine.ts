@@ -1014,7 +1014,8 @@ export interface EngineStats {
    * (and, within the current level, can fluctuate) until the exit is reached,
    * at which point it becomes the baseline the next level carries forward. */
   score: number;
-  /** Enemies defeated this level ("bugs squashed" for the commit summary). */
+  /** Enemies defeated this level. Surfaced to the player as the commit
+   * summary's and both run-end screens' "Kills" row, via `statRows`. */
   kills: number;
   /** True once any cheat has fired this run — drives the HUD's persistent
    * "run not recorded" badge. See `PlayerState.cheatsUsed`. */
