@@ -68,7 +68,7 @@
     "secrets:text": "node scripts/check-secrets.mjs --text"
   },
   "devDependencies": {
-    "@types/node": "^26.2.0",
+    "@types/node": "^26.4.0",
     "@vitest/coverage-v8": "4.1.11",
     "esbuild": "^0.28.2",
     "jsdom": "^30.0.1",
