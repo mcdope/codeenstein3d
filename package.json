@@ -92,6 +92,6 @@
     "vitest": "4.1.11"
   },
   "dependencies": {
-    "web-tree-sitter": "^0.26.12"
+    "web-tree-sitter": "^0.26.13"
   }
 }
